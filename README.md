@@ -1,10 +1,20 @@
 # Maxgram
 
-> A personal bridge from MAX messenger to Telegram — because your school chats shouldn't dictate your client.
+**Personal MAX → Telegram bridge for your school and community chats**
+
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Messenger](https://img.shields.io/badge/Messenger-MAX-orange)](https://max.ru)
+[![Bot](https://img.shields.io/badge/Bot-Telegram-2CA5E0)](https://core.telegram.org/bots)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://www.python.org)
+[![Status](https://img.shields.io/badge/Status-Active-brightgreen)](https://github.com/eiler2005/maxgram)
+
+> *Your chats route themselves. Silently.*
 
 **MAX** is a mandatory messenger in Russian schools and public institutions. It has no official Telegram client and no open API. **Maxgram** solves this by running an unofficial WebSocket userbot that mirrors every MAX chat into a Telegram Forum Supergroup topic — and routes replies back.
 
 **Result:** read and answer all MAX conversations from Telegram, without installing MAX.
+
+**[Русская версия / Russian version →](README-ru.md)**
 
 ---
 
