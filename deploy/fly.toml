@@ -1,0 +1,29 @@
+# Fly.io конфиг — заполнить app name после регистрации
+# fly auth login && fly apps create maxtg-bridge
+
+app = "maxtg-bridge"
+primary_region = "ams"
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+# Persistent Volume — SQLite и MAX сессия переживают рестарты
+[[mounts]]
+  source = "bridge_data"
+  destination = "/app/data"
+
+[processes]
+  app = "python src/main.py"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
+
+# Бридж не слушает HTTP порты — отключаем health check
+[http_service]
+  internal_port = 0
+  force_https = false
+  auto_stop_machines = false   # НЕ засыпать! Bridge должен работать постоянно
+  auto_start_machines = true
+  min_machines_running = 1

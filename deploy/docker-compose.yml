@@ -1,0 +1,19 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    env_file:
+      - ../.env
+    volumes:
+      # Монтируем data/ как volume — SQLite, MAX сессия и tmp переживают рестарты
+      - ../data:/app/data
+      # В dev режиме монтируем src/ для горячей перезагрузки
+      - ../src:/app/src:ro
+      - ../config.yaml:/app/config.yaml:ro
+      # Если используются локальные chat bindings, раскомментируй:
+      # - ../config.local.yaml:/app/config.local.yaml:ro
+    restart: unless-stopped
+    # Для spike-скриптов (переопределяет CMD из Dockerfile):
+    # docker-compose run --rm app python spike/max_spike.py
+    # docker-compose run --rm app python spike/tg_spike.py

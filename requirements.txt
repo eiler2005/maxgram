@@ -1,0 +1,17 @@
+# Telegram Bot
+aiogram==3.26.0
+
+# MAX userbot
+maxapi-python==1.2.5
+requests>=2.31,<3
+
+# Database
+aiosqlite==0.21.0
+
+# Config
+pyyaml==6.0.2
+python-dotenv==1.1.0
+
+# Shared compatibility pins
+aiohttp>=3.12.15,<3.14
+pydantic>=2.4.1,<2.13

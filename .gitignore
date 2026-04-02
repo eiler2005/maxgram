@@ -1,0 +1,51 @@
+# Secrets
+.env
+.env.*
+.env.host
+config.local.yaml
+HANDOFF.local.md
+.claude/settings.local.json
+
+# MAX session (all variants)
+data/.max_session
+data/max_bridge_session
+data/session.db
+*.max_session
+
+# Database & temp files
+data/bridge.db
+data/bridge.db-shm
+data/bridge.db-wal
+data/tmp/
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs (содержат meta, но всё равно не в git)
+logs/
+*.log

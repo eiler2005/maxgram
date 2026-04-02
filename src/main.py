@@ -1,0 +1,169 @@
+"""
+MAX → Telegram Bridge — точка входа.
+
+Запуск:
+  python src/main.py
+  docker-compose up
+"""
+
+import asyncio
+import logging
+import os
+import socket
+import sys
+from pathlib import Path
+
+# Добавляем корень проекта в path (для запуска из разных директорий)
+ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT))
+
+from src.config.loader import load_config
+from src.db.repository import Repository
+from src.adapters.max_adapter import MaxAdapter
+from src.adapters.tg_adapter import TelegramAdapter
+from src.bridge.core import BridgeCore
+
+
+def setup_logging():
+    """Логирование: только meta, без PII."""
+    level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    # Глушим шумные библиотеки
+    logging.getLogger("aiogram").setLevel(logging.WARNING)
+    logging.getLogger("pymax").setLevel(logging.WARNING)
+    logging.getLogger("aiosqlite").setLevel(logging.WARNING)
+
+
+def _mask_ip(ip: str | None) -> str | None:
+    if not ip:
+        return None
+    parts = ip.split(".")
+    if len(parts) == 4 and all(part.isdigit() for part in parts):
+        return f"{parts[0]}.{parts[1]}.*.{parts[3]}"
+    return ip
+
+
+def _detect_primary_ipv4() -> str | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("1.1.1.1", 80))
+            return sock.getsockname()[0]
+    except OSError:
+        return None
+
+
+def _infer_location(hostname: str) -> str | None:
+    explicit = os.environ.get("BRIDGE_LOCATION", "").strip()
+    if explicit:
+        return explicit
+
+    hostname_l = hostname.lower()
+    mapping = {
+        "hel1": "Helsinki",
+        "fsn1": "Falkenstein",
+        "nbg1": "Nuremberg",
+        "ash": "Ashburn",
+        "hil": "Hillsboro",
+        "sin": "Singapore",
+    }
+    for token, name in mapping.items():
+        if token in hostname_l:
+            return name
+    return None
+
+
+def build_startup_notification() -> str:
+    hostname = socket.gethostname()
+    location = _infer_location(hostname)
+    masked_ip = _mask_ip(_detect_primary_ipv4())
+    runtime = "Docker" if Path("/.dockerenv").exists() else "Local"
+
+    lines = ["✅ MAX Bridge запущен и подключён к MAX"]
+    details = [f"runtime: {runtime}", f"host: {hostname}"]
+    if location:
+        details.append(f"location: {location}")
+    if masked_ip:
+        details.append(f"ip: {masked_ip}")
+    lines.append(" · ".join(details))
+    return "\n".join(lines)
+
+
+async def main():
+    setup_logging()
+    logger = logging.getLogger("bridge.main")
+
+    config_path = os.environ.get("CONFIG_PATH", "config.yaml")
+    logger.info("Loading config from %s", config_path)
+
+    try:
+        cfg = load_config(config_path)
+    except Exception as e:
+        logger.critical("Config error: %s", e)
+        sys.exit(1)
+
+    # DB
+    repo = Repository(cfg.storage.db_path)
+    await repo.connect()
+    logger.info("DB connected: %s", cfg.storage.db_path)
+
+    # Adapters
+    max_adapter = MaxAdapter(
+        phone=cfg.max.phone,
+        data_dir=cfg.storage.session_path,
+        session_name=cfg.max.session_filename,
+        tmp_dir=str(cfg.storage.tmp_dir),
+    )
+
+    tg_adapter = TelegramAdapter(
+        bot_token=cfg.telegram.bot_token,
+        owner_id=cfg.telegram.owner_id,
+        forum_group_id=cfg.telegram.forum_group_id,
+    )
+
+    # Bridge Core — связывает адаптеры
+    bridge = BridgeCore(cfg, repo, max_adapter, tg_adapter)
+
+    # Уведомление + fix fallback топиков при первом старте MAX
+    _started_once = False
+
+    async def on_max_ready():
+        nonlocal _started_once
+        if _started_once:
+            logger.info("MAX reconnected (skip duplicate notifications)")
+            return
+        _started_once = True
+        await tg_adapter.send_notification(build_startup_notification())
+
+    max_adapter.on_start(on_max_ready)
+
+    # Инициализируем Telegram бота (без запуска polling)
+    await tg_adapter.setup()
+    bot = tg_adapter.get_bot()
+    dp  = tg_adapter.get_dispatcher()
+
+    logger.info("Starting bridge...")
+
+    # Запускаем все компоненты параллельно
+    async with asyncio.TaskGroup() as tg:
+        # MAX: блокирующий, собственный reconnect-цикл с чистым клиентом
+        tg.create_task(max_adapter.start(), name="max_adapter")
+
+        # Telegram: polling
+        tg.create_task(
+            dp.start_polling(bot, allowed_updates=["message"]),
+            name="tg_polling",
+        )
+
+        # Cleanup: фоновый
+        tg.create_task(bridge.run_cleanup(), name="cleanup")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nBridge stopped.")

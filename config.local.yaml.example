@@ -1,0 +1,14 @@
+# Локальный override-конфиг. Не коммить в git.
+# Скопируй в config.local.yaml и заполни своими chat_id / title / mode.
+
+chats:
+  - max_chat_id: "-70000000000001"
+    title: "Семейный чат"
+    mode: "active"
+
+  - max_chat_id: "-70000000000002"
+    title: "Школьный чат"
+    mode: "readonly"
+
+  # DM-чаты можно не указывать:
+  # bridge сам разрезолвит имя собеседника при первом сообщении.
