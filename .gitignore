@@ -6,6 +6,9 @@ config.local.yaml
 HANDOFF.local.md
 .claude/settings.local.json
 
+# Local deployment notes (server IPs, credentials)
+deploy/server.local.md
+
 # MAX session (all variants)
 data/.max_session
 data/max_bridge_session
