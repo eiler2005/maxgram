@@ -483,23 +483,24 @@ class MaxAdapter:
         return None, None
 
     async def _download_attachment(self, chat_id: str, msg_id: str,
-                                   attach) -> Optional[MaxAttachment]:
+                                   attach, index: int = 0) -> Optional[MaxAttachment]:
         """Скачать одно вложение и нормализовать в MaxAttachment."""
         atype = self._attachment_type_name(attach)
         filename_hint = self._attachment_filename(attach)
+        idx = f"_{index}" if index > 0 else ""
 
         if "PHOTO" in atype or "IMAGE" in atype:
             url = getattr(attach, "base_url", None) or getattr(attach, "baseRawUrl", None) or getattr(attach, "url", None)
             if url:
                 local_path, filename = await self._download_from_url(
-                    url, f"photo_{chat_id}_{msg_id}", filename_hint, ".jpg"
+                    url, f"photo_{chat_id}_{msg_id}{idx}", filename_hint, ".jpg"
                 )
             else:
                 file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
                 if not file_id:
                     return None
                 local_path, filename = await self._download_file_by_id(
-                    chat_id, msg_id, file_id, f"photo_{chat_id}_{msg_id}", filename_hint, ".jpg"
+                    chat_id, msg_id, file_id, f"photo_{chat_id}_{msg_id}{idx}", filename_hint, ".jpg"
                 )
             if local_path:
                 return MaxAttachment(
@@ -518,11 +519,11 @@ class MaxAdapter:
             url = getattr(attach, "url", None)
             if url:
                 local_path, filename = await self._download_from_url(
-                    url, f"video_{chat_id}_{msg_id}", filename_hint, ".mp4"
+                    url, f"video_{chat_id}_{msg_id}{idx}", filename_hint, ".mp4"
                 )
             elif video_id:
                 local_path, filename = await self._download_video_by_id(
-                    chat_id, msg_id, video_id, f"video_{chat_id}_{msg_id}", filename_hint
+                    chat_id, msg_id, video_id, f"video_{chat_id}_{msg_id}{idx}", filename_hint
                 )
             else:
                 return None
@@ -542,14 +543,14 @@ class MaxAdapter:
             url = getattr(attach, "url", None)
             if url:
                 local_path, filename = await self._download_from_url(
-                    url, f"audio_{chat_id}_{msg_id}", filename_hint, ".ogg"
+                    url, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg"
                 )
             else:
                 file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
                 if not file_id:
                     return None
                 local_path, filename = await self._download_file_by_id(
-                    chat_id, msg_id, file_id, f"audio_{chat_id}_{msg_id}", filename_hint, ".ogg"
+                    chat_id, msg_id, file_id, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg"
                 )
             if local_path:
                 return MaxAttachment(
@@ -568,7 +569,7 @@ class MaxAdapter:
             if not file_id:
                 return None
             local_path, filename = await self._download_file_by_id(
-                chat_id, msg_id, file_id, f"doc_{chat_id}_{msg_id}", filename_hint
+                chat_id, msg_id, file_id, f"doc_{chat_id}_{msg_id}{idx}", filename_hint
             )
             if local_path:
                 return MaxAttachment(
@@ -686,12 +687,16 @@ class MaxAdapter:
             # Вложения (в pymax Message это .attaches)
             attachments: list[MaxAttachment] = []
             rendered_texts: list[str] = []
+            media_index = 0
             for attach in attach_list:
                 if attach is None:
                     continue
                 atype = self._attachment_type_name(attach)
                 if atype in {"PHOTO", "VIDEO", "AUDIO", "FILE"}:
-                    attachment = await self._download_attachment(chat_id, raw_msg_id, attach)
+                    attachment = await self._download_attachment(
+                        chat_id, raw_msg_id, attach, index=media_index
+                    )
+                    media_index += 1
                     if attachment:
                         attachments.append(attachment)
                     continue
