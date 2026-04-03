@@ -43,6 +43,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Privacy-first design** — no message text or media is ever stored; SQLite only holds routing metadata (chat bindings, message ID map, delivery log)
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
 - **Async Python monolith** — single `asyncio.TaskGroup` process; no queues, no microservices, no external state
+- **Resilient delivery** — Telegram API calls retry with exponential backoff; MAX watchdog alerts on offline > 60s; `/status` gives live health snapshot on demand
 
 ---
 
@@ -50,13 +51,17 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 
 - Automatic topic creation for every new MAX chat
 - Bidirectional messaging — replies in Telegram → delivered to MAX (including reply-to-message)
-- Media forwarding: photos, documents, video, audio
+- Media forwarding in both directions: photos, video, audio, voice, documents
 - Sender name prefix in group chats: `[First Last] message text`
 - Own messages (sent directly in MAX) mirrored to Telegram with `[Вы]` prefix
 - DM topics named after the contact (resolved from MAX profile, cache + live API)
 - Per-chat modes: `active` / `readonly` / `disabled`
 - Deduplication — no duplicate messages on reconnect
 - Stable reconnect — no OOM, no SSL storm
+- `/status` command — uptime, message stats, top active chats; works in forum group and personal DM with bot
+- Periodic 4-hour status report — automatic delivery stats sent to owner
+- MAX offline watchdog — alert if MAX unreachable > 60 seconds
+- Telegram API retry with exponential backoff (3 attempts, respects `Retry-After`)
 
 ---
 

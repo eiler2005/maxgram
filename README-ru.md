@@ -30,11 +30,15 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Двусторонняя связь** — reply из Telegram уходит в MAX, включая reply на конкретное сообщение
 - **Имя отправителя в группах** — `[Имя Фамилия] текст сообщения`
 - **Собственные сообщения** — если написал в MAX напрямую, появится в Telegram с пометкой `[Вы]`
-- **Медиа** — фото, видео, аудио, документы
+- **Медиа в обе стороны** — фото, видео, аудио, голосовые, документы (MAX→TG и TG→MAX)
 - **Имена контактов** — DM топики именуются по имени собеседника из профиля MAX
 - **Режимы per-chat** — `active` / `readonly` / `disabled`
 - **Дедупликация** — сообщения не дублируются при переподключении
 - **Устойчивый reconnect** — без OOM и SSL-ошибок
+- **Команда `/status`** — аптайм, статистика сообщений, топ активных чатов; работает в группе и в личном чате с ботом
+- **Автоматический статус-отчёт** — каждые 4 часа бот присылает сводку без команды
+- **Watchdog MAX** — уведомление, если MAX недоступен более 60 секунд
+- **Retry Telegram API** — 3 попытки с экспоненциальным backoff, поддержка `Retry-After`
 
 ---
 
@@ -209,7 +213,7 @@ maxgram/
 ```bash
 # Подключиться к серверу
 ssh -i ~/.ssh/id_rsa deploy@<SERVER_IP>
-cd /opt/maxgram
+cd /opt/maxtg-bridge
 
 # Статус и логи
 docker compose --env-file .env.host -f deploy/docker-compose.prod.yml ps
@@ -236,6 +240,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 | [docs/runbooks/operations.md](docs/runbooks/operations.md) | Операционные процедуры |
 | [docs/runbooks/deployment.md](docs/runbooks/deployment.md) | Деплой: локально, Docker, Hetzner, Fly.io |
 | [docs/runbooks/hetzner-production.md](docs/runbooks/hetzner-production.md) | Безопасный production-деплой |
+| [docs/tests.md](docs/tests.md) | Описание всех 17 тестов |
 | [PROJECT.md](PROJECT.md) | Полная техническая документация |
 | [CHANGELOG.md](CHANGELOG.md) | История изменений |
 
@@ -247,7 +252,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 |------|--------|----------|
 | Phase 0: Spike | ✅ | pymax работает, Telegram Topics работают |
 | Phase 1: MVP | ✅ | Bridge запущен, все основные функции |
-| Phase 2: Stabilization | 🔄 | Retry TG API, /status, alert на потерю MAX |
+| Phase 2: Stabilization | ✅ | Retry TG API, /status, watchdog, медиа TG→MAX |
 | Phase 3: Cloud | ✅ | Hetzner production, Docker Compose, hardening |
 | Phase 4: Hardening | ⏳ | Per-chat управление из TG, больше тестов |
 

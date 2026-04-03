@@ -1,15 +1,29 @@
 # Changelog
 
-All notable changes to MaxBridge are documented here.
+All notable changes to Maxgram are documented here.
 
 ---
 
-## [Unreleased]
+## [1.1.0] — 2026-04-03
 
-### In Progress
-- Telegram API retry with exponential backoff
-- `/status` command with uptime and message statistics
-- Alert on MAX session loss (>3 consecutive reconnect failures)
+### Added
+- **Media forwarding TG→MAX** — photos, video, audio, voice, documents sent via pymax `attachment=` API; files are downloaded from Telegram Bot API and passed directly to MAX
+- **Telegram API retry + exponential backoff** — all TG send calls retry up to 3 times (delays 1s / 2s); `TelegramRetryAfter` respected (waits the exact `retry_after` value)
+- **MAX offline watchdog** — background task alerts the owner if MAX is unreachable for more than 60 seconds
+- **`/status` command** — returns uptime, message counts (inbound/outbound, text/media split), errors, and top-10 active chats over the last 4 hours; works in both forum group and personal DM with the bot
+- **Periodic 4-hour status report** — automatic delivery stats sent to the owner without any manual command
+- **Extended startup notification** — now includes runtime (Docker/Local), hostname, inferred datacenter location, masked IP, and active chat count
+- **`/status` in personal DM** — owner can send `/status` directly to the bot in a private chat, not only in the forum group
+
+### Fixed
+- **Group sender names were empty** — `message.sender` is a bare `int`; name is now resolved via `client.get_cached_user()` + live `get_users()` API fallback
+- **Own-message echo** — messages sent directly in MAX were not mirrored to Telegram; fixed by storing the real `max_msg_id` returned by `send_message` in DB, so echo detection works correctly
+
+### Tests
+- Fixed `DummyTelegram` missing `on_command` stub in `test_bridge_core.py`
+- Fixed `build_startup_notification` async signature in `test_main.py`
+- Fixed `_make_message` missing media attributes in `test_tg_adapter.py`
+- All 17 tests pass
 
 ---
 

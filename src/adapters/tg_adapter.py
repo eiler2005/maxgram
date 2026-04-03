@@ -232,20 +232,31 @@ class TelegramAdapter:
         user_id = getattr(user, "id", None)
         return str(user_id) if user_id is not None else None
 
+    def _is_owner_dm(self, message: Message) -> bool:
+        """Личный чат владельца с ботом."""
+        return bool(message.chat and message.chat.id == self._owner_id)
+
     async def _dispatch_incoming_message(self, message: Message):
-        # Игнорируем сообщения не из нашей группы
-        if not self._is_group_message(message):
+        is_group = self._is_group_message(message)
+        is_owner_dm = self._is_owner_dm(message)
+
+        # Игнорируем всё, что не из нашей группы и не из личного чата владельца
+        if not is_group and not is_owner_dm:
             return
 
         # Игнорируем сообщения от ботов, включая самого bridge-бота
         if message.from_user and message.from_user.is_bot:
             return
 
-        # Команды доступны только владельцу
+        # Команды: принимаем от владельца в группе или в личном чате
         if message.text and message.text.startswith("/"):
             if not self._is_owner(message):
                 return
             await self._handle_command(message)
+            return
+
+        # Дальше — только сообщения из форум-группы (reply → MAX)
+        if not is_group:
             return
 
         # Reply/сообщение в топике → bridge в MAX
