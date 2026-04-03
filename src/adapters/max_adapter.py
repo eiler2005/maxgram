@@ -281,8 +281,12 @@ class MaxAdapter:
         return "[Стикер]"
 
     async def send_message(self, chat_id: str, text: str,
-                           reply_to_msg_id: Optional[str] = None) -> Optional[str]:
-        """Отправить текст в MAX чат.
+                           reply_to_msg_id: Optional[str] = None,
+                           media_path: Optional[str] = None,
+                           media_type: Optional[str] = None) -> Optional[str]:
+        """Отправить сообщение в MAX чат (текст и/или медиа).
+
+        media_type: "photo" | "video" | "audio" | "document"
 
         Возвращает:
           str  — real max_msg_id
@@ -313,9 +317,23 @@ class MaxAdapter:
         self._pending_outbound_acks.append(pending)
 
         try:
-            kwargs = {"chat_id": int(chat_id), "text": text}
+            from pymax.files import File, Photo, Video
+
+            attachment = None
+            if media_path and Path(media_path).exists():
+                if media_type == "photo":
+                    attachment = Photo(path=media_path)
+                elif media_type == "video":
+                    attachment = Video(path=media_path)
+                else:  # audio, document
+                    attachment = File(path=media_path)
+                logger.debug("Attaching media type=%s path=%s", media_type, media_path)
+
+            kwargs: dict = {"chat_id": int(chat_id), "text": text}
             if reply_to_msg_id:
                 kwargs["reply_to"] = int(reply_to_msg_id)
+            if attachment is not None:
+                kwargs["attachment"] = attachment
             result = await self._client.send_message(**kwargs)
             msg_id = self._extract_result_msg_id(result)
             if msg_id:

@@ -155,6 +155,53 @@ class Repository:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
+    # ── Stats ─────────────────────────────────────────────────────────────
+
+    async def count_messages_since(self, since_ts: int) -> dict[str, int]:
+        """Количество сообщений по направлениям начиная с since_ts."""
+        async with self._db.execute(
+            """SELECT direction, COUNT(*) as cnt
+               FROM message_map WHERE created_at >= ?
+               GROUP BY direction""",
+            (since_ts,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return {row["direction"]: row["cnt"] for row in rows}
+
+    async def count_deliveries_since(self, since_ts: int) -> dict[str, int]:
+        """Количество доставок по направлению+статусу начиная с since_ts."""
+        async with self._db.execute(
+            """SELECT direction, status, COUNT(*) as cnt
+               FROM delivery_log WHERE created_at >= ?
+               GROUP BY direction, status""",
+            (since_ts,),
+        ) as cur:
+            rows = await cur.fetchall()
+        result: dict[str, int] = {}
+        for row in rows:
+            key = f"{row['direction']}_{row['status']}"
+            result[key] = row["cnt"]
+        return result
+
+    async def get_chat_activity_since(self, since_ts: int,
+                                      limit: int = 10) -> list[dict]:
+        """Топ-N активных чатов за период. Возвращает title, inbound, outbound."""
+        async with self._db.execute(
+            """SELECT cb.title,
+                      SUM(CASE WHEN mm.direction='inbound'  THEN 1 ELSE 0 END) AS inbound,
+                      SUM(CASE WHEN mm.direction='outbound' THEN 1 ELSE 0 END) AS outbound,
+                      COUNT(mm.id) AS total
+               FROM chat_bindings cb
+               JOIN message_map mm
+                 ON cb.max_chat_id = mm.max_chat_id AND mm.created_at >= ?
+               GROUP BY cb.max_chat_id
+               ORDER BY total DESC
+               LIMIT ?""",
+            (since_ts, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     # ── Retention cleanup ─────────────────────────────────────────────────
 
     async def cleanup_old_messages(self, older_than_days: int):

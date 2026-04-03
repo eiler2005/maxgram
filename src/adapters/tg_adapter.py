@@ -11,28 +11,39 @@ Telegram Adapter — бот + форум-группа с Topics.
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Callable, Optional, Awaitable
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message, FSInputFile
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 
 logger = logging.getLogger(__name__)
 
 
-ReplyHandler = Callable[[int, str, Optional[int], Optional[str]], Awaitable[None]]
-# args: tg_topic_id, text, reply_to_tg_msg_id, sender_name
+ReplyHandler = Callable[
+    [int, str, Optional[int], Optional[str], Optional[str], Optional[str]],
+    Awaitable[None],
+]
+# args: tg_topic_id, text, reply_to_tg_msg_id, sender_name, media_path, media_type
 
 
 class TelegramAdapter:
-    def __init__(self, bot_token: str, owner_id: int, forum_group_id: int):
+    def __init__(self, bot_token: str, owner_id: int, forum_group_id: int,
+                 tmp_dir: str = "/tmp"):
         self._token = bot_token
         self._owner_id = owner_id
         self._group_id = forum_group_id
+        self._tmp_dir = Path(tmp_dir)
         self._bot: Optional[Bot] = None
         self._dp: Optional[Dispatcher] = None
         self._reply_handlers: list[ReplyHandler] = []
+        self._command_handlers: dict[str, Callable] = {}
+
+    def on_command(self, cmd: str, handler: Callable):
+        """Зарегистрировать внешний обработчик команды (без слэша)."""
+        self._command_handlers[cmd.lstrip("/")] = handler
 
     def on_reply(self, handler: ReplyHandler):
         self._reply_handlers.append(handler)
@@ -60,61 +71,88 @@ class TelegramAdapter:
         except TelegramAPIError as e:
             logger.error("rename_topic failed topic=%s: %s", topic_id, e)
 
+    # ── Retry helper ──────────────────────────────────────────────────────
+
+    async def _tg_retry(self, coro_fn, label: str) -> Optional[int]:
+        """Выполнить TG API вызов с retry + exponential backoff.
+
+        3 попытки: немедленно → sleep 1s → sleep 2s.
+        TelegramRetryAfter: ждём retry_after секунд вместо стандартной задержки.
+        Возвращает message_id при успехе, None после трёх неудач.
+        """
+        delays = (1, 2)  # пауза перед 2-й и 3-й попытками
+        last_exc: Exception = RuntimeError("no attempt made")
+
+        for attempt in range(1, 4):
+            try:
+                msg = await coro_fn()
+                if attempt > 1:
+                    logger.info("%s succeeded on attempt %d", label, attempt)
+                return msg.message_id
+            except TelegramRetryAfter as e:
+                wait = max(int(e.retry_after), 1) + 1
+                logger.warning("%s rate-limited (attempt %d/3), retry in %ds", label, attempt, wait)
+                last_exc = e
+                if attempt < 3:
+                    await asyncio.sleep(wait)
+            except TelegramAPIError as e:
+                logger.warning("%s failed (attempt %d/3): %s", label, attempt, e)
+                last_exc = e
+                if attempt < 3:
+                    await asyncio.sleep(delays[attempt - 1])
+
+        logger.error("%s failed after 3 attempts: %s", label, last_exc)
+        return None
+
     # ── Отправка сообщений ────────────────────────────────────────────────
 
     async def send_text(self, topic_id: int, text: str,
                         reply_to_msg_id: Optional[int] = None) -> Optional[int]:
         """Отправить текст в топик. Возвращает message_id."""
-        try:
-            kwargs = dict(
-                chat_id=self._group_id,
-                text=text[:4096],
-                message_thread_id=topic_id,
-            )
-            if reply_to_msg_id:
-                kwargs["reply_to_message_id"] = reply_to_msg_id
-            msg = await self._bot.send_message(**kwargs)
-            return msg.message_id
-        except TelegramAPIError as e:
-            logger.error("send_text failed topic=%s: %s", topic_id, e)
-            return None
+        kwargs: dict = dict(
+            chat_id=self._group_id,
+            text=text[:4096],
+            message_thread_id=topic_id,
+        )
+        if reply_to_msg_id:
+            kwargs["reply_to_message_id"] = reply_to_msg_id
+        return await self._tg_retry(
+            lambda: self._bot.send_message(**kwargs),
+            f"send_text topic={topic_id}",
+        )
 
     async def send_photo(self, topic_id: int, path: str, caption: str = "") -> Optional[int]:
         """Отправить фото в топик."""
-        try:
-            msg = await self._bot.send_photo(
+        return await self._tg_retry(
+            lambda: self._bot.send_photo(
                 chat_id=self._group_id,
                 photo=FSInputFile(path),
                 caption=caption[:1024] if caption else None,
                 message_thread_id=topic_id,
-            )
-            return msg.message_id
-        except TelegramAPIError as e:
-            logger.error("send_photo failed topic=%s: %s", topic_id, e)
-            return None
+            ),
+            f"send_photo topic={topic_id}",
+        )
 
     async def send_document(self, topic_id: int, path: str,
                              caption: str = "", filename: str = "") -> Optional[int]:
         """Отправить документ в топик."""
-        try:
-            msg = await self._bot.send_document(
+        return await self._tg_retry(
+            lambda: self._bot.send_document(
                 chat_id=self._group_id,
                 document=FSInputFile(path, filename=filename or Path(path).name),
                 caption=caption[:1024] if caption else None,
                 message_thread_id=topic_id,
-            )
-            return msg.message_id
-        except TelegramAPIError as e:
-            logger.error("send_document failed topic=%s: %s", topic_id, e)
-            return None
+            ),
+            f"send_document topic={topic_id}",
+        )
 
     async def send_video(self, topic_id: int, path: str, caption: str = "",
                          filename: str = "", duration: Optional[int] = None,
                          width: Optional[int] = None,
                          height: Optional[int] = None) -> Optional[int]:
         """Отправить видео в топик."""
-        try:
-            msg = await self._bot.send_video(
+        return await self._tg_retry(
+            lambda: self._bot.send_video(
                 chat_id=self._group_id,
                 video=FSInputFile(path, filename=filename or Path(path).name),
                 caption=caption[:1024] if caption else None,
@@ -123,28 +161,24 @@ class TelegramAdapter:
                 width=width,
                 height=height,
                 supports_streaming=True,
-            )
-            return msg.message_id
-        except TelegramAPIError as e:
-            logger.error("send_video failed topic=%s: %s", topic_id, e)
-            return None
+            ),
+            f"send_video topic={topic_id}",
+        )
 
     async def send_audio(self, topic_id: int, path: str, caption: str = "",
                          filename: str = "", duration: Optional[int] = None) -> Optional[int]:
         """Отправить аудио в топик."""
-        try:
-            msg = await self._bot.send_audio(
+        return await self._tg_retry(
+            lambda: self._bot.send_audio(
                 chat_id=self._group_id,
                 audio=FSInputFile(path, filename=filename or Path(path).name),
                 caption=caption[:1024] if caption else None,
                 message_thread_id=topic_id,
                 duration=duration,
                 title=Path(filename or path).stem,
-            )
-            return msg.message_id
-        except TelegramAPIError as e:
-            logger.error("send_audio failed topic=%s: %s", topic_id, e)
-            return None
+            ),
+            f"send_audio topic={topic_id}",
+        )
 
     async def send_notification(self, text: str):
         """Отправить системное уведомление владельцу (в личный чат с ботом)."""
@@ -152,6 +186,19 @@ class TelegramAdapter:
             await self._bot.send_message(chat_id=self._owner_id, text=text)
         except TelegramAPIError as e:
             logger.error("send_notification failed: %s", e)
+
+    # ── Скачивание медиа из Telegram ─────────────────────────────────────
+
+    async def _download_tg_media(self, file_id: str, filename: str) -> Optional[str]:
+        """Скачать медиафайл из Telegram в tmp_dir, вернуть локальный путь."""
+        try:
+            self._tmp_dir.mkdir(parents=True, exist_ok=True)
+            local_path = self._tmp_dir / filename
+            await self._bot.download(file_id, destination=str(local_path))
+            return str(local_path)
+        except Exception as e:
+            logger.error("TG media download failed file_id=%s: %s", file_id, e)
+            return None
 
     # ── Получение reply ───────────────────────────────────────────────────
 
@@ -211,13 +258,46 @@ class TelegramAdapter:
             reply_to_tg_id = message.reply_to_message.message_id
 
         text = message.text or message.caption or ""
-        if not text:
+
+        # Скачиваем медиа если есть
+        media_path: Optional[str] = None
+        media_type: Optional[str] = None
+        ts = int(time.time())
+
+        if message.photo:
+            media_path = await self._download_tg_media(
+                message.photo[-1].file_id, f"tg_photo_{ts}.jpg"
+            )
+            media_type = "photo"
+        elif message.video:
+            ext = Path(message.video.file_name or "video.mp4").suffix or ".mp4"
+            media_path = await self._download_tg_media(
+                message.video.file_id, f"tg_video_{ts}{ext}"
+            )
+            media_type = "video"
+        elif message.audio:
+            ext = Path(message.audio.file_name or "audio.mp3").suffix or ".mp3"
+            media_path = await self._download_tg_media(
+                message.audio.file_id, f"tg_audio_{ts}{ext}"
+            )
+            media_type = "audio"
+        elif message.voice:
+            media_path = await self._download_tg_media(
+                message.voice.file_id, f"tg_voice_{ts}.ogg"
+            )
+            media_type = "audio"
+        elif message.document:
+            fname = message.document.file_name or f"tg_doc_{ts}"
+            media_path = await self._download_tg_media(message.document.file_id, fname)
+            media_type = "document"
+
+        if not text and not media_path:
             return
 
         sender_name = self._render_sender_name(message)
         for handler in self._reply_handlers:
             try:
-                await handler(topic_id, text, reply_to_tg_id, sender_name)
+                await handler(topic_id, text, reply_to_tg_id, sender_name, media_path, media_type)
             except Exception as e:
                 logger.error("reply handler error: %s", e)
 
@@ -227,10 +307,15 @@ class TelegramAdapter:
             await self._dispatch_incoming_message(message)
 
     async def _handle_command(self, message: Message):
-        cmd = message.text.split()[0].lower()
-        if cmd == "/status":
-            await message.reply("✅ Bridge работает")
-        elif cmd == "/reauth":
+        cmd = message.text.split()[0].lstrip("/").lower()
+        if cmd in self._command_handlers:
+            try:
+                reply_text = await self._command_handlers[cmd]()
+                await message.reply(reply_text)
+            except Exception as e:
+                logger.error("Command handler /%s error: %s", cmd, e)
+                await message.reply("⚠️ Ошибка при выполнении команды")
+        elif cmd == "reauth":
             await message.reply(
                 "⚠️ Для повторной авторизации MAX:\n"
                 "Перезапусти bridge и введи новый SMS код."

@@ -28,7 +28,8 @@ class DummyMax:
     async def resolve_user_name(self, user_id: str):
         return None
 
-    async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None):
+    async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None,
+                           media_path=None, media_type=None):
         self.sent = (chat_id, text, reply_to_msg_id)
         return "mx-out-1"
 
@@ -39,6 +40,9 @@ class DummyTelegram:
 
     def on_reply(self, handler):
         self.handler = handler
+
+    def on_command(self, cmd: str, handler):
+        pass
 
     async def send_photo(self, topic_id, path, caption=""):
         self.calls.append(("photo", caption))

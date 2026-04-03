@@ -76,19 +76,30 @@ def _infer_location(hostname: str) -> str | None:
     return None
 
 
-def build_startup_notification() -> str:
+async def build_startup_notification(repo: Repository) -> str:
     hostname = socket.gethostname()
     location = _infer_location(hostname)
     masked_ip = _mask_ip(_detect_primary_ipv4())
     runtime = "Docker" if Path("/.dockerenv").exists() else "Local"
 
-    lines = ["✅ MAX Bridge запущен и подключён к MAX"]
-    details = [f"runtime: {runtime}", f"host: {hostname}"]
+    try:
+        bindings = await repo.list_bindings()
+        total_chats = len(bindings)
+        active_chats = sum(1 for b in bindings if b.mode == "active")
+        chats_info = f"Чатов: {total_chats} (активных: {active_chats})"
+    except Exception:
+        chats_info = ""
+
+    lines = ["🚀 Maxgram запущен и подключён к MAX"]
+    infra = [f"runtime: {runtime}", f"host: {hostname}"]
     if location:
-        details.append(f"location: {location}")
+        infra.append(f"location: {location}")
     if masked_ip:
-        details.append(f"ip: {masked_ip}")
-    lines.append(" · ".join(details))
+        infra.append(f"ip: {masked_ip}")
+    lines.append(" · ".join(infra))
+    if chats_info:
+        lines.append(chats_info)
+    lines.append("Отправьте /status для подробного отчёта")
     return "\n".join(lines)
 
 
@@ -122,6 +133,7 @@ async def main():
         bot_token=cfg.telegram.bot_token,
         owner_id=cfg.telegram.owner_id,
         forum_group_id=cfg.telegram.forum_group_id,
+        tmp_dir=str(cfg.storage.tmp_dir),
     )
 
     # Bridge Core — связывает адаптеры
@@ -136,7 +148,7 @@ async def main():
             logger.info("MAX reconnected (skip duplicate notifications)")
             return
         _started_once = True
-        await tg_adapter.send_notification(build_startup_notification())
+        await tg_adapter.send_notification(await build_startup_notification(repo))
 
     max_adapter.on_start(on_max_ready)
 
@@ -160,6 +172,12 @@ async def main():
 
         # Cleanup: фоновый
         tg.create_task(bridge.run_cleanup(), name="cleanup")
+
+        # MAX watchdog: alert если MAX offline > 60s
+        tg.create_task(bridge.run_max_watchdog(), name="max_watchdog")
+
+        # Periodic status: отчёт каждые 4 часа
+        tg.create_task(bridge.run_periodic_status(), name="periodic_status")
 
 
 if __name__ == "__main__":

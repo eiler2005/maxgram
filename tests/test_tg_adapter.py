@@ -27,6 +27,11 @@ def _make_message(*, user_id: int, group_id: int, text: str, topic_id: int = 100
         message_thread_id=topic_id,
         reply_to_message=reply_to,
         reply=None,
+        photo=None,
+        video=None,
+        audio=None,
+        voice=None,
+        document=None,
     )
 
 
@@ -35,7 +40,7 @@ async def test_dispatch_incoming_message_accepts_non_owner_group_member():
     adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
     calls = []
 
-    async def handler(topic_id, text, reply_to_tg_id, sender_name):
+    async def handler(topic_id, text, reply_to_tg_id, sender_name, media_path=None, media_type=None):
         calls.append((topic_id, text, reply_to_tg_id, sender_name))
 
     adapter.on_reply(handler)

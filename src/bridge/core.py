@@ -34,9 +34,21 @@ class BridgeCore:
         self._max = max_adapter
         self._tg = tg_adapter
 
+        # Счётчики в памяти (накопительные с запуска)
+        self._stats = {
+            "start_time": time.time(),
+            "inbound_text": 0,
+            "inbound_media": 0,
+            "outbound_text": 0,
+            "outbound_media": 0,
+            "failed_inbound": 0,
+            "failed_outbound": 0,
+        }
+
         # Регистрируем обработчики
         self._max.on_message(self._on_max_message)
         self._tg.on_reply(self._on_tg_reply)
+        self._tg.on_command("status", self._build_status_message)
 
     # ── MAX → Telegram ────────────────────────────────────────────────────
 
@@ -97,9 +109,14 @@ class BridgeCore:
                 created_at=int(time.time()),
             ))
             await self._repo.log_delivery(msg.msg_id, msg.chat_id, "inbound", "delivered")
+            if msg.attachments:
+                self._stats["inbound_media"] += 1
+            else:
+                self._stats["inbound_text"] += 1
         else:
             await self._repo.log_delivery(msg.msg_id, msg.chat_id, "inbound", "failed",
                                           "tg_send_failed")
+            self._stats["failed_inbound"] += 1
 
     async def _get_or_create_topic(self, msg: MaxMessage) -> Optional[int]:
         """Вернуть существующий topic_id или создать новый.
@@ -291,7 +308,9 @@ class BridgeCore:
 
     async def _on_tg_reply(self, topic_id: int, text: str,
                            reply_to_tg_msg_id: Optional[int],
-                           sender_name: Optional[str]):
+                           sender_name: Optional[str],
+                           media_path: Optional[str] = None,
+                           media_type: Optional[str] = None):
         """Reply из Telegram → отправляем в MAX."""
 
         binding = await self._repo.get_binding_by_topic(topic_id)
@@ -319,10 +338,20 @@ class BridgeCore:
             chat_id=binding.max_chat_id,
             text=outbound_text,
             reply_to_msg_id=reply_to_max_id,
+            media_path=media_path,
+            media_type=media_type,
         )
+
+        # Удаляем скачанный TG-файл после отправки
+        if media_path:
+            try:
+                Path(media_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
         if sent_id is None:
             await self._tg.send_text(topic_id, "❌ Не удалось отправить сообщение в MAX")
+            self._stats["failed_outbound"] += 1
             return
 
         await self._repo.save_message(MessageRecord(
@@ -334,7 +363,89 @@ class BridgeCore:
             created_at=int(time.time()),
         ))
         await self._repo.log_delivery(sent_id, binding.max_chat_id, "outbound", "delivered")
+        if media_path:
+            self._stats["outbound_media"] += 1
+        else:
+            self._stats["outbound_text"] += 1
         logger.info("Outbound sent chat_id=%s max_msg_id=%s", binding.max_chat_id, sent_id)
+
+    # ── Status report ─────────────────────────────────────────────────────
+
+    async def _build_status_message(self, period_hours: int = 4) -> str:
+        """Сформировать текстовый статусный отчёт за period_hours часов."""
+        since = int(time.time()) - period_hours * 3600
+
+        msgs = await self._repo.count_messages_since(since)
+        deliveries = await self._repo.count_deliveries_since(since)
+        chat_activity = await self._repo.get_chat_activity_since(since, limit=10)
+        all_bindings = await self._repo.list_bindings()
+
+        # Uptime
+        uptime_sec = int(time.time() - self._stats["start_time"])
+        h, m = divmod(uptime_sec // 60, 60)
+        uptime_str = f"{h}ч {m}м" if h else f"{m}м"
+
+        # Соединения
+        max_ok = "✅" if self._max.is_ready() else "❌"
+        tg_ok = "✅"  # если мы дошли до /status — TG работает
+
+        # Сообщения за период
+        inbound_total = msgs.get("inbound", 0)
+        outbound_total = msgs.get("outbound", 0)
+        inbound_media = self._stats["inbound_media"]
+        outbound_media = self._stats["outbound_media"]
+        failed_in = self._stats["failed_inbound"]
+        failed_out = self._stats["failed_outbound"]
+        errors_total = failed_in + failed_out
+
+        # Чаты
+        total_chats = len(all_bindings)
+        active_chats = sum(1 for b in all_bindings if b.mode == "active")
+
+        lines = [
+            f"📊 Bridge Status  ·  uptime: {uptime_str}",
+            f"Период: последние {period_hours}ч",
+            "",
+            "🔗 Соединение",
+            f"  MAX → Telegram  {max_ok}",
+            f"  Telegram → MAX  {tg_ok}",
+            "",
+            f"📨 Сообщения (за {period_hours}ч)",
+            f"  Входящих  (MAX→TG): {inbound_total}"
+            + (f"  (медиа: {inbound_media})" if inbound_media else ""),
+            f"  Исходящих (TG→MAX): {outbound_total}"
+            + (f"  (медиа: {outbound_media})" if outbound_media else ""),
+        ]
+        if errors_total:
+            lines.append(f"  ⚠️ Ошибок доставки: {errors_total}"
+                         f"  (↓{failed_in} ↑{failed_out})")
+        else:
+            lines.append("  Ошибок: 0")
+
+        if chat_activity:
+            lines += ["", "💬 Активные чаты"]
+            for c in chat_activity:
+                title = (c["title"] or "—")[:30]
+                lines.append(f"  {title:<32} ↓{c['inbound']}  ↑{c['outbound']}")
+
+        lines += [
+            "",
+            f"🗂 Всего чатов: {total_chats}  (активных: {active_chats})",
+        ]
+
+        return "\n".join(lines)
+
+    async def run_periodic_status(self, interval_hours: int = 4):
+        """Автоматически отправлять статусный отчёт каждые interval_hours часов."""
+        await asyncio.sleep(interval_hours * 3600)
+        while True:
+            try:
+                text = await self._build_status_message(interval_hours)
+                await self._tg.send_notification(text)
+                logger.info("Periodic status sent")
+            except Exception as e:
+                logger.error("Periodic status error: %s", e)
+            await asyncio.sleep(interval_hours * 3600)
 
     # ── Startup tasks ─────────────────────────────────────────────────────
 
@@ -354,6 +465,44 @@ class BridgeCore:
                             binding.max_chat_id, binding.title, name)
             else:
                 logger.debug("Could not resolve name for chat_id=%s", binding.max_chat_id)
+
+    # ── MAX watchdog ──────────────────────────────────────────────────────
+
+    async def run_max_watchdog(self,
+                               alert_after_seconds: int = 60,
+                               check_interval: int = 10):
+        """Фоновая задача: следит за доступностью MAX.
+
+        Если MAX недоступен дольше alert_after_seconds — отправляет уведомление
+        владельцу. Повторное уведомление — только после восстановления и новой потери.
+        """
+        disconnected_since: Optional[float] = None
+        alert_sent = False
+
+        while True:
+            await asyncio.sleep(check_interval)
+
+            if self._max.is_ready():
+                if alert_sent:
+                    downtime = int(time.time() - disconnected_since)
+                    await self._tg.send_notification(
+                        f"✅ MAX восстановлен (простой ~{downtime}с)"
+                    )
+                    logger.info("MAX reconnected after %ds downtime", downtime)
+                disconnected_since = None
+                alert_sent = False
+            else:
+                if disconnected_since is None:
+                    disconnected_since = time.time()
+                    logger.warning("MAX watchdog: connection lost, timer started")
+
+                elapsed = time.time() - disconnected_since
+                if not alert_sent and elapsed >= alert_after_seconds:
+                    logger.error("MAX offline for %ds — sending alert", int(elapsed))
+                    await self._tg.send_notification(
+                        f"⚠️ MAX недоступен уже {int(elapsed)}с — идёт переподключение"
+                    )
+                    alert_sent = True
 
     # ── Cleanup ───────────────────────────────────────────────────────────
 
