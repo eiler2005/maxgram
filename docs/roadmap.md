@@ -72,6 +72,8 @@
 - [ ] **Длинные сообщения** — разбивать >4096 символов на части
 - [ ] **Нативные voice note bubbles** — голосовые как `send_voice` вместо обычного аудио
 - [ ] **Missed messages gap** — уведомление о пропущенных сообщениях за время downtime
+- [ ] **Унификация типов MAX-вложений** — ввести единый normalizer для alias-типов (`IMAGE`, `VOICE`, `DOCUMENT`, `DOC` и т.п.), чтобы один и тот же mapping использовался и в верхнем dispatch, и в download pipeline
+- [ ] **Пост-валидация скачанных вложений** — после download проверять `Content-Type` и сигнатуру файла, чтобы HTML/player fallback не уходил в Telegram как медиафайл
 - [ ] **Расширение тест-сьюта** — retry-логика, stat counters, `_build_status_message`
 
 ---
@@ -93,6 +95,8 @@
 |--------|-----------|
 | Тесты для retry-логики `_tg_retry` | Medium |
 | Тесты для `_build_status_message` | Medium |
+| Единый normalizer MAX attachment type aliases | Medium |
+| Валидация скачанного файла (`Content-Type` / magic bytes) перед отправкой в Telegram | Medium |
 | Per-chat управление из TG | Medium |
 | `/chats` команда | Low |
 | Обработка файлов >50MB (явное уведомление) | Low |

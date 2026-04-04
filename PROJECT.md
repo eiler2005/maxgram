@@ -190,6 +190,10 @@ Fallback rename:
 - **Неподдерживаемые типы:** placeholder `[Неподдерживаемый тип: {type}]`
 - TTL файлов: 1 час (auto-cleanup каждые 30 минут)
 
+Плановая доработка media-pipeline:
+- унифицировать normalizer типов MAX-вложений, чтобы alias-типы вроде `IMAGE`, `VOICE`, `DOCUMENT`, `DOC` обрабатывались тем же mapping, что и базовые `PHOTO`, `AUDIO`, `FILE`
+- добавить post-download валидацию (`Content-Type`, сигнатура файла), чтобы HTML/player fallback не отправлялся в Telegram как документ или медиа
+
 ### Системные сообщения
 
 - **ControlAttach:** `add`, `leave`, `remove`, `new` и похожие события рендерятся в человекочитаемый текст
