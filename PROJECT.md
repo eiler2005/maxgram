@@ -245,7 +245,7 @@ for _ in range(3):
 - `tests/test_max_adapter.py` — системные MAX события, supported attachments, echo/ack исходящих
 - `tests/test_bridge_core.py` — пересылка media и rendered text в Telegram
 - `tests/test_tg_adapter.py` — приём сообщений от участников группы и command filtering
-- `tests/test_main.py` — startup notification с runtime/location/masked IP
+- `tests/test_main.py` — startup notification с runtime/location/masked IP и статусом startup `pytest`
 - `tests/test_repository.py` — upsert `message_map` и сохранность MAX ↔ TG маппинга
 
 Запуск:

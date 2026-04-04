@@ -4,6 +4,20 @@ All notable changes to Maxgram are documented here.
 
 ---
 
+## [1.1.1] — 2026-04-04
+
+### Changed
+- **Production runtime upgraded to Python 3.13** — production Docker image now uses `python:3.13-slim` because `pymax` socket connections were unstable on Python 3.12
+- **Production restart policy hardened** — `docker-compose.prod.yml` now uses `restart: always`, so the bridge container is recreated automatically after a VM reboot
+- **Startup notification now includes self-check status** — after the first successful `MAX connected`, the bridge runs the local regression suite inside the container and appends the `pytest` summary to the Telegram startup message
+
+### Tests
+- Added startup-notification coverage for embedded startup test status
+- Added parser coverage for `pytest` terminal summary extraction
+- All 19 tests pass
+
+---
+
 ## [1.1.0] — 2026-04-03
 
 ### Added

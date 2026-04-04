@@ -211,6 +211,7 @@ docker run --rm -it \
 - `sudo fail2ban-client status sshd`
 - `docker ps`
 - `docker compose --env-file .env.host -f deploy/docker-compose.prod.yml logs --tail=100`
+- startup-лог содержит `MAX connected`, затем `Running startup tests`, затем `Startup tests passed: ...`
 - входящее MAX -> Telegram
 - reply Telegram -> MAX
 - медиа MAX -> Telegram

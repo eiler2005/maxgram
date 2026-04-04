@@ -43,14 +43,16 @@
 - [x] **Уведомление при потере MAX** — watchdog: alert если MAX недоступен > 60 секунд
 - [x] **Периодический статус-отчёт** — автоматически каждые 4 часа без команды
 - [x] **Расширенный startup** — runtime, hostname, datacenter location, masked IP, кол-во чатов
+- [x] **Startup self-check в production** — после `MAX connected` запускается `pytest`, а итог добавляется в startup-уведомление бота
 - [x] **Media forwarding TG→MAX** — фото, видео, аудио, голосовые, документы через pymax attachment API
 - [x] **sender_name из live API** — `get_cached_user` + live `get_users()` fallback; имена в группах работают
 - [x] **Own-message echo dedup** — реальный `max_msg_id` сохраняется перед отправкой; эхо подавляется
 - [x] **`/status` в личном чате** — команды принимаются от владельца и в форум-группе, и в DM с ботом
-- [x] **17 regression-тестов** — все проходят; описание: `docs/tests.md`
+- [x] **19 regression-тестов** — все проходят; описание: `docs/tests.md`
 
 ### Phase 3: Cloud Migration ✅
 - [x] Dockerfile + docker-compose.prod.yml
+- [x] Production runtime: Python 3.13 + `restart: always`
 - [x] Hetzner Cloud (CX23, hel1): UFW, fail2ban, non-root контейнер, `cap_drop: ALL`
 - [x] SSH-only доступ по ключу, restricted by IP
 - [x] `unattended-upgrades`, backups enabled

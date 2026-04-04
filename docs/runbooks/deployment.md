@@ -65,6 +65,8 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml logs -f
 - конфиги монтируются read-only
 - контейнер запускается non-root
 - включены `no-new-privileges` и `cap_drop: [ALL]`
+- включён `restart: always`, чтобы контейнер поднимался после reboot VM
+- после первого `MAX connected` запускается встроенный `pytest` self-check; итог попадает в startup-уведомление бота
 
 После ручной проверки MAX <-> Telegram можно быстро посмотреть последние служебные метаданные:
 

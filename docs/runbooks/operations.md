@@ -67,6 +67,7 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 
 - контейнер `bridge` в статусе `Up`
 - в логах есть `MAX connected`
+- в свежем startup-логе есть `Running startup tests` и затем `Startup tests passed: ...`
 - нет непрерывных ошибок `TelegramConflictError`
 - в `message_map` и `delivery_log` появляются свежие записи
 
@@ -76,6 +77,8 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 - Если домашний IP изменится, нужно будет обновить правило и в Hetzner Firewall, и в `UFW`.
 - Cloud Firewall я не менял через API, потому что для этого нужен отдельный Hetzner API token.
 - Поэтому в панели Hetzner отдельно проверь, что там нет широких правил `Any IPv4` / `Any IPv6`, а только `22/tcp` с твоего IP.
+- В production у контейнера `restart: always`, поэтому после обычного `reboot` VM bridge должен подняться сам.
+- Если сделать `docker compose down`, контейнер будет удалён; после reboot VM он уже не восстановится сам, пока не выполнить `docker compose ... up -d`.
 
 ## Запуск / Остановка
 
@@ -225,6 +228,7 @@ asyncio.run(main())
 3. Проверить delivery_log в DB (см. выше)
 4. Если `SSL: TLSV1_ALERT_RECORD_OVERFLOW` → убедиться что используется `send_fake_telemetry=False`
 5. Если `dialogs=NNN` растёт (>12 при каждом reconnect) → убедиться что `reconnect=False`
+6. Если после reboot VM кажется, что bridge "не поднялся" → проверить `docker compose ps` и startup-лог; в production сначала должны появиться `MAX connected`, потом `Running startup tests`, потом `Startup tests passed: ...`
 
 ## Проблема: "❌ Не удалось отправить сообщение в MAX"
 

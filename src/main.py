@@ -11,6 +11,7 @@ import logging
 import os
 import socket
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 # Добавляем корень проекта в path (для запуска из разных директорий)
@@ -22,6 +23,12 @@ from src.db.repository import Repository
 from src.adapters.max_adapter import MaxAdapter
 from src.adapters.tg_adapter import TelegramAdapter
 from src.bridge.core import BridgeCore
+
+
+@dataclass(frozen=True)
+class StartupTestReport:
+    status: str
+    summary: str
 
 
 def setup_logging():
@@ -76,7 +83,95 @@ def _infer_location(hostname: str) -> str | None:
     return None
 
 
-async def build_startup_notification(repo: Repository) -> str:
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _extract_pytest_summary(output: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return "pytest finished without output"
+
+    for line in reversed(lines):
+        if " in " not in line:
+            continue
+        if any(token in line for token in ("passed", "failed", "error", "errors", "skipped", "xfailed", "xpassed")):
+            return line
+
+    return lines[-1]
+
+
+def _format_startup_tests_line(report: StartupTestReport) -> str:
+    if report.status == "passed":
+        return f"Тесты запуска: ✅ {report.summary}"
+    if report.status == "failed":
+        return f"Тесты запуска: ❌ {report.summary}"
+    if report.status == "timeout":
+        return f"Тесты запуска: ⏱️ {report.summary}"
+    if report.status == "skipped":
+        return f"Тесты запуска: ⚪ {report.summary}"
+    return f"Тесты запуска: ⚠️ {report.summary}"
+
+
+async def run_startup_tests(logger: logging.Logger) -> StartupTestReport:
+    if not _env_flag("STARTUP_TESTS_ENABLED", default=False):
+        return StartupTestReport(status="skipped", summary="отключены")
+
+    try:
+        timeout = max(1, int(os.environ.get("STARTUP_TESTS_TIMEOUT_SECONDS", "120")))
+    except ValueError:
+        timeout = 120
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--maxfail=1",
+        "-p",
+        "no:cacheprovider",
+    ]
+    env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+
+    logger.info("Running startup tests: %s", " ".join(cmd))
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(ROOT),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except Exception as e:
+        logger.error("Could not launch startup tests: %s", e, exc_info=True)
+        return StartupTestReport(status="error", summary=f"не удалось запустить pytest: {e}")
+
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        logger.error("Startup tests timed out after %ss", timeout)
+        return StartupTestReport(status="timeout", summary=f"таймаут после {timeout}с")
+
+    output = stdout.decode("utf-8", errors="replace")
+    summary = _extract_pytest_summary(output)
+
+    if proc.returncode == 0:
+        logger.info("Startup tests passed: %s", summary)
+        return StartupTestReport(status="passed", summary=summary)
+
+    logger.error("Startup tests failed: %s\n%s", summary, output)
+    return StartupTestReport(status="failed", summary=summary)
+
+
+async def build_startup_notification(repo: Repository,
+                                     startup_tests: StartupTestReport | None = None) -> str:
     hostname = socket.gethostname()
     location = _infer_location(hostname)
     masked_ip = _mask_ip(_detect_primary_ipv4())
@@ -99,6 +194,8 @@ async def build_startup_notification(repo: Repository) -> str:
     lines.append(" · ".join(infra))
     if chats_info:
         lines.append(chats_info)
+    if startup_tests is not None:
+        lines.append(_format_startup_tests_line(startup_tests))
     lines.append("Отправьте /status для подробного отчёта")
     return "\n".join(lines)
 
@@ -148,7 +245,10 @@ async def main():
             logger.info("MAX reconnected (skip duplicate notifications)")
             return
         _started_once = True
-        await tg_adapter.send_notification(await build_startup_notification(repo))
+        startup_tests = await run_startup_tests(logger)
+        await tg_adapter.send_notification(
+            await build_startup_notification(repo, startup_tests=startup_tests)
+        )
 
     max_adapter.on_start(on_max_ready)
 

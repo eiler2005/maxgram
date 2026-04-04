@@ -17,7 +17,7 @@
 
 ## Решение
 
-**Python 3.12+, asyncio, aiogram, maxapi-python, aiosqlite, SQLite.**
+**Python 3.13+, asyncio, aiogram, maxapi-python, aiosqlite, SQLite.**
 
 ## Обоснование
 

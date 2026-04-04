@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+# pymax warns that Python 3.12 socket connections may be unstable in production.
+FROM python:3.13-slim
 
 WORKDIR /app
 
@@ -6,12 +7,14 @@ WORKDIR /app
 RUN groupadd --system --gid 10001 app && \
     useradd --system --uid 10001 --gid app --create-home --home-dir /home/app app
 
-# Зависимости отдельным слоем — кешируются при неизменном requirements.txt
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Зависимости отдельным слоем — кешируются при неизменном requirements*.txt
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements-dev.txt
 
 # Исходники
 COPY src/ ./src/
+COPY tests/ ./tests/
+COPY pytest.ini .
 COPY config.yaml .
 COPY spike/ ./spike/
 

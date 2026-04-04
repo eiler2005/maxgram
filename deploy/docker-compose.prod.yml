@@ -11,8 +11,10 @@ services:
       CONFIG_LOCAL_PATH: /app/config.local.yaml
       DATA_DIR: /app/data
       PYTHONUNBUFFERED: "1"
+      STARTUP_TESTS_ENABLED: "1"
+      STARTUP_TESTS_TIMEOUT_SECONDS: "120"
     user: "${APP_UID:-1000}:${APP_GID:-1000}"
-    restart: unless-stopped
+    restart: always
     stop_grace_period: 30s
     read_only: true
     tmpfs:
@@ -28,4 +30,3 @@ services:
       - ../config.yaml:/app/config.yaml:ro
       - ../config.local.yaml:/app/config.local.yaml:ro
     # Bridge не принимает входящие подключения; порты наружу не публикуем.
-

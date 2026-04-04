@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Messenger](https://img.shields.io/badge/Messenger-MAX-orange)](https://max.ru)
 [![Bot](https://img.shields.io/badge/Bot-Telegram-2CA5E0)](https://core.telegram.org/bots)
-[![Python](https://img.shields.io/badge/Python-3.12%2B-blue)](https://www.python.org)
+[![Python](https://img.shields.io/badge/Python-3.13%2B-blue)](https://www.python.org)
 [![Status](https://img.shields.io/badge/Status-Active-brightgreen)](https://github.com/eiler2005/maxgram)
 
 > *Your chats route themselves. Silently.*
@@ -62,6 +62,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Periodic 4-hour status report — automatic delivery stats sent to owner
 - MAX offline watchdog — alert if MAX unreachable > 60 seconds
 - Telegram API retry with exponential backoff (3 attempts, respects `Retry-After`)
+- Startup self-check in production — after boot, the bot notification includes `pytest` result summary
 
 ---
 
@@ -90,7 +91,7 @@ Details: [docs/architecture.md](docs/architecture.md)
 | Telegram bot | `aiogram` 3.x |
 | Database | SQLite + `aiosqlite` |
 | Config | YAML + `python-dotenv` |
-| Runtime | Python 3.12+, `asyncio` |
+| Runtime | Python 3.13+, `asyncio` |
 | Deployment | Docker Compose / Hetzner Cloud |
 
 ---
@@ -99,16 +100,17 @@ Details: [docs/architecture.md](docs/architecture.md)
 
 Bridge is running in production on **Hetzner Cloud**.
 
-- Runtime: Docker Compose (non-root container, `cap_drop: ALL`)
+- Runtime: Docker Compose (non-root container, `cap_drop: ALL`, `restart: always`)
 - State: SQLite + MAX session in a bind-mounted `data/` directory
 - Access: SSH key only, restricted by IP via UFW
 - Security: `fail2ban`, `unattended-upgrades`, no public HTTP ports
+- Boot signal: startup notification in Telegram includes runtime/host info plus startup `pytest` summary
 
 ---
 
 ## Quick Start
 
-**Requirements:** Python 3.12+, Telegram bot ([@BotFather](https://t.me/BotFather)), Forum Supergroup with Topics enabled, MAX account.
+**Requirements:** Python 3.13+, Telegram bot ([@BotFather](https://t.me/BotFather)), Forum Supergroup with Topics enabled, MAX account.
 
 ```bash
 # 1. Dependencies

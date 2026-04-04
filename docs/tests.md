@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 python -m pytest -v
 ```
 
-Всего: **17 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **19 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -27,7 +27,7 @@ python -m pytest -v
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (6 тестов)
+## test_max_adapter.py — парсинг сырых сообщений MAX (7 тестов)
 
 ### Системные события (CONTROL)
 
@@ -65,13 +65,15 @@ python -m pytest -v
 
 ---
 
-## test_main.py — точка входа (3 теста)
+## test_main.py — точка входа (5 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_mask_ip_hides_third_octet` | `_mask_ip("204.168.239.217")` → `"204.168.*.217"` (третий октет заменяется `*`). |
 | `test_infer_location_from_hetzner_hostname` | `_infer_location("ubuntu-4gb-hel1-6")` → `"Helsinki"` (из маппинга токенов имён датацентров). |
+| `test_extract_pytest_summary_uses_terminal_summary` | Из stdout `pytest` извлекается итоговая строка вида `"19 passed in 1.65s"` для последующего включения в startup-уведомление. |
 | `test_build_startup_notification_includes_runtime_details` | Стартовое уведомление содержит `"Maxgram запущен и подключён к MAX"`, `runtime: Docker`, hostname, `location: Helsinki`, masked IP. Использует `monkeypatch` для `socket.gethostname`, `Path.exists`, `_detect_primary_ipv4`. |
+| `test_build_startup_notification_includes_startup_test_status` | В startup-уведомление добавляется строка вида `"Тесты запуска: ✅ 19 passed in 1.65s"`, если production self-check завершился успешно. |
 
 ---
 
