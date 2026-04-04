@@ -4,6 +4,20 @@ All notable changes to Maxgram are documented here.
 
 ---
 
+## [1.1.2] — 2026-04-04
+
+### Fixed
+- **MAX→Telegram video forwarding hardened** — `VIDEO_PLAY` payloads may contain both an HTML player URL (`EXTERNAL`) and one or more real media URLs (`MP4_*`). The bridge now prefers downloadable media variants over the external player page, so videos no longer arrive in Telegram as `.html` documents.
+- **MAX CDN user-agent handling** — signed `okcdn` video URLs now use a user-agent that matches the `srcAg` query parameter (`CHROME` vs mobile Safari), which fixes `400 Bad Request` responses on valid MAX video links.
+- **Temporary media download directory creation** — `_download_from_url()` now creates the temp directory before writing the downloaded file, avoiding false download failures on a clean runtime.
+
+### Tests
+- Added coverage for preferring `MP4_*` URLs over `EXTERNAL` HTML player links
+- Added coverage for adaptive CDN user-agent selection based on `srcAg`
+- All 27 tests pass
+
+---
+
 ## [1.1.1] — 2026-04-04
 
 ### Changed

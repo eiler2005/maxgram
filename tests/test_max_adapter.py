@@ -1,9 +1,14 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
 
-from src.adapters.max_adapter import MaxAdapter
+from src.adapters.max_adapter import (
+    MAX_CDN_CHROME_USER_AGENT,
+    MAX_CDN_USER_AGENT,
+    MaxAdapter,
+)
 
 
 def make_user(first_name: str, last_name: str = ""):
@@ -218,3 +223,231 @@ async def test_own_echo_is_suppressed_when_send_message_returns_real_id(tmp_path
     )
 
     assert received == []
+
+
+class FakeSocketNotConnectedError(Exception):
+    pass
+
+
+class PingClient:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.is_connected = True
+        self.close_calls = 0
+        self.send_calls = 0
+        self.logger = logging.getLogger(f"tests.max_adapter.ping.{id(self)}")
+
+    async def _send_and_wait(self, **kwargs):
+        self.send_calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if not self.outcomes:
+            self.is_connected = False
+        return outcome
+
+    async def close(self):
+        self.close_calls += 1
+        self.is_connected = False
+
+
+@pytest.mark.asyncio
+async def test_failfast_ping_closes_client_after_consecutive_failures(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    client = PingClient([RuntimeError("boom"), RuntimeError("boom"), RuntimeError("boom")])
+
+    ping_loop = adapter._build_failfast_interactive_ping(
+        client,
+        ping_interval=0,
+        failure_limit=3,
+        ping_opcode=object(),
+        disconnect_error=FakeSocketNotConnectedError,
+    )
+
+    await ping_loop()
+
+    assert client.send_calls == 3
+    assert client.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failfast_ping_resets_failure_counter_after_success(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    client = PingClient(
+        [
+            RuntimeError("boom"),
+            {"ok": True},
+            RuntimeError("boom"),
+            FakeSocketNotConnectedError(),
+        ]
+    )
+
+    ping_loop = adapter._build_failfast_interactive_ping(
+        client,
+        ping_interval=0,
+        failure_limit=2,
+        ping_opcode=object(),
+        disconnect_error=FakeSocketNotConnectedError,
+    )
+
+    await ping_loop()
+
+    assert client.send_calls == 4
+    assert client.close_calls == 0
+
+
+class VideoPlayClient(LookupClient):
+    def __init__(self, payload):
+        super().__init__()
+        self.payload = payload
+        self.last_request = None
+
+    async def _send_and_wait(self, **kwargs):
+        self.last_request = kwargs
+        return {"payload": self.payload}
+
+
+def test_extract_video_url_prefers_stream_over_thumbnail(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    payload = {
+        "EXTERNAL": False,
+        "cache": True,
+        "preview": {
+            "thumbnail": "https://cdn.example.com/thumb.jpg",
+        },
+        "streams": {
+            "360": "https://cdn.example.com/clip-360.mp4",
+            "720": "https://cdn.example.com/clip-720.mp4",
+        },
+    }
+
+    assert adapter._extract_video_url(payload) == "https://cdn.example.com/clip-360.mp4"
+
+
+def test_extract_video_url_prefers_mp4_variant_over_external_page(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    payload = {
+        "cache": True,
+        "EXTERNAL": "https://m.ok.ru/video/13208513634267",
+        "MP4_720": "https://maxvd677.okcdn.ru/?expires=1&srcIp=204.168.239.217&type=3&id=13644091493083",
+    }
+
+    assert adapter._extract_video_url(payload) == "https://maxvd677.okcdn.ru/?expires=1&srcIp=204.168.239.217&type=3&id=13644091493083"
+
+
+def test_download_headers_for_url_uses_chrome_user_agent_for_chrome_signed_url(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    headers = adapter._download_headers_for_url(
+        "https://maxvd677.okcdn.ru/?expires=1&srcAg=CHROME&id=13644091493083"
+    )
+
+    assert headers == {"User-Agent": MAX_CDN_CHROME_USER_AGENT}
+
+
+def test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    headers = adapter._download_headers_for_url(
+        "https://maxvd204.okcdn.ru/?expires=1&srcAg=SAFARI_IPHONE_OTHER&id=13636639132379"
+    )
+
+    assert headers == {"User-Agent": MAX_CDN_USER_AGENT}
+
+
+@pytest.mark.asyncio
+async def test_download_video_by_id_uses_raw_video_play_payload(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = VideoPlayClient(
+        {
+            "EXTERNAL": False,
+            "cache": True,
+            "preview": {
+                "thumbnail": "https://cdn.example.com/thumb.jpg",
+            },
+            "url": {
+                "source": "https://cdn.example.com/video.mp4",
+            },
+        }
+    )
+
+    captured = {}
+
+    async def fake_download(url: str, prefix: str, filename_hint=None, default_extension=""):
+        captured["url"] = url
+        captured["prefix"] = prefix
+        captured["filename_hint"] = filename_hint
+        captured["default_extension"] = default_extension
+        return ("/tmp/video.mp4", "video.mp4")
+
+    adapter._download_from_url = fake_download
+
+    local_path, filename = await adapter._download_video_by_id(
+        "123456789",
+        "987654321",
+        555,
+        "video_123456789_987654321",
+        "clip.mp4",
+    )
+
+    assert (local_path, filename) == ("/tmp/video.mp4", "video.mp4")
+    assert captured == {
+        "url": "https://cdn.example.com/video.mp4",
+        "prefix": "video_123456789_987654321",
+        "filename_hint": "clip.mp4",
+        "default_extension": ".mp4",
+    }
+
+
+@pytest.mark.asyncio
+async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeypatch):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = {"Content-Type": "video/mp4"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def read(self):
+            return b"video-bytes"
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            captured["headers"] = kwargs.get("headers")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url):
+            captured["url"] = url
+            return FakeResponse()
+
+    monkeypatch.setattr("src.adapters.max_adapter.ClientSession", FakeSession)
+
+    local_path, filename = await adapter._download_from_url(
+        "https://cdn.example.com/video.mp4",
+        "video_test",
+        "clip.mp4",
+        ".mp4",
+    )
+
+    assert filename == "clip.mp4"
+    assert local_path is not None
+    assert captured == {
+        "headers": {"User-Agent": MAX_CDN_USER_AGENT},
+        "url": "https://cdn.example.com/video.mp4",
+    }

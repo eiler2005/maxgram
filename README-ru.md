@@ -40,6 +40,7 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Watchdog MAX** — уведомление, если MAX недоступен более 60 секунд
 - **Retry Telegram API** — 3 попытки с экспоненциальным backoff, поддержка `Retry-After`
 - **Startup self-check** — после старта в production бот пишет результат встроенного `pytest`-прогона
+- **Устойчивое скачивание MAX-видео** — bridge предпочитает реальные `MP4_*` потоки вместо `EXTERNAL` HTML-плеера и подбирает `User-Agent` по `srcAg`
 
 ---
 

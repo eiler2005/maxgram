@@ -18,10 +18,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Awaitable
 from urllib.parse import urlparse
+from urllib.parse import parse_qs
 
 from aiohttp import ClientSession
 
 logger = logging.getLogger(__name__)
+
+MAX_CDN_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 "
+    "Mobile/15E148 Safari/604.1"
+)
+MAX_CDN_CHROME_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Safari/537.36"
+)
 
 
 @dataclass
@@ -81,6 +93,7 @@ class MaxAdapter:
         self._own_id: Optional[str] = None  # ID нашего аккаунта в MAX
         self._pending_outbound_acks: list[PendingOutboundAck] = []
         self._expected_outbound_ids: dict[tuple[str, str], float] = {}
+        self._interactive_ping_failure_limit = 3
 
     def on_message(self, handler: MessageHandler):
         self._handlers.append(handler)
@@ -422,18 +435,96 @@ class MaxAdapter:
 
         return f"{stem}{suffix}" if suffix else stem
 
+    def _extract_video_url(self, value, *, key_hint: Optional[str] = None) -> Optional[str]:
+        """Найти реальный URL видео в сыром payload VIDEO_PLAY.
+
+        pymax разбирает VIDEO_PLAY довольно хрупко: берёт первое поле payload,
+        которое не EXTERNAL/cache. На практике сервер может вернуть вложенную
+        структуру или сначала preview/thumbnail. Здесь ищем лучший URL сами.
+        """
+        candidates: list[tuple[int, str]] = []
+
+        def score_url(url: str, key: Optional[str]) -> int:
+            score = 0
+            lowered_url = url.lower()
+            lowered_key = (key or "").lower()
+
+            if lowered_key in {"url", "src", "source"} or lowered_key.isdigit():
+                score += 4
+            if "video" in lowered_key or "stream" in lowered_key:
+                score += 3
+            if "mp4" in lowered_key or "m3u8" in lowered_key or "hls" in lowered_key:
+                score += 6
+            if any(resolution in lowered_key for resolution in ("144", "240", "360", "480", "720", "1080", "1440", "2160")):
+                score += 2
+            if any(ext in lowered_url for ext in (".mp4", ".mov", ".m4v", ".webm", ".m3u8")):
+                score += 5
+            if lowered_key == "external":
+                score -= 12
+            if any(marker in lowered_key for marker in ("thumbnail", "thumb", "preview")):
+                score -= 5
+            if "m.ok.ru/video/" in lowered_url or "ok.ru/video/" in lowered_url:
+                score -= 8
+            if any(ext in lowered_url for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                score -= 6
+
+            return score
+
+        def walk(node, key: Optional[str] = None):
+            if isinstance(node, str):
+                if node.startswith(("http://", "https://")):
+                    candidates.append((score_url(node, key), node))
+                return
+
+            if isinstance(node, dict):
+                for nested_key, nested_value in node.items():
+                    walk(nested_value, str(nested_key))
+                return
+
+            if isinstance(node, (list, tuple, set)):
+                for nested_value in node:
+                    walk(nested_value, key)
+                return
+
+            url_attr = getattr(node, "url", None)
+            if url_attr is not None and url_attr is not node:
+                walk(url_attr, "url")
+
+            if hasattr(node, "__dict__"):
+                walk(vars(node), key)
+
+        walk(value, key_hint)
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _download_headers_for_url(self, url: str) -> dict[str, str]:
+        src_ag = (
+            parse_qs(urlparse(url).query).get("srcAg", [None])[0]
+            if url else None
+        )
+        normalized = str(src_ag or "").upper()
+        if normalized == "CHROME":
+            user_agent = MAX_CDN_CHROME_USER_AGENT
+        else:
+            user_agent = MAX_CDN_USER_AGENT
+        return {"User-Agent": user_agent}
+
     async def _download_from_url(self, url: str, prefix: str,
                                  filename_hint: Optional[str] = None,
                                  default_extension: str = "") -> tuple[Optional[str], Optional[str]]:
         """Скачать файл по URL, вернуть (local_path, filename)."""
         try:
-            async with ClientSession() as session:
+            async with ClientSession(headers=self._download_headers_for_url(url)) as session:
                 async with session.get(url) as response:
                     response.raise_for_status()
                     content = await response.read()
                     content_type = response.headers.get("Content-Type", "").split(";")[0].strip() or None
 
             filename = self._build_filename(prefix, filename_hint, url, content_type, default_extension)
+            self._tmp_dir.mkdir(parents=True, exist_ok=True)
             local_path = self._tmp_dir / filename
             local_path.write_bytes(content)
             return str(local_path), filename
@@ -468,13 +559,22 @@ class MaxAdapter:
         if not self._client:
             return None, None
         try:
-            video_obj = await self._client.get_video_by_id(
+            from pymax.payloads import GetVideoPayload
+            from pymax.static.enum import Opcode
+
+            payload = GetVideoPayload(
                 chat_id=int(chat_id),
                 message_id=int(msg_id),
                 video_id=int(video_id),
-            )
-            url = getattr(video_obj, "url", None)
+            ).model_dump(by_alias=True)
+            data = await self._client._send_and_wait(opcode=Opcode.VIDEO_PLAY, payload=payload)
+            raw_payload = data.get("payload") if isinstance(data, dict) else None
+            url = self._extract_video_url(raw_payload)
             if not url:
+                logger.warning(
+                    "VIDEO_PLAY returned no downloadable URL chat_id=%s msg_id=%s video_id=%s payload=%r",
+                    chat_id, msg_id, video_id, raw_payload,
+                )
                 return None, None
             return await self._download_from_url(url, prefix, filename_hint, ".mp4")
         except Exception as e:
@@ -748,17 +848,101 @@ class MaxAdapter:
         except Exception as e:
             logger.error("_handle_raw_message error: %s", e, exc_info=True)
 
+    def _build_failfast_interactive_ping(self, client, *, ping_interval: float,
+                                         failure_limit: int, ping_opcode,
+                                         disconnect_error):
+        """Создать ping loop, который форсирует reconnect после серии ошибок.
+
+        Upstream pymax логирует `Interactive ping failed`, но сам reconnect не
+        инициирует. В результате сокет может висеть в полуживом состоянии
+        несколько минут и терять входящие события. Здесь после N подряд ошибок
+        мы закрываем клиента и отдаём управление нашему outer reconnect loop.
+        """
+        normalized_interval = max(0.0, float(ping_interval))
+        normalized_limit = max(1, int(failure_limit))
+
+        async def _send_interactive_ping() -> None:
+            consecutive_failures = 0
+
+            while getattr(client, "is_connected", False):
+                try:
+                    await client._send_and_wait(
+                        opcode=ping_opcode,
+                        payload={"interactive": True},
+                        cmd=0,
+                    )
+                    if consecutive_failures:
+                        client.logger.info(
+                            "Interactive ping recovered after %s failure(s)",
+                            consecutive_failures,
+                        )
+                    consecutive_failures = 0
+                    client.logger.debug("Interactive ping sent successfully")
+                except disconnect_error:
+                    client.logger.debug("Socket disconnected, exiting ping loop")
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    consecutive_failures += 1
+                    client.logger.warning(
+                        "Interactive ping failed (%s/%s): %s",
+                        consecutive_failures,
+                        normalized_limit,
+                        exc,
+                    )
+                    if consecutive_failures >= normalized_limit:
+                        client.logger.error(
+                            "Interactive ping failure limit reached (%s), forcing reconnect",
+                            normalized_limit,
+                        )
+                        try:
+                            await client.close()
+                        except Exception:
+                            client.logger.exception(
+                                "Failed to close MAX client after ping failure limit"
+                            )
+                        break
+
+                await asyncio.sleep(normalized_interval)
+
+        return _send_interactive_ping
+
+    def _install_failfast_interactive_ping(self, client):
+        try:
+            from pymax.exceptions import SocketNotConnectedError
+            from pymax.static.constant import DEFAULT_PING_INTERVAL
+            from pymax.static.enum import Opcode
+        except Exception as e:
+            logger.warning("Could not install fail-fast interactive ping loop: %s", e)
+            return client
+
+        client._send_interactive_ping = self._build_failfast_interactive_ping(
+            client,
+            ping_interval=DEFAULT_PING_INTERVAL,
+            failure_limit=self._interactive_ping_failure_limit,
+            ping_opcode=Opcode.PING,
+            disconnect_error=SocketNotConnectedError,
+        )
+        logger.debug(
+            "Installed fail-fast interactive ping loop failure_limit=%s interval=%ss",
+            self._interactive_ping_failure_limit,
+            DEFAULT_PING_INTERVAL,
+        )
+        return client
+
     async def _make_client(self):
         """Создать свежий SocketMaxClient (без накопленного кеша)."""
         from pymax import SocketMaxClient
         session_name = Path(self._session_name).stem
-        return SocketMaxClient(
+        client = SocketMaxClient(
             phone=self._phone,
             work_dir=self._data_dir,
             session_name=session_name,
             reconnect=False,              # управляем reconnect сами
             send_fake_telemetry=False,    # отключаем телеметрию — она вызывает SSL ошибки
         )
+        return self._install_failfast_interactive_ping(client)
 
     async def start(self):
         """Запустить клиент с собственным reconnect-циклом.

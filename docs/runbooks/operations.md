@@ -70,6 +70,7 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 - в свежем startup-логе есть `Running startup tests` и затем `Startup tests passed: ...`
 - нет непрерывных ошибок `TelegramConflictError`
 - в `message_map` и `delivery_log` появляются свежие записи
+- если видео из MAX внезапно пришло в Telegram как `.html`, сначала проверить `docker logs` на `VIDEO_PLAY`: bridge должен выбирать `MP4_*` URL, а не `EXTERNAL`, и signed CDN URL должен открываться с `User-Agent`, соответствующим `srcAg`
 
 ### Что важно помнить
 
