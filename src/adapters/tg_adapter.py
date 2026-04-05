@@ -5,7 +5,7 @@ Telegram Adapter — бот + форум-группа с Topics.
   - Создание топиков (один MAX чат = один топик)
   - Отправка текста, фото, документов в нужный топик
   - Получение reply от пользователя → передача в Bridge Core
-  - Команды: /status, /reauth
+  - Команды: /status, /chats, /reauth
   - Уведомления владельцу (ошибки, потеря MAX сессии)
 """
 
@@ -180,6 +180,20 @@ class TelegramAdapter:
             f"send_audio topic={topic_id}",
         )
 
+    async def send_voice(self, topic_id: int, path: str,
+                         caption: str = "", duration: Optional[int] = None) -> Optional[int]:
+        """Отправить voice note в топик (нативный voice bubble)."""
+        return await self._tg_retry(
+            lambda: self._bot.send_voice(
+                chat_id=self._group_id,
+                voice=FSInputFile(path),
+                caption=caption[:1024] if caption else None,
+                message_thread_id=topic_id,
+                duration=duration,
+            ),
+            f"send_voice topic={topic_id}",
+        )
+
     async def send_notification(self, text: str):
         """Отправить системное уведомление владельцу (в личный чат с ботом)."""
         try:
@@ -296,7 +310,7 @@ class TelegramAdapter:
             media_path = await self._download_tg_media(
                 message.voice.file_id, f"tg_voice_{ts}.ogg"
             )
-            media_type = "audio"
+            media_type = "voice"
         elif message.document:
             fname = message.document.file_name or f"tg_doc_{ts}"
             media_path = await self._download_tg_media(message.document.file_id, fname)

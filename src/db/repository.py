@@ -202,6 +202,36 @@ class Repository:
             rows = await cur.fetchall()
         return [dict(r) for r in rows]
 
+    async def get_chat_activity_map_since(self, since_ts: int) -> dict[str, dict[str, int]]:
+        """Активность по каждому чату за период.
+
+        Возвращает:
+          {
+            "<max_chat_id>": {"inbound": N, "outbound": M, "total": T},
+            ...
+          }
+        """
+        async with self._db.execute(
+            """SELECT max_chat_id,
+                      SUM(CASE WHEN direction='inbound'  THEN 1 ELSE 0 END) AS inbound,
+                      SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) AS outbound,
+                      COUNT(id) AS total
+               FROM message_map
+               WHERE created_at >= ?
+               GROUP BY max_chat_id""",
+            (since_ts,),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        result: dict[str, dict[str, int]] = {}
+        for row in rows:
+            result[str(row["max_chat_id"])] = {
+                "inbound": int(row["inbound"] or 0),
+                "outbound": int(row["outbound"] or 0),
+                "total": int(row["total"] or 0),
+            }
+        return result
+
     # ── Retention cleanup ─────────────────────────────────────────────────
 
     async def cleanup_old_messages(self, older_than_days: int):

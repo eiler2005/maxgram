@@ -48,7 +48,7 @@
 - [x] **sender_name из live API** — `get_cached_user` + live `get_users()` fallback; имена в группах работают
 - [x] **Own-message echo dedup** — реальный `max_msg_id` сохраняется перед отправкой; эхо подавляется
 - [x] **`/status` в личном чате** — команды принимаются от владельца и в форум-группе, и в DM с ботом
-- [x] **32 regression-теста** — все проходят; описание: `docs/tests.md`
+- [x] **39 regression-тестов** — все проходят; описание: `docs/tests.md`
 
 ### Phase 3: Cloud Migration ✅
 - [x] Dockerfile + docker-compose.prod.yml
@@ -68,12 +68,12 @@
 **Цель:** удобство управления и устойчивость к edge cases.
 
 - [ ] **Per-chat управление из Telegram** — `/mode -70000000000001 readonly`
-- [ ] **`/chats` команда** — список активных чатов с топиками и числом сообщений
+- [x] **`/chats` команда** — список активных чатов с топиками, режимом и счётчиками сообщений
 - [ ] **Длинные сообщения** — разбивать >4096 символов на части
-- [ ] **Нативные voice note bubbles** — голосовые как `send_voice` вместо обычного аудио
-- [ ] **Missed messages gap** — уведомление о пропущенных сообщениях за время downtime
+- [x] **Нативные voice note bubbles** — голосовые (`VOICE`) отправляются в Telegram как `send_voice`
+- [x] **Missed messages gap** — при восстановлении после offline bridge шлёт уведомление о возможном пропуске сообщений
 - [x] **Унификация типов MAX-вложений** — единый normalizer для alias-типов (`IMAGE`, `VOICE`, `DOCUMENT`, `DOC` и т.п.) используется и в верхнем dispatch, и в download pipeline
-- [ ] **Пост-валидация скачанных вложений** — после download проверять `Content-Type` и сигнатуру файла, чтобы HTML/player fallback не уходил в Telegram как медиафайл
+- [x] **Пост-валидация скачанных вложений** — после download проверяются `Content-Type` и сигнатура файла, HTML/player fallback отбрасывается
 - [ ] **Расширение тест-сьюта** — retry-логика, stat counters, `_build_status_message`
 
 ---
@@ -95,7 +95,4 @@
 |--------|-----------|
 | Тесты для retry-логики `_tg_retry` | Medium |
 | Тесты для `_build_status_message` | Medium |
-| Валидация скачанного файла (`Content-Type` / magic bytes) перед отправкой в Telegram | Medium |
 | Per-chat управление из TG | Medium |
-| `/chats` команда | Low |
-| Обработка файлов >50MB (явное уведомление) | Low |

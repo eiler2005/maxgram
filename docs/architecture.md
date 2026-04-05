@@ -45,6 +45,7 @@ MAX WebSocket event
                     ├─ фото → tg.send_photo()
                     ├─ видео → tg.send_video()
                     ├─ аудио → tg.send_audio()
+                    ├─ voice → tg.send_voice()
                     ├─ документ → tg.send_document()
                     ├─ текст → tg.send_text() с prefix "[Имя]" для групп
                     └─ удаляет tmp-файл
@@ -57,7 +58,7 @@ Telegram Update (reply в топике форум-группы)
   └─► TG Adapter.handle_message()
         ├─ проверяет chat.id == forum_group_id
         ├─ игнорирует сообщения от ботов
-        ├─ команды (`/status`, `/reauth`) принимает только от owner_id
+        ├─ команды (`/status`, `/chats`, `/reauth`) принимает только от owner_id
         ├─ обычные сообщения в топиках принимает от участников группы
         ├─ извлекает topic_id (message_thread_id)
         └─► Bridge Core._on_tg_reply()
@@ -96,9 +97,9 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 Обёртка над `aiogram`. Управляет:
 - Ботом и long-polling dispatcher
 - Созданием/переименованием топиков в форум-группе
-- Отправкой текста, фото, видео, аудио и документов в топики
+- Отправкой текста, фото, видео, аудио, voice и документов в топики
 - Получением reply от участников форум-группы → callback в Bridge Core
-- Ограничением команд `/status` и `/reauth` только владельцем
+- Ограничением команд `/status`, `/chats` и `/reauth` только владельцем
 
 ### Bridge Core (`src/bridge/core.py`)
 

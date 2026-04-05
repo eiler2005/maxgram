@@ -49,6 +49,7 @@ class BridgeCore:
         self._max.on_message(self._on_max_message)
         self._tg.on_reply(self._on_tg_reply)
         self._tg.on_command("status", self._build_status_message)
+        self._tg.on_command("chats", self._build_chats_message)
 
     # ── MAX → Telegram ────────────────────────────────────────────────────
 
@@ -220,6 +221,14 @@ class BridgeCore:
             )
 
         if attachment.kind == "audio":
+            source_type = str(attachment.source_type or "").upper()
+            if "VOICE" in source_type:
+                return await self._tg.send_voice(
+                    topic_id,
+                    attachment.local_path,
+                    caption,
+                    duration=attachment.duration,
+                )
             return await self._tg.send_audio(
                 topic_id,
                 attachment.local_path,
@@ -326,6 +335,22 @@ class BridgeCore:
             return
 
         if binding.mode == "disabled":
+            return
+
+        if media_path and self._is_file_too_large(media_path):
+            max_size_mb = self._cfg.bridge.max_file_size_mb
+            placeholder = self._cfg.content.placeholder_file_too_large.format(
+                filename=Path(media_path).name
+            )
+            await self._tg.send_text(
+                topic_id,
+                f"🚫 {placeholder} (лимит: {max_size_mb}MB)",
+            )
+            try:
+                Path(media_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._stats["failed_outbound"] += 1
             return
 
         # Найти max_msg_id для reply (если есть)
@@ -435,6 +460,50 @@ class BridgeCore:
 
         return "\n".join(lines)
 
+    async def _build_chats_message(self, period_hours: int = 24) -> str:
+        """Список чатов с topic_id, режимом и активностью за period_hours часов."""
+        bindings = await self._repo.list_bindings()
+        if not bindings:
+            return "🗂 Чаты: 0"
+
+        since = int(time.time()) - period_hours * 3600
+        activity = await self._repo.get_chat_activity_map_since(since)
+
+        mode_badge = {
+            "active": "✅",
+            "readonly": "🔒",
+            "disabled": "⏸",
+        }
+
+        def sort_key(binding: ChatBinding) -> tuple[int, str]:
+            stats = activity.get(binding.max_chat_id, {})
+            return (int(stats.get("total", 0)), binding.title.lower())
+
+        ordered = sorted(bindings, key=sort_key, reverse=True)
+        total_chats = len(bindings)
+        active_chats = sum(1 for b in bindings if b.mode == "active")
+
+        lines = [
+            f"🗂 Чаты: {total_chats} (активных: {active_chats})",
+            f"Активность за {period_hours}ч:",
+        ]
+
+        max_rows = 40
+        for index, binding in enumerate(ordered):
+            if index >= max_rows:
+                lines.append(f"... и ещё {total_chats - max_rows}")
+                break
+            stats = activity.get(binding.max_chat_id, {})
+            inbound = int(stats.get("inbound", 0))
+            outbound = int(stats.get("outbound", 0))
+            badge = mode_badge.get(binding.mode, "•")
+            title = (binding.title or f"Чат {binding.max_chat_id}").strip()
+            lines.append(
+                f"{badge} #{binding.tg_topic_id} {title[:42]} · ↓{inbound} ↑{outbound}"
+            )
+
+        return "\n".join(lines)
+
     async def run_periodic_status(self, interval_hours: int = 4):
         """Автоматически отправлять статусный отчёт каждые interval_hours часов."""
         await asyncio.sleep(interval_hours * 3600)
@@ -485,6 +554,10 @@ class BridgeCore:
             if self._max.is_ready():
                 if alert_sent:
                     downtime = int(time.time() - disconnected_since)
+                    await self._tg.send_notification(
+                        f"⚠️ Возможен пропуск сообщений MAX за время простоя (~{downtime}с): "
+                        "история во время disconnect не воспроизводится автоматически"
+                    )
                     await self._tg.send_notification(
                         f"✅ MAX восстановлен (простой ~{downtime}с)"
                     )

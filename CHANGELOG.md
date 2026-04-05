@@ -4,6 +4,27 @@ All notable changes to Maxgram are documented here.
 
 ---
 
+## [1.1.4] — 2026-04-05
+
+### Added
+- **`/chats` command** — owner can request a compact list of configured chats with topic id, mode, and per-chat message counters (`↓ inbound`, `↑ outbound`) for the selected period.
+- **Native voice note bubbles (MAX→TG)** — attachments with source type `VOICE` are now sent via Telegram `send_voice`, so they render as voice notes instead of generic audio files.
+- **Missed messages gap notice** — after MAX reconnect (following a watchdog alert), bridge sends an additional warning that messages from downtime may be missing because history replay is unavailable.
+
+### Changed
+- **Explicit TG→MAX large file handling** — outbound media above configured `max_file_size_mb` is now rejected early with a clear message in the topic (`Файл слишком большой...`), instead of a silent failure path.
+- **Post-download media validation** — downloader now checks `Content-Type` and binary signatures (magic bytes) and rejects HTML/text fallbacks for expected media, preventing `.html` player pages from being forwarded as media.
+
+### Tests
+- Added coverage for `/chats` formatter and per-chat activity SQL aggregation.
+- Added coverage for `VOICE` → `send_voice` routing.
+- Added coverage for watchdog reconnect gap-notice flow.
+- Added coverage for TG→MAX explicit oversized-file rejection.
+- Added coverage for downloader HTML fallback rejection.
+- All 39 tests pass.
+
+---
+
 ## [1.1.3] — 2026-04-05
 
 ### Changed

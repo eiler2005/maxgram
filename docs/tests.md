@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 python -m pytest -v
 ```
 
-Всего: **32 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **39 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -19,15 +19,16 @@ python -m pytest -v
 
 ---
 
-## test_repository.py — работа с SQLite (1 тест)
+## test_repository.py — работа с SQLite (2 теста)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_save_message_upserts_tg_fields` | При двойном `save_message` с одним `max_msg_id` второй вызов дополняет запись: `tg_msg_id` и `tg_topic_id` обновляются через `ON CONFLICT DO UPDATE SET ... = COALESCE(excluded, existing)`. Проверяет что `get_max_msg_id_by_tg` находит запись по `tg_msg_id`. |
+| `test_get_chat_activity_map_since_groups_by_chat` | SQL-агрегация активности по чатам: корректно считает `inbound`, `outbound`, `total` для `/chats`. |
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (20 тестов)
+## test_max_adapter.py — парсинг сырых сообщений MAX (22 теста)
 
 ### Системные события (CONTROL)
 
@@ -73,18 +74,24 @@ python -m pytest -v
 | `test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url` | Для signed MAX CDN URL без `CHROME` downloader использует mobile Safari `User-Agent`. |
 | `test_download_video_by_id_uses_raw_video_play_payload` | `_download_video_by_id()` читает сырой payload `VIDEO_PLAY` и скачивает найденный media URL напрямую, не полагаясь на хрупкий upstream parser. |
 | `test_download_from_url_uses_mobile_safari_user_agent` | Базовый downloader создаёт `tmp_dir`, делает HTTP GET с ожидаемым `User-Agent` и сохраняет файл с корректным именем. |
+| `test_download_from_url_rejects_html_for_expected_video` | Post-validation блокирует `text/html`/HTML-body для ожидаемого `video`, чтобы player fallback не уходил в Telegram как файл/медиа. |
+| `test_download_from_url_allows_text_for_expected_document` | Для ожидаемого `document` обычный `text/plain` файл остаётся допустимым, чтобы post-validation не ломала пересылку текстовых документов. |
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (3 теста)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (7 тестов)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`. Нет I/O, нет сети.
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_forward_to_telegram_sends_media_then_rendered_system_text` | Сообщение с видео-вложением и `rendered_texts`: сначала отправляется видео (`send_video` с caption `[Имя]`), затем текст системного события (`send_text`). Возвращает `message_id` медиа. |
+| `test_forward_to_telegram_sends_voice_note_for_voice_source` | Вложение с `source_type=VOICE` отправляется как нативный `send_voice` (voice bubble), а не как обычное аудио. |
 | `test_forward_to_telegram_uses_rendered_text_without_media` | Сообщение типа `CONTROL` без вложений: отправляется только текст из `rendered_texts`. Файловые методы не вызываются. |
 | `test_on_tg_reply_prefixes_sender_name_for_max` | Reply из Telegram: текст отправляется в MAX с префиксом `[Марина Ермилова]\nПроверка связи`; `reply_to_msg_id` разрешается через `get_max_msg_id_by_tg`. |
+| `test_on_tg_reply_rejects_too_large_media` | TG→MAX: если файл превышает лимит `max_file_size_mb`, bridge не отправляет его в MAX и отдаёт явное сообщение в топик. |
+| `test_build_chats_message_lists_topics_with_activity` | `/chats` показывает чат, topic_id, режим и счётчики `↓/↑` за период. |
+| `test_watchdog_sends_gap_notice_after_reconnect` | После offline-окна watchdog отправляет и alert про downtime, и уведомление о возможном `missed messages gap` после восстановления. |
 
 ---
 
@@ -94,9 +101,9 @@ python -m pytest -v
 |------|--------------|
 | `test_mask_ip_hides_third_octet` | `_mask_ip("204.168.239.217")` → `"204.168.*.217"` (третий октет заменяется `*`). |
 | `test_infer_location_from_hetzner_hostname` | `_infer_location("ubuntu-4gb-hel1-6")` → `"Helsinki"` (из маппинга токенов имён датацентров). |
-| `test_extract_pytest_summary_uses_terminal_summary` | Из stdout `pytest` извлекается итоговая строка вида `"32 passed in 3.98s"` для последующего включения в startup-уведомление. |
+| `test_extract_pytest_summary_uses_terminal_summary` | Из stdout `pytest` извлекается итоговая строка вида `"17 passed in 1.49s"` для последующего включения в startup-уведомление. |
 | `test_build_startup_notification_includes_runtime_details` | Стартовое уведомление содержит `"Maxgram запущен и подключён к MAX"`, `runtime: Docker`, hostname, `location: Helsinki`, masked IP. Использует `monkeypatch` для `socket.gethostname`, `Path.exists`, `_detect_primary_ipv4`. |
-| `test_build_startup_notification_includes_startup_test_status` | В startup-уведомление добавляется строка вида `"Тесты запуска: ✅ 32 passed in 3.98s"`, если production self-check завершился успешно. |
+| `test_build_startup_notification_includes_startup_test_status` | В startup-уведомление добавляется строка вида `"Тесты запуска: ✅ 17 passed in 1.49s"`, если production self-check завершился успешно. |
 
 ---
 
@@ -111,7 +118,8 @@ python -m pytest -v
 
 ## Что не покрыто тестами
 
-- `run_periodic_status` / `run_max_watchdog` — бесконечные циклы; проверяются вручную в production
+- `run_periodic_status` — бесконечный цикл; проверяется вручную в production
+- `run_max_watchdog` покрыт базовым reconnect-сценарием, но full production-поведение также проверяется вручную
 - Реальные сетевые вызовы (MAX WebSocket, Telegram Bot API)
 - Retry-логика `_tg_retry` — требует мока `TelegramAPIError`
 - `get_chat_activity_since` / `count_messages_since` — SQL запросы; проверяются smoke-скриптом

@@ -53,7 +53,9 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Bidirectional messaging — replies in Telegram → delivered to MAX (including reply-to-message)
 - Media forwarding in both directions: photos, video, audio, voice, documents
 - MAX video downloads prefer real `MP4_*` streams over `EXTERNAL` player pages and use an adaptive CDN user-agent (`CHROME` vs mobile Safari)
+- MAX downloader validates `Content-Type` + file signature and rejects HTML/text fallbacks for expected media
 - MAX attachment aliases (`IMAGE`, `VOICE`, `DOCUMENT`, `DOC`) are normalized consistently across dispatch and download stages
+- MAX `VOICE` attachments are delivered as native Telegram voice notes (`send_voice` bubbles)
 - Control events are rendered in human-friendly text (including `joinbylink` join notifications)
 - Sender name prefix in group chats: `[First Last] message text`
 - Own messages (sent directly in MAX) mirrored to Telegram with `[Вы]` prefix
@@ -62,8 +64,10 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Deduplication — no duplicate messages on reconnect
 - Stable reconnect — no OOM, no SSL storm
 - `/status` command — uptime, message stats, top active chats; works in forum group and personal DM with bot
+- `/chats` command — list of bridged chats with topic id, mode, and inbound/outbound counters
 - Periodic 4-hour status report — automatic delivery stats sent to owner
 - MAX offline watchdog — alert if MAX unreachable > 60 seconds
+- Reconnect gap warning — after recovery, owner gets a reminder about possible missed messages during downtime
 - Telegram API retry with exponential backoff (3 attempts, respects `Retry-After`)
 - Startup self-check in production — after boot, the bot notification includes `pytest` result summary
 
@@ -178,7 +182,7 @@ maxgram/
 
 - Messages during downtime are **lost** — pymax has no history replay API
 - Unofficial userbot — potential ToS violation with MAX
-- Bot commands (`/status`, `/reauth`) are owner-only
+- Bot commands (`/status`, `/chats`, `/reauth`) are owner-only
 
 ---
 

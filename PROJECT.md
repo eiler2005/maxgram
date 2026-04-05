@@ -80,7 +80,7 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 Вся бизнес-логика без зависимости от транспорта. Принимает события от адаптеров, принимает решения о роутинге, создаёт/переименовывает топики, проверяет режим чата, обеспечивает идемпотентность через SQLite.
 
 **Telegram Adapter** (`src/adapters/tg_adapter.py`)  
-Обёртка над `aiogram`. Управляет Forum Supergroup Topics: создание, переименование, отправка сообщений (текст/фото/видео/аудио/документ). Принимает сообщения из нужной форум-группы, пропускает обычные сообщения от участников группы и ограничивает команды `/status` и `/reauth` только владельцем.
+Обёртка над `aiogram`. Управляет Forum Supergroup Topics: создание, переименование, отправка сообщений (текст/фото/видео/аудио/voice/документ). Принимает сообщения из нужной форум-группы, пропускает обычные сообщения от участников группы и ограничивает команды `/status`, `/chats` и `/reauth` только владельцем.
 
 ---
 
@@ -112,6 +112,7 @@ MAX WebSocket event
                     ├─ [photo]    → tg.send_photo(topic_id, path, caption)
                     ├─ [video]    → tg.send_video(topic_id, path, caption)
                     ├─ [audio]    → tg.send_audio(topic_id, path, caption)
+                    ├─ [voice]    → tg.send_voice(topic_id, path, caption)
                     ├─ [document] → tg.send_document(topic_id, path, caption)
                     ├─ [text]     → tg.send_text(topic_id, "[Name] text")
                     └─ [unknown]  → tg.send_text(topic_id, placeholder)
@@ -125,7 +126,7 @@ Telegram Update (message в форум-группе)
   └─► TGAdapter.handle_message(message)
         ├─ [not forum_group_id] → DROP
         ├─ [from_user.is_bot] → DROP
-        ├─ [command /status, /reauth] → handle_command()
+        ├─ [command /status, /chats, /reauth] → handle_command()
         │     └─ [not owner_id] → DROP
         ├─ [no message_thread_id] → DROP (не в топике)
         └─► BridgeCore._on_tg_reply(topic_id, text, reply_to_tg_id, sender_name)
@@ -185,13 +186,12 @@ Fallback rename:
 
 - **Фото:** скачивается во временный файл, отправляется через `send_photo`, удаляется
 - **Видео:** bridge запрашивает `VIDEO_PLAY`, предпочитает реальные `MP4_*` URL вместо `EXTERNAL` HTML-плеера, подбирает `User-Agent` по `srcAg`, затем отправляет через `send_video`
-- **Аудио:** скачивается по URL вложения, отправляется через `send_audio`, удаляется
+- **Аудио:** `AUDIO` отправляется через `send_audio`, `VOICE` — через `send_voice` (native voice bubble)
 - **Документы:** скачиваются через `get_file_by_id(...)`, отправляются через `send_document`
+- **Post-validation:** после скачивания проверяются `Content-Type` и magic bytes; HTML/text fallback отклоняется для ожидаемого медиа
+- **Лимит размера:** файлы больше `max_file_size_mb` получают явное уведомление о превышении лимита (и для MAX→TG, и для TG→MAX)
 - **Неподдерживаемые типы:** placeholder `[Неподдерживаемый тип: {type}]`
 - TTL файлов: 1 час (auto-cleanup каждые 30 минут)
-
-Плановая доработка media-pipeline:
-- добавить post-download валидацию (`Content-Type`, сигнатура файла), чтобы HTML/player fallback не отправлялся в Telegram как документ или медиа
 
 ### Системные сообщения
 
@@ -414,6 +414,7 @@ MAX_PHONE=+79...
 | Команда | Ответ |
 |---------|-------|
 | `/status` | `✅ Bridge работает` |
+| `/chats` | Список чатов с topic_id, режимом и активностью |
 | `/reauth` | Инструкция по переавторизации MAX |
 
 ---
@@ -568,7 +569,7 @@ fly logs -f
 | Ограничение | Причина | Решение |
 |-------------|---------|---------|
 | Потеря сообщений за время downtime | pymax не имеет history replay | Минимизировать downtime |
-| Команды ограничены владельцем | `/status`, `/reauth` только для owner | — |
+| Команды ограничены владельцем | `/status`, `/chats`, `/reauth` только для owner | — |
 | Неофициальный userbot | Нет официального Python SDK для личных аккаунтов MAX | Мониторить pymax обновления |
 | Нет истории при старте | Out of scope MVP | Phase 4+ |
 

@@ -461,11 +461,12 @@ async def test_download_video_by_id_uses_raw_video_play_payload(tmp_path):
 
     captured = {}
 
-    async def fake_download(url: str, prefix: str, filename_hint=None, default_extension=""):
+    async def fake_download(url: str, prefix: str, filename_hint=None, default_extension="", expected_kind=None):
         captured["url"] = url
         captured["prefix"] = prefix
         captured["filename_hint"] = filename_hint
         captured["default_extension"] = default_extension
+        captured["expected_kind"] = expected_kind
         return ("/tmp/video.mp4", "video.mp4")
 
     adapter._download_from_url = fake_download
@@ -484,6 +485,7 @@ async def test_download_video_by_id_uses_raw_video_play_payload(tmp_path):
         "prefix": "video_123456789_987654321",
         "filename_hint": "clip.mp4",
         "default_extension": ".mp4",
+        "expected_kind": "video",
     }
 
 
@@ -537,3 +539,97 @@ async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeyp
         "headers": {"User-Agent": MAX_CDN_USER_AGENT},
         "url": "https://cdn.example.com/video.mp4",
     }
+
+
+@pytest.mark.asyncio
+async def test_download_from_url_rejects_html_for_expected_video(tmp_path, monkeypatch):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = {"Content-Type": "text/html; charset=utf-8"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def read(self):
+            return b"<!doctype html><html><body>player</body></html>"
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url):
+            return FakeResponse()
+
+    monkeypatch.setattr("src.adapters.max_adapter.ClientSession", FakeSession)
+
+    local_path, filename = await adapter._download_from_url(
+        "https://m.ok.ru/video/13208513634267",
+        "video_test",
+        "clip.mp4",
+        ".mp4",
+        expected_kind="video",
+    )
+
+    assert local_path is None
+    assert filename is None
+
+
+@pytest.mark.asyncio
+async def test_download_from_url_allows_text_for_expected_document(tmp_path, monkeypatch):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    class FakeResponse:
+        def __init__(self):
+            self.headers = {"Content-Type": "text/plain; charset=utf-8"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def read(self):
+            return b"plain text file"
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url):
+            return FakeResponse()
+
+    monkeypatch.setattr("src.adapters.max_adapter.ClientSession", FakeSession)
+
+    local_path, filename = await adapter._download_from_url(
+        "https://cdn.example.com/file.txt",
+        "doc_test",
+        "file.txt",
+        ".txt",
+        expected_kind="document",
+    )
+
+    assert local_path is not None
+    assert filename == "file.txt"

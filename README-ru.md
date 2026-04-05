@@ -36,11 +36,15 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Дедупликация** — сообщения не дублируются при переподключении
 - **Устойчивый reconnect** — без OOM и SSL-ошибок
 - **Команда `/status`** — аптайм, статистика сообщений, топ активных чатов; работает в группе и в личном чате с ботом
+- **Команда `/chats`** — список подключённых чатов с topic id, режимом и счётчиками сообщений
 - **Автоматический статус-отчёт** — каждые 4 часа бот присылает сводку без команды
 - **Watchdog MAX** — уведомление, если MAX недоступен более 60 секунд
+- **Gap-уведомление после reconnect** — после восстановления бот предупреждает о возможном пропуске сообщений за время простоя
 - **Retry Telegram API** — 3 попытки с экспоненциальным backoff, поддержка `Retry-After`
 - **Startup self-check** — после старта в production бот пишет результат встроенного `pytest`-прогона
 - **Устойчивое скачивание MAX-видео** — bridge предпочитает реальные `MP4_*` потоки вместо `EXTERNAL` HTML-плеера и подбирает `User-Agent` по `srcAg`
+- **Post-validation загрузок** — после скачивания проверяются `Content-Type` и сигнатура файла, HTML/player fallback не уходит как медиа
+- **Нативные voice bubbles** — MAX `VOICE` пересылается в Telegram через `send_voice`
 
 ---
 
@@ -243,7 +247,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 | [docs/runbooks/operations.md](docs/runbooks/operations.md) | Операционные процедуры |
 | [docs/runbooks/deployment.md](docs/runbooks/deployment.md) | Деплой: локально, Docker, Hetzner, Fly.io |
 | [docs/runbooks/hetzner-production.md](docs/runbooks/hetzner-production.md) | Безопасный production-деплой |
-| [docs/tests.md](docs/tests.md) | Описание всех 32 тестов |
+| [docs/tests.md](docs/tests.md) | Описание всех 39 тестов |
 | [PROJECT.md](PROJECT.md) | Полная техническая документация |
 | [CHANGELOG.md](CHANGELOG.md) | История изменений |
 
@@ -282,7 +286,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 
 - Сообщения за время downtime **теряются** — pymax не имеет history replay
 - Неофициальный userbot — возможное нарушение ToS MAX
-- Команды бота ограничены владельцем
+- Команды бота (`/status`, `/chats`, `/reauth`) ограничены владельцем
 
 ---
 

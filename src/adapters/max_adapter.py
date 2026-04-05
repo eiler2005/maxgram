@@ -530,9 +530,93 @@ class MaxAdapter:
             user_agent = MAX_CDN_USER_AGENT
         return {"User-Agent": user_agent}
 
+    def _detect_magic_type(self, content: bytes) -> str:
+        if not content:
+            return "unknown"
+
+        head = content[:64]
+
+        if head.startswith(b"\xff\xd8\xff"):
+            return "image"
+        if head.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image"
+        if head.startswith((b"GIF87a", b"GIF89a")):
+            return "image"
+        if head.startswith(b"RIFF") and b"WEBP" in content[8:16]:
+            return "image"
+
+        if len(content) > 12 and content[4:8] == b"ftyp":
+            return "video"
+        if head.startswith(b"\x1a\x45\xdf\xa3"):
+            return "video"  # webm/mkv
+
+        if head.startswith(b"OggS"):
+            return "audio"
+        if head.startswith(b"ID3"):
+            return "audio"
+
+        if head.startswith(b"%PDF"):
+            return "document"
+        if head.startswith(b"PK\x03\x04"):
+            return "document"
+
+        lowered = content[:256].lstrip().lower()
+        if lowered.startswith((b"<!doctype html", b"<html", b"<head", b"<body")):
+            return "html"
+        return "unknown"
+
+    def _classify_downloaded_content(self, content_type: Optional[str], content: bytes) -> str:
+        magic_type = self._detect_magic_type(content)
+        if magic_type != "unknown":
+            return magic_type
+
+        normalized = str(content_type or "").lower()
+        if normalized.startswith("image/"):
+            return "image"
+        if normalized.startswith("video/"):
+            return "video"
+        if normalized.startswith("audio/"):
+            return "audio"
+        if normalized.startswith("text/html"):
+            return "html"
+        if normalized.startswith("text/"):
+            return "text"
+        if normalized.startswith("application/"):
+            return "document"
+        return "unknown"
+
+    def _is_download_valid(self, expected_kind: Optional[str], detected_kind: str) -> bool:
+        if detected_kind == "html":
+            return False
+
+        expected = str(expected_kind or "").lower()
+        if not expected:
+            if detected_kind == "text":
+                return False
+            return True
+
+        if detected_kind == "text":
+            return expected == "document"
+
+        expected_map = {
+            "photo": {"image"},
+            "video": {"video"},
+            "audio": {"audio"},
+            "document": {"document", "image", "video", "audio", "unknown"},
+        }
+        allowed = expected_map.get(expected)
+        if not allowed:
+            return True
+        if detected_kind in allowed:
+            return True
+        if detected_kind == "unknown":
+            return True
+        return False
+
     async def _download_from_url(self, url: str, prefix: str,
                                  filename_hint: Optional[str] = None,
-                                 default_extension: str = "") -> tuple[Optional[str], Optional[str]]:
+                                 default_extension: str = "",
+                                 expected_kind: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
         """Скачать файл по URL, вернуть (local_path, filename)."""
         try:
             async with ClientSession(headers=self._download_headers_for_url(url)) as session:
@@ -540,6 +624,14 @@ class MaxAdapter:
                     response.raise_for_status()
                     content = await response.read()
                     content_type = response.headers.get("Content-Type", "").split(";")[0].strip() or None
+
+            detected_kind = self._classify_downloaded_content(content_type, content)
+            if not self._is_download_valid(expected_kind, detected_kind):
+                logger.warning(
+                    "download_from_url rejected url=%r expected=%s detected=%s content_type=%s",
+                    url, expected_kind, detected_kind, content_type,
+                )
+                return None, None
 
             filename = self._build_filename(prefix, filename_hint, url, content_type, default_extension)
             self._tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -552,7 +644,8 @@ class MaxAdapter:
 
     async def _download_file_by_id(self, chat_id: str, msg_id: str, file_id: int,
                                    prefix: str, filename_hint: Optional[str] = None,
-                                   default_extension: str = "") -> tuple[Optional[str], Optional[str]]:
+                                   default_extension: str = "",
+                                   expected_kind: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
         """Скачать файл через pymax FILE_DOWNLOAD."""
         if not self._client:
             return None, None
@@ -565,7 +658,13 @@ class MaxAdapter:
             url = getattr(file_obj, "url", None)
             if not url:
                 return None, None
-            return await self._download_from_url(url, prefix, filename_hint, default_extension)
+            return await self._download_from_url(
+                url,
+                prefix,
+                filename_hint,
+                default_extension,
+                expected_kind=expected_kind,
+            )
         except Exception as e:
             logger.warning("download_file_by_id failed chat_id=%s msg_id=%s file_id=%s: %s",
                            chat_id, msg_id, file_id, e)
@@ -594,7 +693,13 @@ class MaxAdapter:
                     chat_id, msg_id, video_id, raw_payload,
                 )
                 return None, None
-            return await self._download_from_url(url, prefix, filename_hint, ".mp4")
+            return await self._download_from_url(
+                url,
+                prefix,
+                filename_hint,
+                ".mp4",
+                expected_kind="video",
+            )
         except Exception as e:
             logger.warning("download_video_by_id failed chat_id=%s msg_id=%s video_id=%s: %s",
                            chat_id, msg_id, video_id, e)
@@ -612,14 +717,16 @@ class MaxAdapter:
             url = getattr(attach, "base_url", None) or getattr(attach, "baseRawUrl", None) or getattr(attach, "url", None)
             if url:
                 local_path, filename = await self._download_from_url(
-                    url, f"photo_{chat_id}_{msg_id}{idx}", filename_hint, ".jpg"
+                    url, f"photo_{chat_id}_{msg_id}{idx}", filename_hint, ".jpg",
+                    expected_kind="photo",
                 )
             else:
                 file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
                 if not file_id:
                     return None
                 local_path, filename = await self._download_file_by_id(
-                    chat_id, msg_id, file_id, f"photo_{chat_id}_{msg_id}{idx}", filename_hint, ".jpg"
+                    chat_id, msg_id, file_id, f"photo_{chat_id}_{msg_id}{idx}",
+                    filename_hint, ".jpg", expected_kind="photo",
                 )
             if local_path:
                 return MaxAttachment(
@@ -638,7 +745,8 @@ class MaxAdapter:
             url = getattr(attach, "url", None)
             if url:
                 local_path, filename = await self._download_from_url(
-                    url, f"video_{chat_id}_{msg_id}{idx}", filename_hint, ".mp4"
+                    url, f"video_{chat_id}_{msg_id}{idx}", filename_hint, ".mp4",
+                    expected_kind="video",
                 )
             elif video_id:
                 local_path, filename = await self._download_video_by_id(
@@ -662,14 +770,16 @@ class MaxAdapter:
             url = getattr(attach, "url", None)
             if url:
                 local_path, filename = await self._download_from_url(
-                    url, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg"
+                    url, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg",
+                    expected_kind="audio",
                 )
             else:
                 file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
                 if not file_id:
                     return None
                 local_path, filename = await self._download_file_by_id(
-                    chat_id, msg_id, file_id, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg"
+                    chat_id, msg_id, file_id, f"audio_{chat_id}_{msg_id}{idx}",
+                    filename_hint, ".ogg", expected_kind="audio",
                 )
             if local_path:
                 return MaxAttachment(
@@ -688,7 +798,8 @@ class MaxAdapter:
             if not file_id:
                 return None
             local_path, filename = await self._download_file_by_id(
-                chat_id, msg_id, file_id, f"doc_{chat_id}_{msg_id}{idx}", filename_hint
+                chat_id, msg_id, file_id, f"doc_{chat_id}_{msg_id}{idx}",
+                filename_hint, expected_kind="document",
             )
             if local_path:
                 return MaxAttachment(
