@@ -234,7 +234,11 @@ class MaxAdapter:
         title = self._get_extra_value(extra, "title", "theme", "name")
         actor = sender_name
 
-        if event in {"add", "invite", "join", "joined"}:
+        if event in {"add", "invite", "join", "joined", "joinbylink", "join_by_link", "joinedbylink"}:
+            if event in {"joinbylink", "join_by_link", "joinedbylink"}:
+                if rendered_users:
+                    return f"Присоединились по ссылке: {rendered_users}"
+                return "Участник присоединился по ссылке"
             if rendered_users:
                 return f"Добавлены участники: {rendered_users}"
             return "В чат добавлен участник"
@@ -411,6 +415,20 @@ class MaxAdapter:
             return ""
         return str(getattr(atype, "value", atype)).upper()
 
+    def _normalize_attachment_type(self, atype: str) -> str:
+        if not atype:
+            return ""
+        upper = str(atype).upper()
+        if upper.startswith(("PHOTO", "IMAGE")):
+            return "PHOTO"
+        if upper.startswith("VIDEO"):
+            return "VIDEO"
+        if upper.startswith(("AUDIO", "VOICE")):
+            return "AUDIO"
+        if upper.startswith(("FILE", "DOCUMENT", "DOC")):
+            return "FILE"
+        return upper
+
     def _attachment_filename(self, attach) -> Optional[str]:
         return getattr(attach, "filename", None) or getattr(attach, "name", None)
 
@@ -585,7 +603,8 @@ class MaxAdapter:
     async def _download_attachment(self, chat_id: str, msg_id: str,
                                    attach, index: int = 0) -> Optional[MaxAttachment]:
         """Скачать одно вложение и нормализовать в MaxAttachment."""
-        atype = self._attachment_type_name(attach)
+        raw_type = self._attachment_type_name(attach)
+        atype = self._normalize_attachment_type(raw_type)
         filename_hint = self._attachment_filename(attach)
         idx = f"_{index}" if index > 0 else ""
 
@@ -610,7 +629,7 @@ class MaxAdapter:
                     duration=None,
                     width=getattr(attach, "width", None),
                     height=getattr(attach, "height", None),
-                    source_type=atype,
+                    source_type=raw_type,
                 )
             return None
 
@@ -635,7 +654,7 @@ class MaxAdapter:
                     duration=getattr(attach, "duration", None),
                     width=getattr(attach, "width", None),
                     height=getattr(attach, "height", None),
-                    source_type=atype,
+                    source_type=raw_type,
                 )
             return None
 
@@ -660,7 +679,7 @@ class MaxAdapter:
                     duration=getattr(attach, "duration", None),
                     width=None,
                     height=None,
-                    source_type=atype,
+                    source_type=raw_type,
                 )
             return None
 
@@ -679,7 +698,7 @@ class MaxAdapter:
                     duration=None,
                     width=None,
                     height=None,
-                    source_type=atype,
+                    source_type=raw_type,
                 )
             return None
 
@@ -768,10 +787,15 @@ class MaxAdapter:
 
             attaches = getattr(message, "attaches", None) or []
             attach_list = attaches if isinstance(attaches, list) else [attaches]
-            attachment_types = [
+            raw_attachment_types = [
                 self._attachment_type_name(attach)
                 for attach in attach_list
                 if attach is not None
+            ]
+            attachment_types = [
+                self._normalize_attachment_type(atype)
+                for atype in raw_attachment_types
+                if atype
             ]
 
             logger.info(
@@ -791,7 +815,8 @@ class MaxAdapter:
             for attach in attach_list:
                 if attach is None:
                     continue
-                atype = self._attachment_type_name(attach)
+                raw_type = self._attachment_type_name(attach)
+                atype = self._normalize_attachment_type(raw_type)
                 if atype in {"PHOTO", "VIDEO", "AUDIO", "FILE"}:
                     attachment = await self._download_attachment(
                         chat_id, raw_msg_id, attach, index=media_index
@@ -808,7 +833,7 @@ class MaxAdapter:
                 elif atype == "STICKER":
                     rendered = self._render_sticker_attach(attach)
                 else:
-                    rendered = f"[Вложение MAX: {atype.lower()}]" if atype else None
+                    rendered = f"[Вложение MAX: {raw_type.lower()}]" if raw_type else None
 
                 if rendered:
                     rendered_texts.append(rendered)

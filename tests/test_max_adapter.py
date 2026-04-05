@@ -7,6 +7,7 @@ import pytest
 from src.adapters.max_adapter import (
     MAX_CDN_CHROME_USER_AGENT,
     MAX_CDN_USER_AGENT,
+    MaxAttachment,
     MaxAdapter,
 )
 
@@ -34,6 +35,20 @@ class LookupClient:
 
     async def get_users(self, user_ids: list[int]):
         return [self._users[uid] for uid in user_ids if uid in self._users]
+
+
+class DummyDownloadAdapter(MaxAdapter):
+    async def _download_attachment(self, chat_id: str, msg_id: str, attach, index: int = 0):
+        raw_type = self._attachment_type_name(attach)
+        return MaxAttachment(
+            kind="document",
+            local_path="/tmp/fake",
+            filename=None,
+            duration=None,
+            width=None,
+            height=None,
+            source_type=raw_type,
+        )
 
 
 @pytest.mark.asyncio
@@ -103,6 +118,38 @@ async def test_handle_raw_message_renders_control_add_with_partial_name_resoluti
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_renders_control_join_by_link(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = LookupClient(
+        users={7001: make_user("Тестовый", "Пользователь")},
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")],
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=2,
+        chat_id=-70000000000003,
+        sender=40053201,
+        text="",
+        type="USER",
+        status=None,
+        attaches=[SimpleNamespace(type="CONTROL", event="joinbylink", extra={"userIds": [7001]})],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].rendered_texts == ["Присоединились по ссылке: Тестовый Пользователь"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("attach", "expected"),
     [
@@ -140,6 +187,45 @@ async def test_handle_raw_message_renders_non_media_supported_attachments(tmp_pa
 
     assert len(received) == 1
     assert received[0].rendered_texts == [expected]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_type", "expected"),
+    [
+        ("IMAGE", "PHOTO"),
+        ("VOICE", "AUDIO"),
+        ("DOCUMENT", "FILE"),
+        ("DOC", "FILE"),
+    ],
+)
+async def test_handle_raw_message_normalizes_alias_attachment_types(tmp_path, raw_type, expected):
+    adapter = DummyDownloadAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = LookupClient(chats=[SimpleNamespace(id=123456789, title=None)])
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=3,
+        chat_id=123456789,
+        sender=37294736,
+        text="",
+        type="USER",
+        status=None,
+        attaches=[SimpleNamespace(type=raw_type, url="https://example.test/file")],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].attachment_types == [expected]
+    assert len(received[0].attachments) == 1
 
 
 class EchoAckClient(LookupClient):
