@@ -4,6 +4,19 @@ All notable changes to Maxgram are documented here.
 
 ---
 
+## [1.1.3] — 2026-04-05
+
+### Changed
+- **Unified MAX attachment type normalization** — alias media types such as `IMAGE`, `VOICE`, `DOCUMENT`, and `DOC` are now normalized through one shared mapper used by both top-level attachment dispatch and the download pipeline.
+- **Readable `joinbylink` control events** — MAX `CONTROL/joinbylink` is now rendered as a human-readable join message (`Присоединились по ссылке: ...`) instead of raw event text.
+
+### Tests
+- Added coverage for `CONTROL/joinbylink` rendering.
+- Added coverage for alias attachment type normalization (`IMAGE→PHOTO`, `VOICE→AUDIO`, `DOCUMENT/DOC→FILE`).
+- All 32 tests pass.
+
+---
+
 ## [1.1.2] — 2026-04-04
 
 ### Fixed

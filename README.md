@@ -53,6 +53,8 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Bidirectional messaging — replies in Telegram → delivered to MAX (including reply-to-message)
 - Media forwarding in both directions: photos, video, audio, voice, documents
 - MAX video downloads prefer real `MP4_*` streams over `EXTERNAL` player pages and use an adaptive CDN user-agent (`CHROME` vs mobile Safari)
+- MAX attachment aliases (`IMAGE`, `VOICE`, `DOCUMENT`, `DOC`) are normalized consistently across dispatch and download stages
+- Control events are rendered in human-friendly text (including `joinbylink` join notifications)
 - Sender name prefix in group chats: `[First Last] message text`
 - Own messages (sent directly in MAX) mirrored to Telegram with `[Вы]` prefix
 - DM topics named after the contact (resolved from MAX profile, cache + live API)

@@ -243,7 +243,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 | [docs/runbooks/operations.md](docs/runbooks/operations.md) | Операционные процедуры |
 | [docs/runbooks/deployment.md](docs/runbooks/deployment.md) | Деплой: локально, Docker, Hetzner, Fly.io |
 | [docs/runbooks/hetzner-production.md](docs/runbooks/hetzner-production.md) | Безопасный production-деплой |
-| [docs/tests.md](docs/tests.md) | Описание всех 19 тестов |
+| [docs/tests.md](docs/tests.md) | Описание всех 32 тестов |
 | [PROJECT.md](PROJECT.md) | Полная техническая документация |
 | [CHANGELOG.md](CHANGELOG.md) | История изменений |
 

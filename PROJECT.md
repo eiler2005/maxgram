@@ -191,12 +191,12 @@ Fallback rename:
 - TTL файлов: 1 час (auto-cleanup каждые 30 минут)
 
 Плановая доработка media-pipeline:
-- унифицировать normalizer типов MAX-вложений, чтобы alias-типы вроде `IMAGE`, `VOICE`, `DOCUMENT`, `DOC` обрабатывались тем же mapping, что и базовые `PHOTO`, `AUDIO`, `FILE`
 - добавить post-download валидацию (`Content-Type`, сигнатура файла), чтобы HTML/player fallback не отправлялся в Telegram как документ или медиа
 
 ### Системные сообщения
 
 - **ControlAttach:** `add`, `leave`, `remove`, `new` и похожие события рендерятся в человекочитаемый текст
+- **ControlAttach join-by-link:** `joinbylink` рендерится как `Присоединились по ссылке: ...`
 - **ContactAttach:** пересылается как текст `Контакт: ...`
 - **StickerAttach:** пересылается текстом (`[Стикер]` / `[Аудиостикер]`)
 - **EDITED/REMOVED:** приходят как отдельные уведомления, чтобы bridge не терял эти статусы

@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 python -m pytest -v
 ```
 
-Всего: **27 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **32 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -27,7 +27,7 @@ python -m pytest -v
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (15 тестов)
+## test_max_adapter.py — парсинг сырых сообщений MAX (20 тестов)
 
 ### Системные события (CONTROL)
 
@@ -35,6 +35,7 @@ python -m pytest -v
 |------|--------------|
 | `test_handle_raw_message_renders_control_leave` | `CONTROL/leave` → `rendered_texts == ["Имя Фамилия вышел(а) из чата"]`; `attachment_types == ["CONTROL"]`; `chat_title` подставляется из `client.chats`. |
 | `test_handle_raw_message_renders_control_add_with_partial_name_resolution` | `CONTROL/add` с двумя `userIds` — один известен в кеше, другой нет → `"Добавлены участники: Имя Фамилия, ещё 1"`. Проверяет частичное разрешение имён. |
+| `test_handle_raw_message_renders_control_join_by_link` | `CONTROL/joinbylink` рендерится в человекочитаемый текст `"Присоединились по ссылке: ..."`, а не сырой `joinbylink`. |
 
 ### Медиавложения без файла
 
@@ -43,6 +44,15 @@ python -m pytest -v
 | `test_handle_raw_message_renders_non_media_supported_attachments[attach0]` | `type=CONTACT, name="Тестовый Контакт"` | `"Контакт: Тестовый Контакт"` |
 | `test_handle_raw_message_renders_non_media_supported_attachments[attach1]` | `type=STICKER, audio=False` | `"[Стикер]"` |
 | `test_handle_raw_message_renders_non_media_supported_attachments[attach2]` | `type=STICKER, audio=True` | `"[Аудиостикер]"` |
+
+### Нормализация alias-типов вложений
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_handle_raw_message_normalizes_alias_attachment_types[IMAGE-PHOTO]` | Alias `IMAGE` нормализуется в `PHOTO` и проходит через медиа-пайплайн как фото. |
+| `test_handle_raw_message_normalizes_alias_attachment_types[VOICE-AUDIO]` | Alias `VOICE` нормализуется в `AUDIO`. |
+| `test_handle_raw_message_normalizes_alias_attachment_types[DOCUMENT-FILE]` | Alias `DOCUMENT` нормализуется в `FILE`. |
+| `test_handle_raw_message_normalizes_alias_attachment_types[DOC-FILE]` | Alias `DOC` нормализуется в `FILE`. |
 
 ### Дедупликация собственных сообщений
 
@@ -84,9 +94,9 @@ python -m pytest -v
 |------|--------------|
 | `test_mask_ip_hides_third_octet` | `_mask_ip("204.168.239.217")` → `"204.168.*.217"` (третий октет заменяется `*`). |
 | `test_infer_location_from_hetzner_hostname` | `_infer_location("ubuntu-4gb-hel1-6")` → `"Helsinki"` (из маппинга токенов имён датацентров). |
-| `test_extract_pytest_summary_uses_terminal_summary` | Из stdout `pytest` извлекается итоговая строка вида `"27 passed in 3.98s"` для последующего включения в startup-уведомление. |
+| `test_extract_pytest_summary_uses_terminal_summary` | Из stdout `pytest` извлекается итоговая строка вида `"32 passed in 3.98s"` для последующего включения в startup-уведомление. |
 | `test_build_startup_notification_includes_runtime_details` | Стартовое уведомление содержит `"Maxgram запущен и подключён к MAX"`, `runtime: Docker`, hostname, `location: Helsinki`, masked IP. Использует `monkeypatch` для `socket.gethostname`, `Path.exists`, `_detect_primary_ipv4`. |
-| `test_build_startup_notification_includes_startup_test_status` | В startup-уведомление добавляется строка вида `"Тесты запуска: ✅ 27 passed in 3.98s"`, если production self-check завершился успешно. |
+| `test_build_startup_notification_includes_startup_test_status` | В startup-уведомление добавляется строка вида `"Тесты запуска: ✅ 32 passed in 3.98s"`, если production self-check завершился успешно. |
 
 ---
 

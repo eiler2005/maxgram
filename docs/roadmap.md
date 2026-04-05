@@ -48,7 +48,7 @@
 - [x] **sender_name из live API** — `get_cached_user` + live `get_users()` fallback; имена в группах работают
 - [x] **Own-message echo dedup** — реальный `max_msg_id` сохраняется перед отправкой; эхо подавляется
 - [x] **`/status` в личном чате** — команды принимаются от владельца и в форум-группе, и в DM с ботом
-- [x] **19 regression-тестов** — все проходят; описание: `docs/tests.md`
+- [x] **32 regression-теста** — все проходят; описание: `docs/tests.md`
 
 ### Phase 3: Cloud Migration ✅
 - [x] Dockerfile + docker-compose.prod.yml
@@ -72,7 +72,7 @@
 - [ ] **Длинные сообщения** — разбивать >4096 символов на части
 - [ ] **Нативные voice note bubbles** — голосовые как `send_voice` вместо обычного аудио
 - [ ] **Missed messages gap** — уведомление о пропущенных сообщениях за время downtime
-- [ ] **Унификация типов MAX-вложений** — ввести единый normalizer для alias-типов (`IMAGE`, `VOICE`, `DOCUMENT`, `DOC` и т.п.), чтобы один и тот же mapping использовался и в верхнем dispatch, и в download pipeline
+- [x] **Унификация типов MAX-вложений** — единый normalizer для alias-типов (`IMAGE`, `VOICE`, `DOCUMENT`, `DOC` и т.п.) используется и в верхнем dispatch, и в download pipeline
 - [ ] **Пост-валидация скачанных вложений** — после download проверять `Content-Type` и сигнатуру файла, чтобы HTML/player fallback не уходил в Telegram как медиафайл
 - [ ] **Расширение тест-сьюта** — retry-логика, stat counters, `_build_status_message`
 
@@ -95,7 +95,6 @@
 |--------|-----------|
 | Тесты для retry-логики `_tg_retry` | Medium |
 | Тесты для `_build_status_message` | Medium |
-| Единый normalizer MAX attachment type aliases | Medium |
 | Валидация скачанного файла (`Content-Type` / magic bytes) перед отправкой в Telegram | Medium |
 | Per-chat управление из TG | Medium |
 | `/chats` команда | Low |
