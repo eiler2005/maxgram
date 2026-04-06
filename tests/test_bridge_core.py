@@ -13,15 +13,27 @@ class DummyRepo:
     def __init__(self):
         self.bindings = []
         self.activity_map = {}
+        self.binding_by_chat = {}
 
     async def get_binding_by_topic(self, tg_topic_id: int):
         return SimpleNamespace(max_chat_id="-70000000000003", tg_topic_id=tg_topic_id, mode="active")
+
+    async def get_binding(self, max_chat_id: str):
+        return self.binding_by_chat.get(max_chat_id)
 
     async def get_max_msg_id_by_tg(self, tg_msg_id: int):
         return "mx-reply-1"
 
     async def save_message(self, record):
         self.saved_record = record
+
+    async def save_binding(self, binding):
+        self.binding_by_chat[binding.max_chat_id] = binding
+
+    async def update_title(self, max_chat_id: str, title: str):
+        binding = self.binding_by_chat.get(max_chat_id)
+        if binding is not None:
+            binding.title = title
 
     async def log_delivery(self, *args, **kwargs):
         self.logged = (args, kwargs)
@@ -38,6 +50,9 @@ class DummyMax:
         self.handler = handler
 
     async def resolve_user_name(self, user_id: str):
+        return None
+
+    async def resolve_chat_title(self, chat_id: str):
         return None
 
     async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None,
@@ -83,6 +98,23 @@ class DummyTelegram:
 
     async def send_notification(self, text):
         self.calls.append(("notification", text))
+
+    async def create_topic(self, title, flow_id=None):
+        self.calls.append(("create_topic", title, flow_id))
+        return 101
+
+    async def rename_topic(self, topic_id, title, flow_id=None):
+        self.calls.append(("rename_topic", topic_id, title, flow_id))
+
+
+class DummyConfig(SimpleNamespace):
+    def get_chat_title(self, max_chat_id: str):
+        titles = getattr(self, "_chat_titles", {})
+        return titles.get(max_chat_id)
+
+    def get_chat_mode(self, max_chat_id: str):
+        modes = getattr(self, "_chat_modes", {})
+        return modes.get(max_chat_id, "active")
 
 
 @pytest.mark.asyncio
@@ -287,6 +319,55 @@ async def test_on_tg_reply_rejects_too_large_media(tmp_path):
     assert tg_adapter.calls == [
         ("text", "🚫 [too large: huge.bin] (лимит: 1e-06MB)"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_topic_resolves_group_title_via_live_max_lookup():
+    class GroupAwareMax(DummyMax):
+        async def resolve_chat_title(self, chat_id: str):
+            assert chat_id == "-70243447272944"
+            return "2104 ПН 16:40 Scratch Jr"
+
+    repo = DummyRepo()
+    max_adapter = GroupAwareMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=DummyConfig(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    msg = MaxMessage(
+        msg_id="42",
+        chat_id="-70243447272944",
+        chat_title=None,
+        sender_id="10",
+        sender_name="Наталья Ростовцева",
+        text="Тест",
+        attachments=[],
+        attachment_types=[],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    topic_id = await bridge._get_or_create_topic(msg, flow_id="mx:-70243447272944:42")
+
+    assert topic_id == 101
+    assert tg_adapter.calls == [
+        ("create_topic", "2104 ПН 16:40 Scratch Jr", "mx:-70243447272944:42"),
+    ]
+    assert repo.binding_by_chat["-70243447272944"].title == "2104 ПН 16:40 Scratch Jr"
 
 
 @pytest.mark.asyncio

@@ -522,6 +522,46 @@ class MaxAdapter:
             logger.warning("resolve_user_name failed user_id=%s: %s", user_id, e)
         return None
 
+    async def resolve_chat_title(self, chat_id: str) -> Optional[str]:
+        """Получить название группового чата по ID.
+        Сначала пробует локальный кеш pymax, затем live-запрос к MAX API.
+        """
+        if not self._client:
+            return None
+
+        try:
+            chat_id_int = int(chat_id)
+        except (TypeError, ValueError):
+            return None
+
+        if chat_id_int > 0:
+            return None
+
+        try:
+            chat_obj = next(
+                (chat for chat in getattr(self._client, "chats", []) if getattr(chat, "id", None) == chat_id_int),
+                None,
+            )
+            if chat_obj:
+                title = getattr(chat_obj, "title", None) or getattr(chat_obj, "name", None)
+                if title:
+                    logger.debug("resolve_chat_title (cache) chat_id=%s -> %r", chat_id, title)
+                    return title
+        except Exception as e:
+            logger.debug("resolve_chat_title cache failed chat_id=%s: %s", chat_id, e)
+
+        try:
+            chat_obj = await self._client.get_chat(chat_id_int)
+            if chat_obj:
+                title = getattr(chat_obj, "title", None) or getattr(chat_obj, "name", None)
+                if title:
+                    logger.debug("resolve_chat_title (live) chat_id=%s -> %r", chat_id, title)
+                    return title
+        except Exception as e:
+            logger.warning("resolve_chat_title failed chat_id=%s: %s", chat_id, e)
+
+        return None
+
     def get_own_id(self) -> Optional[str]:
         """Вернуть ID нашего MAX аккаунта (для фильтрации собственных сообщений)."""
         return self._own_id

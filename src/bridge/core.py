@@ -327,7 +327,13 @@ class BridgeCore:
         if msg.chat_title:
             return msg.chat_title
 
-        # 3. DM: резолвим имя собеседника через MAX API
+        # 3. Группы: live lookup названия через MAX API, если локальный cache miss
+        if not msg.is_dm:
+            title = await self._max.resolve_chat_title(msg.chat_id)
+            if title:
+                return title
+
+        # 4. DM: резолвим имя собеседника через MAX API
         #    В DM chat_id == user_id собеседника (не нашего аккаунта!)
         #    Пробуем chat_id первым, потом sender_id (если это не наш аккаунт)
         if msg.is_dm:
@@ -342,7 +348,7 @@ class BridgeCore:
                 if name:
                     return name
 
-        # 4. Fallback
+        # 5. Fallback
         return f"Чат {msg.chat_id}"
 
     def _compose_message_text(self, primary: str, secondary: str = "") -> str:
