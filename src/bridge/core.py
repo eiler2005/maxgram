@@ -22,6 +22,7 @@ from ..adapters.max_adapter import MaxAdapter, MaxAttachment, MaxMessage
 from ..adapters.tg_adapter import TelegramAdapter
 from ..config.loader import AppConfig
 from ..db.repository import Repository, ChatBinding, MessageRecord
+from ..logging_utils import build_max_flow_id, build_tg_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class BridgeCore:
 
     async def _on_max_message(self, msg: MaxMessage):
         """Входящее сообщение из MAX → форвардим в Telegram."""
+        flow_id = build_max_flow_id(msg.chat_id, msg.msg_id)
 
         if not msg.msg_id or not msg.chat_id:
             return
@@ -62,16 +64,59 @@ class BridgeCore:
         # Собственные сообщения: фильтруем эхо bridge-отправок, остальные форвардим
         if msg.is_own:
             if await self._repo.is_duplicate(msg.msg_id, msg.chat_id):
-                logger.debug("Own message echo skipped msg_id=%s", msg.msg_id)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "bridge.inbound.dedup",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="dedup",
+                    outcome="skipped",
+                    reason="duplicate",
+                    max_chat_id=msg.chat_id,
+                    max_msg_id=msg.msg_id,
+                )
                 return
-            # Прямое сообщение из MAX (не через bridge) — форвардим с пометкой
-            logger.debug("Own direct MAX message msg_id=%s — forwarding to TG", msg.msg_id)
-            # fall through к основному потоку
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.dedup",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="dedup",
+                outcome="accepted",
+                reason="own_direct_message",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+            )
 
         # Дедупликация (для чужих сообщений)
         elif await self._repo.is_duplicate(msg.msg_id, msg.chat_id):
-            logger.debug("Duplicate skipped msg_id=%s", msg.msg_id)
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.dedup",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="dedup",
+                outcome="skipped",
+                reason="duplicate",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+            )
             return
+        else:
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.dedup",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="dedup",
+                outcome="accepted",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+            )
 
         # Сохраняем сразу (idempotency key)
         await self._repo.save_message(MessageRecord(
@@ -84,9 +129,20 @@ class BridgeCore:
         ))
 
         # Получаем или создаём топик
-        topic_id = await self._get_or_create_topic(msg)
+        topic_id = await self._get_or_create_topic(msg, flow_id=flow_id)
         if topic_id is None:
-            logger.error("Could not get/create topic for chat_id=%s", msg.chat_id)
+            log_event(
+                logger,
+                logging.ERROR,
+                "bridge.inbound.forward_finished",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="routing",
+                outcome="failed",
+                reason="no_topic",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+            )
             await self._repo.log_delivery(msg.msg_id, msg.chat_id, "inbound", "failed",
                                           "no_topic")
             return
@@ -94,10 +150,35 @@ class BridgeCore:
         # Проверяем режим чата
         binding = await self._repo.get_binding(msg.chat_id)
         if binding and binding.mode == "disabled":
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.forward_finished",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="routing",
+                outcome="skipped",
+                reason="disabled",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+            )
             return
 
         # Форвардим в Telegram
-        tg_msg_id = await self._forward_to_telegram(msg, topic_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.inbound.forward_started",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="forward",
+            outcome="started",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            tg_topic_id=topic_id,
+        )
+        tg_msg_id = await self._forward_to_telegram(msg, topic_id, flow_id=flow_id)
 
         # Обновляем запись с tg_msg_id
         if tg_msg_id:
@@ -114,12 +195,39 @@ class BridgeCore:
                 self._stats["inbound_media"] += 1
             else:
                 self._stats["inbound_text"] += 1
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.forward_finished",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="forward",
+                outcome="delivered",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+            )
         else:
             await self._repo.log_delivery(msg.msg_id, msg.chat_id, "inbound", "failed",
                                           "tg_send_failed")
             self._stats["failed_inbound"] += 1
+            log_event(
+                logger,
+                logging.ERROR,
+                "bridge.inbound.forward_finished",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="forward",
+                outcome="failed",
+                reason="tg_send_failed",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+            )
 
-    async def _get_or_create_topic(self, msg: MaxMessage) -> Optional[int]:
+    async def _get_or_create_topic(self, msg: MaxMessage, *,
+                                   flow_id: Optional[str] = None) -> Optional[int]:
         """Вернуть существующий topic_id или создать новый.
         Если топик уже есть, но имеет fallback-название — пробуем переименовать.
         """
@@ -129,9 +237,35 @@ class BridgeCore:
             if binding.title.startswith("Чат "):
                 real_title = await self._resolve_chat_title(msg)
                 if not real_title.startswith("Чат "):
-                    await self._tg.rename_topic(binding.tg_topic_id, real_title)
+                    await self._tg.rename_topic(binding.tg_topic_id, real_title, flow_id=flow_id)
                     await self._repo.update_title(msg.chat_id, real_title)
-                    logger.info("Topic renamed chat_id=%s %r → %r", msg.chat_id, binding.title, real_title)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "bridge.inbound.topic_resolved",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="routing",
+                        outcome="renamed",
+                        max_chat_id=msg.chat_id,
+                        max_msg_id=msg.msg_id,
+                        tg_topic_id=binding.tg_topic_id,
+                        title=real_title,
+                    )
+                    return binding.tg_topic_id
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.topic_resolved",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="routing",
+                outcome="existing",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=binding.tg_topic_id,
+                title=binding.title,
+            )
             return binding.tg_topic_id
 
         # Определяем название топика
@@ -139,9 +273,22 @@ class BridgeCore:
 
         # Создаём топик в Telegram
         try:
-            topic_id = await self._tg.create_topic(title)
+            topic_id = await self._tg.create_topic(title, flow_id=flow_id)
         except Exception as e:
-            logger.error("create_topic failed title=%r: %s", title, e)
+            log_event(
+                logger,
+                logging.ERROR,
+                "bridge.inbound.topic_resolved",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="routing",
+                outcome="failed",
+                reason="topic_create_failed",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                title=title,
+                error=str(e),
+            )
             return None
 
         # Сохраняем binding
@@ -153,7 +300,20 @@ class BridgeCore:
             mode=mode,
             created_at=int(time.time()),
         ))
-        logger.info("New topic created chat_id=%s title=%r topic_id=%s", msg.chat_id, title, topic_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.inbound.topic_resolved",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="routing",
+            outcome="created",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            tg_topic_id=topic_id,
+            title=title,
+            mode=mode,
+        )
         return topic_id
 
     async def _resolve_chat_title(self, msg: MaxMessage) -> str:
@@ -199,14 +359,14 @@ class BridgeCore:
             return False
 
     async def _send_attachment(self, topic_id: int, attachment: MaxAttachment,
-                               caption: str) -> Optional[int]:
+                               caption: str, *, flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить одно вложение в Telegram."""
         if attachment.kind == "photo":
-            return await self._tg.send_photo(topic_id, attachment.local_path, caption)
+            return await self._tg.send_photo(topic_id, attachment.local_path, caption, flow_id=flow_id)
 
         if attachment.kind == "document":
             return await self._tg.send_document(
-                topic_id, attachment.local_path, caption, attachment.filename or ""
+                topic_id, attachment.local_path, caption, attachment.filename or "", flow_id=flow_id
             )
 
         if attachment.kind == "video":
@@ -218,6 +378,7 @@ class BridgeCore:
                 duration=attachment.duration,
                 width=attachment.width,
                 height=attachment.height,
+                flow_id=flow_id,
             )
 
         if attachment.kind == "audio":
@@ -228,6 +389,7 @@ class BridgeCore:
                     attachment.local_path,
                     caption,
                     duration=attachment.duration,
+                    flow_id=flow_id,
                 )
             return await self._tg.send_audio(
                 topic_id,
@@ -235,14 +397,20 @@ class BridgeCore:
                 caption,
                 attachment.filename or "",
                 duration=attachment.duration,
+                flow_id=flow_id,
             )
 
         placeholder = self._cfg.content.placeholder_unsupported.format(
             type=attachment.source_type or attachment.kind
         )
-        return await self._tg.send_text(topic_id, self._compose_message_text(caption, placeholder))
+        return await self._tg.send_text(
+            topic_id,
+            self._compose_message_text(caption, placeholder),
+            flow_id=flow_id,
+        )
 
-    async def _forward_to_telegram(self, msg: MaxMessage, topic_id: int) -> Optional[int]:
+    async def _forward_to_telegram(self, msg: MaxMessage, topic_id: int,
+                                   *, flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить сообщение в Telegram топик. Возвращает tg_msg_id."""
 
         # Формируем заголовок отправителя
@@ -268,10 +436,10 @@ class BridgeCore:
                     filename=attachment.filename or attachment_path.name
                 )
                 text = self._compose_message_text("" if emitted_anything else media_caption, placeholder)
-                sent_id = await self._tg.send_text(topic_id, text)
+                sent_id = await self._tg.send_text(topic_id, text, flow_id=flow_id)
             else:
                 caption = "" if emitted_anything else media_caption
-                sent_id = await self._send_attachment(topic_id, attachment, caption)
+                sent_id = await self._send_attachment(topic_id, attachment, caption, flow_id=flow_id)
 
             if sent_id:
                 emitted_anything = True
@@ -280,14 +448,14 @@ class BridgeCore:
 
         if extra_text:
             text = self._compose_message_text("" if emitted_anything else body_text, extra_text)
-            sent_id = await self._tg.send_text(topic_id, text)
+            sent_id = await self._tg.send_text(topic_id, text, flow_id=flow_id)
             if sent_id:
                 emitted_anything = True
                 if tg_msg_id is None:
                     tg_msg_id = sent_id
 
         if not emitted_anything and body_text:
-            tg_msg_id = await self._tg.send_text(topic_id, body_text)
+            tg_msg_id = await self._tg.send_text(topic_id, body_text, flow_id=flow_id)
 
         elif not emitted_anything:
             cfg = self._cfg.content
@@ -296,6 +464,7 @@ class BridgeCore:
             tg_msg_id = await self._tg.send_text(
                 topic_id,
                 self._compose_message_text(body_text, placeholder),
+                flow_id=flow_id,
             )
 
         # Удаляем временный файл после отправки (TTL-политика)
@@ -315,26 +484,81 @@ class BridgeCore:
             return clean_text
         return f"[{sender_name}]\n{clean_text}" if clean_text else f"[{sender_name}]"
 
-    async def _on_tg_reply(self, topic_id: int, text: str,
+    async def _on_tg_reply(self, topic_id: int, tg_msg_id: Optional[int], text: str,
                            reply_to_tg_msg_id: Optional[int],
                            sender_name: Optional[str],
                            media_path: Optional[str] = None,
                            media_type: Optional[str] = None):
         """Reply из Telegram → отправляем в MAX."""
+        flow_id = build_tg_flow_id(topic_id, tg_msg_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.outbound.forward_started",
+            flow_id=flow_id,
+            direction="outbound",
+            stage="received",
+            outcome="accepted",
+            tg_topic_id=topic_id,
+            tg_msg_id=tg_msg_id,
+            reply_to_tg_msg_id=reply_to_tg_msg_id,
+            media_type=media_type,
+            has_text=bool(text.strip()),
+            filename=sanitize_path(media_path),
+        )
 
         binding = await self._repo.get_binding_by_topic(topic_id)
         if not binding:
             await self._tg.send_notification(f"⚠️ Не найден MAX чат для топика {topic_id}")
+            log_event(
+                logger,
+                logging.ERROR,
+                "bridge.outbound.forward_finished",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="routing",
+                outcome="failed",
+                reason="no_topic",
+                tg_topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+            )
             return
 
         if binding.mode == "readonly":
             await self._tg.send_text(
                 topic_id,
-                "🚫 Этот чат настроен как readonly — ответы не отправляются в MAX"
+                "🚫 Этот чат настроен как readonly — ответы не отправляются в MAX",
+                flow_id=flow_id,
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.outbound.forward_finished",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="routing",
+                outcome="skipped",
+                reason="readonly",
+                tg_topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+                max_chat_id=binding.max_chat_id,
             )
             return
 
         if binding.mode == "disabled":
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.outbound.forward_finished",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="routing",
+                outcome="skipped",
+                reason="disabled",
+                tg_topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+                max_chat_id=binding.max_chat_id,
+            )
             return
 
         if media_path and self._is_file_too_large(media_path):
@@ -345,18 +569,47 @@ class BridgeCore:
             await self._tg.send_text(
                 topic_id,
                 f"🚫 {placeholder} (лимит: {max_size_mb}MB)",
+                flow_id=flow_id,
             )
             try:
                 Path(media_path).unlink(missing_ok=True)
             except Exception:
                 pass
             self._stats["failed_outbound"] += 1
+            log_event(
+                logger,
+                logging.ERROR,
+                "bridge.outbound.forward_finished",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="validation",
+                outcome="failed",
+                reason="too_large",
+                tg_topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+                max_chat_id=binding.max_chat_id,
+                filename=sanitize_path(media_path),
+            )
             return
 
         # Найти max_msg_id для reply (если есть)
         reply_to_max_id = None
         if reply_to_tg_msg_id:
             reply_to_max_id = await self._repo.get_max_msg_id_by_tg(reply_to_tg_msg_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.outbound.reply_resolved",
+            flow_id=flow_id,
+            direction="outbound",
+            stage="routing",
+            outcome="found" if reply_to_max_id else "missing",
+            tg_topic_id=topic_id,
+            tg_msg_id=tg_msg_id,
+            reply_to_tg_msg_id=reply_to_tg_msg_id,
+            max_chat_id=binding.max_chat_id,
+            reply_to_max_id=reply_to_max_id,
+        )
 
         outbound_text = self._compose_tg_outbound_text(text, sender_name)
         sent_id = await self._max.send_message(
@@ -365,6 +618,7 @@ class BridgeCore:
             reply_to_msg_id=reply_to_max_id,
             media_path=media_path,
             media_type=media_type,
+            flow_id=flow_id,
         )
 
         # Удаляем скачанный TG-файл после отправки
@@ -375,8 +629,21 @@ class BridgeCore:
                 pass
 
         if sent_id is None:
-            await self._tg.send_text(topic_id, "❌ Не удалось отправить сообщение в MAX")
+            await self._tg.send_text(topic_id, "❌ Не удалось отправить сообщение в MAX", flow_id=flow_id)
             self._stats["failed_outbound"] += 1
+            log_event(
+                logger,
+                logging.ERROR,
+                "bridge.outbound.forward_finished",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="forward",
+                outcome="failed",
+                reason="max_send_failed",
+                tg_topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+                max_chat_id=binding.max_chat_id,
+            )
             return
 
         await self._repo.save_message(MessageRecord(
@@ -392,7 +659,20 @@ class BridgeCore:
             self._stats["outbound_media"] += 1
         else:
             self._stats["outbound_text"] += 1
-        logger.info("Outbound sent chat_id=%s max_msg_id=%s", binding.max_chat_id, sent_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.outbound.forward_finished",
+            flow_id=flow_id,
+            direction="outbound",
+            stage="forward",
+            outcome="delivered",
+            tg_topic_id=topic_id,
+            tg_msg_id=tg_msg_id,
+            max_chat_id=binding.max_chat_id,
+            max_msg_id=sent_id,
+            media_type=media_type,
+        )
 
     # ── Status report ─────────────────────────────────────────────────────
 
@@ -530,10 +810,27 @@ class BridgeCore:
             if name:
                 await self._tg.rename_topic(binding.tg_topic_id, name)
                 await self._repo.update_title(binding.max_chat_id, name)
-                logger.info("Fixed fallback title: chat_id=%s %r → %r",
-                            binding.max_chat_id, binding.title, name)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "bridge.maintenance.fallback_title_fixed",
+                    stage="maintenance",
+                    outcome="renamed",
+                    max_chat_id=binding.max_chat_id,
+                    tg_topic_id=binding.tg_topic_id,
+                    title=name,
+                )
             else:
-                logger.debug("Could not resolve name for chat_id=%s", binding.max_chat_id)
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "bridge.maintenance.fallback_title_skipped",
+                    stage="maintenance",
+                    outcome="skipped",
+                    reason="name_unresolved",
+                    max_chat_id=binding.max_chat_id,
+                    tg_topic_id=binding.tg_topic_id,
+                )
 
     # ── MAX watchdog ──────────────────────────────────────────────────────
 
@@ -561,17 +858,37 @@ class BridgeCore:
                     await self._tg.send_notification(
                         f"✅ MAX восстановлен (простой ~{downtime}с)"
                     )
-                    logger.info("MAX reconnected after %ds downtime", downtime)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "bridge.watchdog.max_recovered",
+                        stage="watchdog",
+                        outcome="recovered",
+                        downtime_seconds=downtime,
+                    )
                 disconnected_since = None
                 alert_sent = False
             else:
                 if disconnected_since is None:
                     disconnected_since = time.time()
-                    logger.warning("MAX watchdog: connection lost, timer started")
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "bridge.watchdog.max_lost",
+                        stage="watchdog",
+                        outcome="started",
+                    )
 
                 elapsed = time.time() - disconnected_since
                 if not alert_sent and elapsed >= alert_after_seconds:
-                    logger.error("MAX offline for %ds — sending alert", int(elapsed))
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "bridge.watchdog.max_alert",
+                        stage="watchdog",
+                        outcome="alerted",
+                        downtime_seconds=int(elapsed),
+                    )
                     await self._tg.send_notification(
                         f"⚠️ MAX недоступен уже {int(elapsed)}с — идёт переподключение"
                     )
@@ -586,6 +903,21 @@ class BridgeCore:
             try:
                 await self._repo.cleanup_old_messages(self._cfg.bridge.message_retention_days)
                 await self._repo.cleanup_old_logs(self._cfg.bridge.log_retention_days)
-                logger.info("Cleanup done")
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "bridge.cleanup.completed",
+                    stage="maintenance",
+                    outcome="completed",
+                    message_retention_days=self._cfg.bridge.message_retention_days,
+                    log_retention_days=self._cfg.bridge.log_retention_days,
+                )
             except Exception as e:
-                logger.error("Cleanup error: %s", e)
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "bridge.cleanup.failed",
+                    stage="maintenance",
+                    outcome="failed",
+                    error=str(e),
+                )

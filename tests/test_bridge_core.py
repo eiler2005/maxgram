@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,8 +41,8 @@ class DummyMax:
         return None
 
     async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None,
-                           media_path=None, media_type=None):
-        self.sent = (chat_id, text, reply_to_msg_id)
+                           media_path=None, media_type=None, flow_id=None):
+        self.sent = (chat_id, text, reply_to_msg_id, flow_id)
         return "mx-out-1"
 
 
@@ -56,27 +57,27 @@ class DummyTelegram:
     def on_command(self, cmd: str, handler):
         self.commands[cmd] = handler
 
-    async def send_photo(self, topic_id, path, caption=""):
+    async def send_photo(self, topic_id, path, caption="", flow_id=None):
         self.calls.append(("photo", caption))
         return 1
 
-    async def send_document(self, topic_id, path, caption="", filename=""):
+    async def send_document(self, topic_id, path, caption="", filename="", flow_id=None):
         self.calls.append(("document", caption, filename))
         return 2
 
-    async def send_video(self, topic_id, path, caption="", filename="", duration=None, width=None, height=None):
+    async def send_video(self, topic_id, path, caption="", filename="", duration=None, width=None, height=None, flow_id=None):
         self.calls.append(("video", caption, filename, duration, width, height))
         return 3
 
-    async def send_audio(self, topic_id, path, caption="", filename="", duration=None):
+    async def send_audio(self, topic_id, path, caption="", filename="", duration=None, flow_id=None):
         self.calls.append(("audio", caption, filename, duration))
         return 4
 
-    async def send_voice(self, topic_id, path, caption="", duration=None):
+    async def send_voice(self, topic_id, path, caption="", duration=None, flow_id=None):
         self.calls.append(("voice", caption, duration))
         return 6
 
-    async def send_text(self, topic_id, text, reply_to_msg_id=None):
+    async def send_text(self, topic_id, text, reply_to_msg_id=None, flow_id=None):
         self.calls.append(("text", text))
         return 5
 
@@ -237,6 +238,7 @@ async def test_on_tg_reply_prefixes_sender_name_for_max():
 
     await bridge._on_tg_reply(
         topic_id=99,
+        tg_msg_id=555,
         text="Проверка связи",
         reply_to_tg_msg_id=123,
         sender_name="Марина Ермилова",
@@ -246,6 +248,7 @@ async def test_on_tg_reply_prefixes_sender_name_for_max():
         "-70000000000003",
         "[Марина Ермилова]\nПроверка связи",
         "mx-reply-1",
+        "tg:99:555",
     )
 
 
@@ -272,6 +275,7 @@ async def test_on_tg_reply_rejects_too_large_media(tmp_path):
 
     await bridge._on_tg_reply(
         topic_id=99,
+        tg_msg_id=555,
         text="",
         reply_to_tg_msg_id=None,
         sender_name="Марина Ермилова",
@@ -367,3 +371,38 @@ async def test_watchdog_sends_gap_notice_after_reconnect():
     assert any("MAX недоступен уже" in text for text in notifications)
     assert any("Возможен пропуск сообщений MAX" in text for text in notifications)
     assert any("MAX восстановлен" in text for text in notifications)
+
+
+@pytest.mark.asyncio
+async def test_on_tg_reply_logs_forward_completion(caplog):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    with caplog.at_level(logging.INFO, logger="src.bridge.core"):
+        await bridge._on_tg_reply(
+            topic_id=99,
+            tg_msg_id=777,
+            text="Проверка логов",
+            reply_to_tg_msg_id=123,
+            sender_name="Марина Ермилова",
+        )
+
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    assert any(
+        event.get("event") == "bridge.outbound.forward_finished"
+        and event.get("outcome") == "delivered"
+        for event in events
+    )

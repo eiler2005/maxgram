@@ -19,14 +19,16 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import Message, FSInputFile
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 
+from ..logging_utils import build_tg_flow_id, log_event, sanitize_path
+
 logger = logging.getLogger(__name__)
 
 
 ReplyHandler = Callable[
-    [int, str, Optional[int], Optional[str], Optional[str], Optional[str]],
+    [int, Optional[int], str, Optional[int], Optional[str], Optional[str], Optional[str]],
     Awaitable[None],
 ]
-# args: tg_topic_id, text, reply_to_tg_msg_id, sender_name, media_path, media_type
+# args: tg_topic_id, tg_msg_id, text, reply_to_tg_msg_id, sender_name, media_path, media_type
 
 
 class TelegramAdapter:
@@ -50,16 +52,25 @@ class TelegramAdapter:
 
     # ── Топики ────────────────────────────────────────────────────────────
 
-    async def create_topic(self, title: str) -> int:
+    async def create_topic(self, title: str, *, flow_id: Optional[str] = None) -> int:
         """Создать топик в форум-группе, вернуть message_thread_id."""
         result = await self._bot.create_forum_topic(
             chat_id=self._group_id,
             name=title[:128],  # Telegram limit
         )
-        logger.info("Created topic %r thread_id=%s", title, result.message_thread_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "tg.topic.created",
+            flow_id=flow_id,
+            stage="routing",
+            outcome="created",
+            tg_topic_id=result.message_thread_id,
+            title=title[:128],
+        )
         return result.message_thread_id
 
-    async def rename_topic(self, topic_id: int, new_title: str):
+    async def rename_topic(self, topic_id: int, new_title: str, *, flow_id: Optional[str] = None):
         """Переименовать существующий топик."""
         try:
             await self._bot.edit_forum_topic(
@@ -67,13 +78,37 @@ class TelegramAdapter:
                 message_thread_id=topic_id,
                 name=new_title[:128],
             )
-            logger.info("Renamed topic thread_id=%s → %r", topic_id, new_title)
+            log_event(
+                logger,
+                logging.INFO,
+                "tg.topic.renamed",
+                flow_id=flow_id,
+                stage="routing",
+                outcome="renamed",
+                tg_topic_id=topic_id,
+                title=new_title[:128],
+            )
         except TelegramAPIError as e:
-            logger.error("rename_topic failed topic=%s: %s", topic_id, e)
+            log_event(
+                logger,
+                logging.ERROR,
+                "tg.topic.rename_failed",
+                flow_id=flow_id,
+                stage="routing",
+                outcome="failed",
+                tg_topic_id=topic_id,
+                reason="tg_api_error",
+                error=str(e),
+            )
 
     # ── Retry helper ──────────────────────────────────────────────────────
 
-    async def _tg_retry(self, coro_fn, label: str) -> Optional[int]:
+    async def _tg_retry(self, coro_fn, label: str, *,
+                        flow_id: Optional[str] = None,
+                        direction: Optional[str] = None,
+                        tg_topic_id: Optional[int] = None,
+                        tg_msg_id: Optional[int] = None,
+                        media_type: Optional[str] = None) -> Optional[int]:
         """Выполнить TG API вызов с retry + exponential backoff.
 
         3 попытки: немедленно → sleep 1s → sleep 2s.
@@ -82,32 +117,103 @@ class TelegramAdapter:
         """
         delays = (1, 2)  # пауза перед 2-й и 3-й попытками
         last_exc: Exception = RuntimeError("no attempt made")
+        log_event(
+            logger,
+            logging.INFO,
+            "tg.outbound.send",
+            flow_id=flow_id,
+            direction=direction,
+            stage="transport",
+            outcome="started",
+            tg_topic_id=tg_topic_id,
+            tg_msg_id=tg_msg_id,
+            media_type=media_type,
+            label=label,
+        )
 
         for attempt in range(1, 4):
             try:
                 msg = await coro_fn()
-                if attempt > 1:
-                    logger.info("%s succeeded on attempt %d", label, attempt)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "tg.outbound.sent",
+                    flow_id=flow_id,
+                    direction=direction,
+                    stage="transport",
+                    outcome="sent",
+                    tg_topic_id=tg_topic_id,
+                    tg_msg_id=getattr(msg, "message_id", None) or tg_msg_id,
+                    media_type=media_type,
+                    attempts=attempt,
+                    label=label,
+                )
                 return msg.message_id
             except TelegramRetryAfter as e:
                 wait = max(int(e.retry_after), 1) + 1
-                logger.warning("%s rate-limited (attempt %d/3), retry in %ds", label, attempt, wait)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "tg.outbound.retry",
+                    flow_id=flow_id,
+                    direction=direction,
+                    stage="transport",
+                    outcome="retry",
+                    reason="rate_limited",
+                    tg_topic_id=tg_topic_id,
+                    tg_msg_id=tg_msg_id,
+                    media_type=media_type,
+                    attempts=attempt,
+                    retry_in_seconds=wait,
+                    label=label,
+                )
                 last_exc = e
                 if attempt < 3:
                     await asyncio.sleep(wait)
             except TelegramAPIError as e:
-                logger.warning("%s failed (attempt %d/3): %s", label, attempt, e)
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "tg.outbound.retry",
+                    flow_id=flow_id,
+                    direction=direction,
+                    stage="transport",
+                    outcome="retry",
+                    reason="tg_api_error",
+                    tg_topic_id=tg_topic_id,
+                    tg_msg_id=tg_msg_id,
+                    media_type=media_type,
+                    attempts=attempt,
+                    label=label,
+                    error=str(e),
+                )
                 last_exc = e
                 if attempt < 3:
                     await asyncio.sleep(delays[attempt - 1])
 
-        logger.error("%s failed after 3 attempts: %s", label, last_exc)
+        log_event(
+            logger,
+            logging.ERROR,
+            "tg.outbound.failed",
+            flow_id=flow_id,
+            direction=direction,
+            stage="transport",
+            outcome="failed",
+            reason="tg_send_failed",
+            tg_topic_id=tg_topic_id,
+            tg_msg_id=tg_msg_id,
+            media_type=media_type,
+            attempts=3,
+            label=label,
+            error=str(last_exc),
+        )
         return None
 
     # ── Отправка сообщений ────────────────────────────────────────────────
 
     async def send_text(self, topic_id: int, text: str,
-                        reply_to_msg_id: Optional[int] = None) -> Optional[int]:
+                        reply_to_msg_id: Optional[int] = None,
+                        *, flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить текст в топик. Возвращает message_id."""
         kwargs: dict = dict(
             chat_id=self._group_id,
@@ -119,9 +225,15 @@ class TelegramAdapter:
         return await self._tg_retry(
             lambda: self._bot.send_message(**kwargs),
             f"send_text topic={topic_id}",
+            flow_id=flow_id,
+            direction="inbound",
+            tg_topic_id=topic_id,
+            tg_msg_id=reply_to_msg_id,
+            media_type="text",
         )
 
-    async def send_photo(self, topic_id: int, path: str, caption: str = "") -> Optional[int]:
+    async def send_photo(self, topic_id: int, path: str, caption: str = "",
+                         *, flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить фото в топик."""
         return await self._tg_retry(
             lambda: self._bot.send_photo(
@@ -131,10 +243,15 @@ class TelegramAdapter:
                 message_thread_id=topic_id,
             ),
             f"send_photo topic={topic_id}",
+            flow_id=flow_id,
+            direction="inbound",
+            tg_topic_id=topic_id,
+            media_type="photo",
         )
 
     async def send_document(self, topic_id: int, path: str,
-                             caption: str = "", filename: str = "") -> Optional[int]:
+                             caption: str = "", filename: str = "",
+                             *, flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить документ в топик."""
         return await self._tg_retry(
             lambda: self._bot.send_document(
@@ -144,12 +261,17 @@ class TelegramAdapter:
                 message_thread_id=topic_id,
             ),
             f"send_document topic={topic_id}",
+            flow_id=flow_id,
+            direction="inbound",
+            tg_topic_id=topic_id,
+            media_type="document",
         )
 
     async def send_video(self, topic_id: int, path: str, caption: str = "",
                          filename: str = "", duration: Optional[int] = None,
                          width: Optional[int] = None,
-                         height: Optional[int] = None) -> Optional[int]:
+                         height: Optional[int] = None,
+                         *, flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить видео в топик."""
         return await self._tg_retry(
             lambda: self._bot.send_video(
@@ -163,10 +285,15 @@ class TelegramAdapter:
                 supports_streaming=True,
             ),
             f"send_video topic={topic_id}",
+            flow_id=flow_id,
+            direction="inbound",
+            tg_topic_id=topic_id,
+            media_type="video",
         )
 
     async def send_audio(self, topic_id: int, path: str, caption: str = "",
-                         filename: str = "", duration: Optional[int] = None) -> Optional[int]:
+                         filename: str = "", duration: Optional[int] = None,
+                         *, flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить аудио в топик."""
         return await self._tg_retry(
             lambda: self._bot.send_audio(
@@ -178,10 +305,15 @@ class TelegramAdapter:
                 title=Path(filename or path).stem,
             ),
             f"send_audio topic={topic_id}",
+            flow_id=flow_id,
+            direction="inbound",
+            tg_topic_id=topic_id,
+            media_type="audio",
         )
 
     async def send_voice(self, topic_id: int, path: str,
-                         caption: str = "", duration: Optional[int] = None) -> Optional[int]:
+                         caption: str = "", duration: Optional[int] = None,
+                         *, flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить voice note в топик (нативный voice bubble)."""
         return await self._tg_retry(
             lambda: self._bot.send_voice(
@@ -192,6 +324,10 @@ class TelegramAdapter:
                 duration=duration,
             ),
             f"send_voice topic={topic_id}",
+            flow_id=flow_id,
+            direction="inbound",
+            tg_topic_id=topic_id,
+            media_type="voice",
         )
 
     async def send_notification(self, text: str):
@@ -203,15 +339,42 @@ class TelegramAdapter:
 
     # ── Скачивание медиа из Telegram ─────────────────────────────────────
 
-    async def _download_tg_media(self, file_id: str, filename: str) -> Optional[str]:
+    async def _download_tg_media(self, file_id: str, filename: str, *,
+                                 flow_id: Optional[str] = None,
+                                 media_type: Optional[str] = None) -> Optional[str]:
         """Скачать медиафайл из Telegram в tmp_dir, вернуть локальный путь."""
         try:
             self._tmp_dir.mkdir(parents=True, exist_ok=True)
             local_path = self._tmp_dir / filename
             await self._bot.download(file_id, destination=str(local_path))
+            size = local_path.stat().st_size if local_path.exists() else None
+            log_event(
+                logger,
+                logging.INFO,
+                "tg.inbound.media_download",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="download",
+                outcome="downloaded",
+                media_type=media_type,
+                filename=sanitize_path(filename),
+                size_bytes=size,
+            )
             return str(local_path)
         except Exception as e:
-            logger.error("TG media download failed file_id=%s: %s", file_id, e)
+            log_event(
+                logger,
+                logging.ERROR,
+                "tg.inbound.media_download",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="download",
+                outcome="failed",
+                reason="download_failed",
+                media_type=media_type,
+                filename=sanitize_path(filename),
+                error=str(e),
+            )
             return None
 
     # ── Получение reply ───────────────────────────────────────────────────
@@ -278,11 +441,27 @@ class TelegramAdapter:
         if not topic_id:
             return
 
+        tg_msg_id = getattr(message, "message_id", None)
+        flow_id = build_tg_flow_id(topic_id, tg_msg_id)
         reply_to_tg_id = None
         if message.reply_to_message:
             reply_to_tg_id = message.reply_to_message.message_id
 
         text = message.text or message.caption or ""
+        sender_name = self._render_sender_name(message)
+        log_event(
+            logger,
+            logging.INFO,
+            "tg.inbound.received",
+            flow_id=flow_id,
+            direction="outbound",
+            stage="received",
+            outcome="accepted",
+            tg_topic_id=topic_id,
+            tg_msg_id=tg_msg_id,
+            reply_to_tg_msg_id=reply_to_tg_id,
+            has_text=bool(text),
+        )
 
         # Скачиваем медиа если есть
         media_path: Optional[str] = None
@@ -291,40 +470,69 @@ class TelegramAdapter:
 
         if message.photo:
             media_path = await self._download_tg_media(
-                message.photo[-1].file_id, f"tg_photo_{ts}.jpg"
+                message.photo[-1].file_id, f"tg_photo_{ts}.jpg",
+                flow_id=flow_id, media_type="photo",
             )
             media_type = "photo"
         elif message.video:
             ext = Path(message.video.file_name or "video.mp4").suffix or ".mp4"
             media_path = await self._download_tg_media(
-                message.video.file_id, f"tg_video_{ts}{ext}"
+                message.video.file_id, f"tg_video_{ts}{ext}",
+                flow_id=flow_id, media_type="video",
             )
             media_type = "video"
         elif message.audio:
             ext = Path(message.audio.file_name or "audio.mp3").suffix or ".mp3"
             media_path = await self._download_tg_media(
-                message.audio.file_id, f"tg_audio_{ts}{ext}"
+                message.audio.file_id, f"tg_audio_{ts}{ext}",
+                flow_id=flow_id, media_type="audio",
             )
             media_type = "audio"
         elif message.voice:
             media_path = await self._download_tg_media(
-                message.voice.file_id, f"tg_voice_{ts}.ogg"
+                message.voice.file_id, f"tg_voice_{ts}.ogg",
+                flow_id=flow_id, media_type="voice",
             )
             media_type = "voice"
         elif message.document:
             fname = message.document.file_name or f"tg_doc_{ts}"
-            media_path = await self._download_tg_media(message.document.file_id, fname)
+            media_path = await self._download_tg_media(
+                message.document.file_id, fname,
+                flow_id=flow_id, media_type="document",
+            )
             media_type = "document"
 
         if not text and not media_path:
+            log_event(
+                logger,
+                logging.INFO,
+                "tg.inbound.skipped",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="received",
+                outcome="skipped",
+                reason="empty_event",
+                tg_topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+            )
             return
 
-        sender_name = self._render_sender_name(message)
         for handler in self._reply_handlers:
             try:
-                await handler(topic_id, text, reply_to_tg_id, sender_name, media_path, media_type)
+                await handler(topic_id, tg_msg_id, text, reply_to_tg_id, sender_name, media_path, media_type)
             except Exception as e:
-                logger.error("reply handler error: %s", e)
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "tg.inbound.handler_failed",
+                    flow_id=flow_id,
+                    direction="outbound",
+                    stage="dispatch",
+                    outcome="failed",
+                    tg_topic_id=topic_id,
+                    tg_msg_id=tg_msg_id,
+                    error=str(e),
+                )
 
     def _setup_handlers(self):
         @self._dp.message()
@@ -353,7 +561,15 @@ class TelegramAdapter:
         self._bot = Bot(token=self._token)
         self._dp = Dispatcher()
         self._setup_handlers()
-        logger.info("Starting Telegram adapter owner=%s group=%s", self._owner_id, self._group_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "tg.adapter.starting",
+            stage="startup",
+            outcome="started",
+            group_id=self._group_id,
+            owner_id=self._owner_id,
+        )
         await self._dp.start_polling(self._bot, allowed_updates=["message"])
 
     async def setup(self) -> Bot:

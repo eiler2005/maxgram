@@ -138,6 +138,90 @@ cd /opt/maxtg-bridge
 python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 ```
 
+## Режимы логирования
+
+Поддерживаются env-переключатели:
+
+```bash
+LOG_LEVEL=INFO|DEBUG
+LOG_FORMAT=text|json|mixed
+LOG_PREVIEW_CHARS=120
+LOG_LIBRARIES_DEBUG=0|1
+```
+
+Рекомендуемый production-режим:
+
+```bash
+LOG_LEVEL=INFO
+LOG_FORMAT=mixed
+LOG_LIBRARIES_DEBUG=0
+```
+
+Для детальной диагностики конкретного кейса:
+
+```bash
+LOG_LEVEL=DEBUG
+LOG_FORMAT=mixed
+LOG_PREVIEW_CHARS=120
+```
+
+Что важно:
+
+- на `INFO` логируются route/outcome/meta без полного текста сообщений
+- на `DEBUG` появляются safe preview текста
+- `LOG_LIBRARIES_DEBUG=1` поднимает `pymax`/`aiogram`, использовать только временно
+
+## Как искать трассу сообщения
+
+Основные поля в логах:
+
+- `event=...`
+- `flow_id=mx:<chat_id>:<msg_id>` для MAX -> Telegram
+- `flow_id=tg:<topic_id>:<tg_msg_id>` для Telegram -> MAX
+
+Быстрые команды:
+
+```bash
+# все шаги по конкретному MAX-сообщению
+rg 'flow_id=mx:-70000000000003:4242' data/bridge.log
+
+# все шаги по конкретному Telegram-сообщению
+rg 'flow_id=tg:99:777' data/bridge.log
+
+# только завершения маршрута
+rg 'event=bridge\.(inbound|outbound)\.forward_finished' data/bridge.log
+
+# только retry/fail отправки в Telegram
+rg 'event=tg\.outbound\.(retry|failed|sent)' data/bridge.log
+```
+
+Полезные `event`-группы:
+
+- `max.inbound.*` — что пришло из MAX и как нормализовали
+- `bridge.inbound.*` — routing/dedup/topic resolution для MAX -> TG
+- `tg.outbound.*` — отправка в Telegram, retry и fail
+- `tg.inbound.*` — что пришло из Telegram и скачивание медиа
+- `bridge.outbound.*` — routing/reply resolution и доставка TG -> MAX
+
+## Reason codes
+
+Нормальные/ожидаемые:
+
+- `duplicate`
+- `empty_event`
+- `readonly`
+- `disabled`
+
+Требуют внимания:
+
+- `no_topic`
+- `too_large`
+- `tg_send_failed`
+- `max_send_failed`
+- `download_rejected`
+- `download_failed`
+- `ack_timeout`
+
 ## Базовая живая smoke-проверка на тестовых чатах
 
 Этот сценарий нужен после деплоя или после правок в routing.
@@ -189,7 +273,7 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 
 ## Добавить новый чат
 
-1. Найти `max_chat_id` из лога: `grep "New topic created" data/bridge.log`
+1. Найти `max_chat_id` из лога: `rg 'event=bridge.inbound.topic_resolved .*outcome=created' data/bridge.log`
 2. Добавить в `config.local.yaml` раздел `chats:` (опционально — если нужен специфичный режим)
 3. При `forward_all: true` чат добавится автоматически при первом сообщении
 

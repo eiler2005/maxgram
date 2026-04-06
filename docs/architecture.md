@@ -117,6 +117,106 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 - Никакого контента сообщений
 - Все методы async (aiosqlite)
 
+## Архитектура логирования
+
+### Цели
+
+Система логирования строится как event trail по каждому сообщению, а не как набор несвязанных строк.
+Главная задача: ответить на вопросы "что пришло", "как это классифицировали", "что решили сделать", "что реально отправили" и "почему пропустили или уронили".
+
+### Слои
+
+```text
+src/logging_utils.py
+  ├─ sanitize_preview()    → safe preview текста только для DEBUG
+  ├─ sanitize_url()        → убирает query string и чувствительные части URL
+  ├─ sanitize_path()       → оставляет только basename файла
+  ├─ build_max_flow_id()   → mx:<chat_id>:<msg_id>
+  ├─ build_tg_flow_id()    → tg:<topic_id>:<tg_msg_id>
+  ├─ log_event()           → единая точка записи event-полей
+  └─ EventFormatter        → text/json/mixed форматирование
+```
+
+### Форматы
+
+Поддерживаются env-переключатели:
+
+- `LOG_LEVEL`
+- `LOG_FORMAT=text|json|mixed`
+- `LOG_PREVIEW_CHARS`
+- `LOG_LIBRARIES_DEBUG=0|1`
+
+`mixed` — основной operational-режим:
+
+- строка остаётся читаемой человеком
+- обязательные поля идут как `key=value`
+- сложные поля сериализуются как компактный JSON
+
+`json` — для машинного разбора и внешних log-pipeline.
+
+### Корреляция событий
+
+Каждая трасса маршрута получает `flow_id`:
+
+- `mx:<chat_id>:<msg_id>` для MAX -> Telegram
+- `tg:<topic_id>:<tg_msg_id>` для Telegram -> MAX
+
+Это позволяет grep-ить полный путь одного сообщения через:
+
+- MAX adapter
+- Bridge core
+- Telegram adapter
+
+### События по стадиям
+
+Основные группы:
+
+- `max.inbound.*` — сырой приём, нормализация, skip и download вложений
+- `bridge.inbound.*` — dedup, topic resolution, forward MAX -> TG
+- `tg.outbound.*` — отправка в Telegram, retry, sent, failed
+- `tg.inbound.*` — входящее из Telegram и скачивание медиа
+- `bridge.outbound.*` — reply resolution и доставка TG -> MAX
+- `max.outbound.*` — отправка в MAX и echo/ack result
+- `bridge.watchdog.*`, `bridge.cleanup.*`, `app.startup.*` — эксплуатационные фоновые события
+
+Общие поля событий:
+
+- `event`
+- `flow_id`
+- `direction`
+- `stage`
+- `outcome`
+- `reason`
+- `max_chat_id`
+- `max_msg_id`
+- `tg_topic_id`
+- `tg_msg_id`
+
+### Политика приватности
+
+В постоянных логах не хранятся:
+
+- полный текст сообщений на `INFO`
+- телефон, токены и query-параметры URL
+- абсолютные temp-path
+- бинарные payload и сырые dumps библиотек
+
+На `DEBUG` допускается только `safe preview`:
+
+- переносы заменяются на `\n`
+- control chars удаляются
+- длинные цифровые последовательности маскируются
+- строка ограничивается `LOG_PREVIEW_CHARS`
+
+### Отношение к SQLite
+
+SQLite остаётся источником состояния и delivery metadata:
+
+- `message_map` — дедупликация и reply routing
+- `delivery_log` — high-level статус доставки
+
+Детальный event trail в v1 хранится только в application logs, без отдельной audit-таблицы.
+
 ## Схема базы данных
 
 ```sql

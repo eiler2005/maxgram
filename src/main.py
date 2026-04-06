@@ -23,6 +23,7 @@ from src.db.repository import Repository
 from src.adapters.max_adapter import MaxAdapter
 from src.adapters.tg_adapter import TelegramAdapter
 from src.bridge.core import BridgeCore
+from src.logging_utils import EventFormatter, log_event
 
 
 @dataclass(frozen=True)
@@ -34,14 +35,18 @@ class StartupTestReport:
 def setup_logging():
     """Логирование: только meta, без PII."""
     level = os.environ.get("LOG_LEVEL", "INFO").upper()
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
-    # Глушим шумные библиотеки
-    logging.getLogger("aiogram").setLevel(logging.WARNING)
-    logging.getLogger("pymax").setLevel(logging.WARNING)
+    fmt_mode = os.environ.get("LOG_FORMAT", "mixed").strip().lower() or "mixed"
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(EventFormatter(fmt_mode=fmt_mode))
+
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(level)
+    root.addHandler(handler)
+
+    library_level = logging.DEBUG if _env_flag("LOG_LIBRARIES_DEBUG", default=False) else logging.WARNING
+    logging.getLogger("aiogram").setLevel(library_level)
+    logging.getLogger("pymax").setLevel(library_level)
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
 
 
@@ -205,7 +210,14 @@ async def main():
     logger = logging.getLogger("bridge.main")
 
     config_path = os.environ.get("CONFIG_PATH", "config.yaml")
-    logger.info("Loading config from %s", config_path)
+    log_event(
+        logger,
+        logging.INFO,
+        "app.startup.config_loading",
+        stage="startup",
+        outcome="started",
+        config_path=Path(config_path).name,
+    )
 
     try:
         cfg = load_config(config_path)
@@ -216,7 +228,14 @@ async def main():
     # DB
     repo = Repository(cfg.storage.db_path)
     await repo.connect()
-    logger.info("DB connected: %s", cfg.storage.db_path)
+    log_event(
+        logger,
+        logging.INFO,
+        "app.startup.db_connected",
+        stage="startup",
+        outcome="ok",
+        db_path=Path(cfg.storage.db_path).name,
+    )
 
     # Adapters
     max_adapter = MaxAdapter(
@@ -257,7 +276,13 @@ async def main():
     bot = tg_adapter.get_bot()
     dp  = tg_adapter.get_dispatcher()
 
-    logger.info("Starting bridge...")
+    log_event(
+        logger,
+        logging.INFO,
+        "app.startup.bridge_starting",
+        stage="startup",
+        outcome="started",
+    )
 
     # Запускаем все компоненты параллельно
     async with asyncio.TaskGroup() as tg:

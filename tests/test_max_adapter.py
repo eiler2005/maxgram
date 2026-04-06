@@ -38,7 +38,7 @@ class LookupClient:
 
 
 class DummyDownloadAdapter(MaxAdapter):
-    async def _download_attachment(self, chat_id: str, msg_id: str, attach, index: int = 0):
+    async def _download_attachment(self, chat_id: str, msg_id: str, attach, index: int = 0, flow_id=None):
         raw_type = self._attachment_type_name(attach)
         return MaxAttachment(
             kind="document",
@@ -226,6 +226,63 @@ async def test_handle_raw_message_normalizes_alias_attachment_types(tmp_path, ra
     assert len(received) == 1
     assert received[0].attachment_types == [expected]
     assert len(received[0].attachments) == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_skips_empty_reaction_only_event(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = LookupClient(chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")])
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=77,
+        chat_id=-70000000000003,
+        sender=40053201,
+        text="",
+        type="USER",
+        status=None,
+        attaches=[],
+        reactionInfo=SimpleNamespace(total_count=3),
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert received == []
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_logs_received_and_skip_reason(tmp_path, caplog):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = LookupClient(chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")])
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_message(
+            SimpleNamespace(
+                id=77,
+                chat_id=-70000000000003,
+                sender=40053201,
+                text="",
+                type="USER",
+                status=None,
+                attaches=[],
+                reactionInfo=SimpleNamespace(total_count=3),
+                link=None,
+            )
+        )
+
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    assert any(event.get("event") == "max.inbound.received" for event in events)
+    assert any(
+        event.get("event") == "max.inbound.skipped" and event.get("reason") == "empty_event"
+        for event in events
+    )
 
 
 class EchoAckClient(LookupClient):
@@ -461,7 +518,7 @@ async def test_download_video_by_id_uses_raw_video_play_payload(tmp_path):
 
     captured = {}
 
-    async def fake_download(url: str, prefix: str, filename_hint=None, default_extension="", expected_kind=None):
+    async def fake_download(url: str, prefix: str, filename_hint=None, default_extension="", expected_kind=None, flow_id=None):
         captured["url"] = url
         captured["prefix"] = prefix
         captured["filename_hint"] = filename_hint

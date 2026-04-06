@@ -22,6 +22,14 @@ from urllib.parse import parse_qs
 
 from aiohttp import ClientSession
 
+from ..logging_utils import (
+    build_max_flow_id,
+    log_event,
+    mask_phone,
+    sanitize_path,
+    sanitize_url,
+)
+
 logger = logging.getLogger(__name__)
 
 MAX_CDN_USER_AGENT = (
@@ -297,10 +305,36 @@ class MaxAdapter:
             return "[Аудиостикер]"
         return "[Стикер]"
 
+    def _attachment_log_summary(self, attachments: list["MaxAttachment"]) -> list[dict[str, object]]:
+        return [
+            {
+                "kind": attachment.kind,
+                "source_type": attachment.source_type,
+                "filename": sanitize_path(attachment.filename or attachment.local_path),
+                "duration": attachment.duration,
+                "width": attachment.width,
+                "height": attachment.height,
+            }
+            for attachment in attachments
+        ]
+
+    def _should_skip_empty_event(self, message_type: Optional[str], text: Optional[str],
+                                 attachments: list["MaxAttachment"],
+                                 rendered_texts: list[str], reaction_info) -> bool:
+        if text or attachments or rendered_texts:
+            return False
+
+        normalized_type = str(message_type or "").upper()
+        if reaction_info is not None:
+            return True
+
+        return normalized_type in {"", "TEXT", "USER"}
+
     async def send_message(self, chat_id: str, text: str,
                            reply_to_msg_id: Optional[str] = None,
                            media_path: Optional[str] = None,
-                           media_type: Optional[str] = None) -> Optional[str]:
+                           media_type: Optional[str] = None,
+                           flow_id: Optional[str] = None) -> Optional[str]:
         """Отправить сообщение в MAX чат (текст и/или медиа).
 
         media_type: "photo" | "video" | "audio" | "document"
@@ -311,12 +345,23 @@ class MaxAdapter:
         """
         # Ждём подключения до 15 секунд (на случай reconnect)
         if not self._started:
+            log_event(
+                logger,
+                logging.ERROR,
+                "max.outbound.failed",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="transport",
+                outcome="failed",
+                reason="not_connected",
+                max_chat_id=chat_id,
+                media_type=media_type,
+            )
             for _ in range(3):
                 await asyncio.sleep(5)
                 if self._started:
                     break
             else:
-                logger.error("MAX send_message failed: not connected after retries chat_id=%s", chat_id)
                 return None
 
         if not self._client:
@@ -332,6 +377,20 @@ class MaxAdapter:
             future=loop.create_future(),
         )
         self._pending_outbound_acks.append(pending)
+        log_event(
+            logger,
+            logging.INFO,
+            "max.outbound.send",
+            flow_id=flow_id,
+            direction="outbound",
+            stage="transport",
+            outcome="started",
+            max_chat_id=chat_id,
+            media_type=media_type,
+            has_text=bool(normalized_text),
+            reply_to_max_id=reply_to_msg_id,
+            filename=sanitize_path(media_path),
+        )
 
         try:
             from pymax.files import File, Photo, Video
@@ -344,7 +403,6 @@ class MaxAdapter:
                     attachment = Video(path=media_path)
                 else:  # audio, document
                     attachment = File(path=media_path)
-                logger.debug("Attaching media type=%s path=%s", media_type, media_path)
 
             kwargs: dict = {"chat_id": int(chat_id), "text": text}
             if reply_to_msg_id:
@@ -355,20 +413,79 @@ class MaxAdapter:
             msg_id = self._extract_result_msg_id(result)
             if msg_id:
                 self._remember_expected_outbound_id(chat_id, msg_id)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.outbound.sent",
+                    flow_id=flow_id,
+                    direction="outbound",
+                    stage="transport",
+                    outcome="sent",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    media_type=media_type,
+                )
                 return msg_id
 
             if not normalized_text:
-                logger.error("MAX send_message returned without msg_id chat_id=%s", chat_id)
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "max.outbound.failed",
+                    flow_id=flow_id,
+                    direction="outbound",
+                    stage="transport",
+                    outcome="failed",
+                    reason="max_send_failed",
+                    max_chat_id=chat_id,
+                    media_type=media_type,
+                )
                 return None
 
             try:
                 echoed_id = await asyncio.wait_for(asyncio.shield(pending.future), timeout=10)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.outbound.sent",
+                    flow_id=flow_id,
+                    direction="outbound",
+                    stage="transport",
+                    outcome="sent",
+                    max_chat_id=chat_id,
+                    max_msg_id=str(echoed_id),
+                    media_type=media_type,
+                    reason="echo_ack",
+                )
                 return str(echoed_id)
             except asyncio.TimeoutError:
-                logger.error("MAX send_message ack timeout chat_id=%s", chat_id)
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "max.outbound.failed",
+                    flow_id=flow_id,
+                    direction="outbound",
+                    stage="transport",
+                    outcome="failed",
+                    reason="ack_timeout",
+                    max_chat_id=chat_id,
+                    media_type=media_type,
+                )
                 return None
         except Exception as e:
-            logger.error("MAX send_message failed chat_id=%s: %s", chat_id, e)
+            log_event(
+                logger,
+                logging.ERROR,
+                "max.outbound.failed",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="transport",
+                outcome="failed",
+                reason="max_send_failed",
+                max_chat_id=chat_id,
+                media_type=media_type,
+                error=str(e),
+            )
             return None
         finally:
             if pending in self._pending_outbound_acks:
@@ -616,7 +733,8 @@ class MaxAdapter:
     async def _download_from_url(self, url: str, prefix: str,
                                  filename_hint: Optional[str] = None,
                                  default_extension: str = "",
-                                 expected_kind: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+                                 expected_kind: Optional[str] = None,
+                                 flow_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
         """Скачать файл по URL, вернуть (local_path, filename)."""
         try:
             async with ClientSession(headers=self._download_headers_for_url(url)) as session:
@@ -627,9 +745,19 @@ class MaxAdapter:
 
             detected_kind = self._classify_downloaded_content(content_type, content)
             if not self._is_download_valid(expected_kind, detected_kind):
-                logger.warning(
-                    "download_from_url rejected url=%r expected=%s detected=%s content_type=%s",
-                    url, expected_kind, detected_kind, content_type,
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "max.attachment.download",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="rejected",
+                    reason="download_rejected",
+                    expected_kind=expected_kind,
+                    detected_kind=detected_kind,
+                    content_type=content_type,
+                    source=sanitize_url(url),
                 )
                 return None, None
 
@@ -637,15 +765,42 @@ class MaxAdapter:
             self._tmp_dir.mkdir(parents=True, exist_ok=True)
             local_path = self._tmp_dir / filename
             local_path.write_bytes(content)
+            log_event(
+                logger,
+                logging.INFO,
+                "max.attachment.download",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="downloaded",
+                expected_kind=expected_kind,
+                detected_kind=detected_kind,
+                content_type=content_type,
+                source=sanitize_url(url),
+                filename=sanitize_path(filename),
+                size_bytes=len(content),
+            )
             return str(local_path), filename
         except Exception as e:
-            logger.warning("download_from_url failed url=%r: %s", url, e)
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.attachment.download",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="failed",
+                reason="download_failed",
+                source=sanitize_url(url),
+                error=str(e),
+            )
         return None, None
 
     async def _download_file_by_id(self, chat_id: str, msg_id: str, file_id: int,
                                    prefix: str, filename_hint: Optional[str] = None,
                                    default_extension: str = "",
-                                   expected_kind: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+                                   expected_kind: Optional[str] = None,
+                                   flow_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
         """Скачать файл через pymax FILE_DOWNLOAD."""
         if not self._client:
             return None, None
@@ -664,14 +819,27 @@ class MaxAdapter:
                 filename_hint,
                 default_extension,
                 expected_kind=expected_kind,
+                flow_id=flow_id,
             )
         except Exception as e:
-            logger.warning("download_file_by_id failed chat_id=%s msg_id=%s file_id=%s: %s",
-                           chat_id, msg_id, file_id, e)
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.attachment.download",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="failed",
+                reason="file_download_failed",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                error=str(e),
+            )
         return None, None
 
     async def _download_video_by_id(self, chat_id: str, msg_id: str, video_id: int,
-                                    prefix: str, filename_hint: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+                                    prefix: str, filename_hint: Optional[str] = None,
+                                    flow_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
         """Скачать видео через pymax VIDEO_PLAY."""
         if not self._client:
             return None, None
@@ -688,9 +856,17 @@ class MaxAdapter:
             raw_payload = data.get("payload") if isinstance(data, dict) else None
             url = self._extract_video_url(raw_payload)
             if not url:
-                logger.warning(
-                    "VIDEO_PLAY returned no downloadable URL chat_id=%s msg_id=%s video_id=%s payload=%r",
-                    chat_id, msg_id, video_id, raw_payload,
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "max.attachment.download",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="failed",
+                    reason="video_url_missing",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
                 )
                 return None, None
             return await self._download_from_url(
@@ -699,14 +875,27 @@ class MaxAdapter:
                 filename_hint,
                 ".mp4",
                 expected_kind="video",
+                flow_id=flow_id,
             )
         except Exception as e:
-            logger.warning("download_video_by_id failed chat_id=%s msg_id=%s video_id=%s: %s",
-                           chat_id, msg_id, video_id, e)
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.attachment.download",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="failed",
+                reason="video_download_failed",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                error=str(e),
+            )
         return None, None
 
     async def _download_attachment(self, chat_id: str, msg_id: str,
-                                   attach, index: int = 0) -> Optional[MaxAttachment]:
+                                   attach, index: int = 0,
+                                   flow_id: Optional[str] = None) -> Optional[MaxAttachment]:
         """Скачать одно вложение и нормализовать в MaxAttachment."""
         raw_type = self._attachment_type_name(attach)
         atype = self._normalize_attachment_type(raw_type)
@@ -718,7 +907,7 @@ class MaxAdapter:
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"photo_{chat_id}_{msg_id}{idx}", filename_hint, ".jpg",
-                    expected_kind="photo",
+                    expected_kind="photo", flow_id=flow_id,
                 )
             else:
                 file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
@@ -726,7 +915,7 @@ class MaxAdapter:
                     return None
                 local_path, filename = await self._download_file_by_id(
                     chat_id, msg_id, file_id, f"photo_{chat_id}_{msg_id}{idx}",
-                    filename_hint, ".jpg", expected_kind="photo",
+                    filename_hint, ".jpg", expected_kind="photo", flow_id=flow_id,
                 )
             if local_path:
                 return MaxAttachment(
@@ -746,11 +935,12 @@ class MaxAdapter:
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"video_{chat_id}_{msg_id}{idx}", filename_hint, ".mp4",
-                    expected_kind="video",
+                    expected_kind="video", flow_id=flow_id,
                 )
             elif video_id:
                 local_path, filename = await self._download_video_by_id(
-                    chat_id, msg_id, video_id, f"video_{chat_id}_{msg_id}{idx}", filename_hint
+                    chat_id, msg_id, video_id, f"video_{chat_id}_{msg_id}{idx}", filename_hint,
+                    flow_id=flow_id,
                 )
             else:
                 return None
@@ -771,7 +961,7 @@ class MaxAdapter:
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg",
-                    expected_kind="audio",
+                    expected_kind="audio", flow_id=flow_id,
                 )
             else:
                 file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
@@ -779,7 +969,7 @@ class MaxAdapter:
                     return None
                 local_path, filename = await self._download_file_by_id(
                     chat_id, msg_id, file_id, f"audio_{chat_id}_{msg_id}{idx}",
-                    filename_hint, ".ogg", expected_kind="audio",
+                    filename_hint, ".ogg", expected_kind="audio", flow_id=flow_id,
                 )
             if local_path:
                 return MaxAttachment(
@@ -799,7 +989,7 @@ class MaxAdapter:
                 return None
             local_path, filename = await self._download_file_by_id(
                 chat_id, msg_id, file_id, f"doc_{chat_id}_{msg_id}{idx}",
-                filename_hint, expected_kind="document",
+                filename_hint, expected_kind="document", flow_id=flow_id,
             )
             if local_path:
                 return MaxAttachment(
@@ -849,27 +1039,61 @@ class MaxAdapter:
                 text = None
             message_type = str(getattr(message, "type", None) or "") or None
             status = str(getattr(message, "status", None) or "").upper() or None
+            reaction_info = (
+                getattr(message, "reactionInfo", None)
+                or getattr(message, "reaction_info", None)
+            )
             msg_id = f"{raw_msg_id}:{status}" if raw_msg_id and status else raw_msg_id
 
             # Отправитель: message.sender — это int
             sender_int = getattr(message, "sender", None)
             sender_id  = str(sender_int) if sender_int is not None else None
             reply_to_msg_id = self._extract_reply_to_msg_id(message)
+            flow_id = build_max_flow_id(chat_id, msg_id or raw_msg_id)
 
             if not raw_msg_id or not chat_id:
-                logger.debug("Skipping message without id/chat_id")
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "max.inbound.skipped",
+                    stage="received",
+                    outcome="skipped",
+                    reason="missing_identifiers",
+                )
                 return
 
             is_own = bool(self._own_id and sender_id == self._own_id)
             if is_own:
                 if self._consume_expected_outbound_id(chat_id, raw_msg_id):
-                    logger.debug("Suppressed expected own echo chat_id=%s msg_id=%s", chat_id, raw_msg_id)
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "max.inbound.skipped",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="received",
+                        outcome="skipped",
+                        reason="expected_echo",
+                        max_chat_id=chat_id,
+                        max_msg_id=raw_msg_id,
+                    )
                     return
                 pending = self._claim_pending_outbound_ack(chat_id, text, reply_to_msg_id)
                 if pending:
                     if not pending.future.done():
                         pending.future.set_result(raw_msg_id)
-                    logger.debug("Suppressed acknowledged own echo chat_id=%s msg_id=%s", chat_id, raw_msg_id)
+                    log_event(
+                        logger,
+                        logging.DEBUG,
+                        "max.inbound.skipped",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="received",
+                        outcome="skipped",
+                        reason="acknowledged_echo",
+                        max_chat_id=chat_id,
+                        max_msg_id=raw_msg_id,
+                    )
                     return
 
             # DM: chat_id > 0 (личная переписка), группа/канал: chat_id < 0
@@ -909,11 +1133,22 @@ class MaxAdapter:
                 if atype
             ]
 
-            logger.info(
-                "MAX message: chat_id=%s is_dm=%s sender_id=%s sender_name=%r "
-                "chat_title=%r type=%s status=%s has_text=%s attach_types=%s",
-                chat_id, is_dm, sender_id, sender_name, chat_title, message_type,
-                status, bool(text), attachment_types,
+            log_event(
+                logger,
+                logging.INFO,
+                "max.inbound.received",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="received",
+                outcome="accepted",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                is_dm=is_dm,
+                is_own=is_own,
+                message_type=message_type,
+                status=status,
+                attachment_types=attachment_types,
+                has_text=bool(text),
             )
 
             # own_id сохраняем в msg для фильтрации в BridgeCore
@@ -930,7 +1165,7 @@ class MaxAdapter:
                 atype = self._normalize_attachment_type(raw_type)
                 if atype in {"PHOTO", "VIDEO", "AUDIO", "FILE"}:
                     attachment = await self._download_attachment(
-                        chat_id, raw_msg_id, attach, index=media_index
+                        chat_id, raw_msg_id, attach, index=media_index, flow_id=flow_id
                     )
                     media_index += 1
                     if attachment:
@@ -954,9 +1189,61 @@ class MaxAdapter:
             elif status == "REMOVED":
                 rendered_texts = ["[Сообщение удалено]"]
 
+            if self._should_skip_empty_event(
+                message_type,
+                text,
+                attachments,
+                rendered_texts,
+                reaction_info,
+            ):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.inbound.skipped",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="normalize",
+                    outcome="skipped",
+                    reason="empty_event",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    message_type=message_type,
+                    has_reaction_info=bool(reaction_info),
+                )
+                return
+
             if not text and not attachments and not rendered_texts and message_type:
                 if message_type.upper() not in {"TEXT", "USER"}:
                     rendered_texts.append(f"[Системное сообщение MAX: {message_type.lower()}]")
+
+            log_event(
+                logger,
+                logging.INFO,
+                "max.inbound.normalized",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="normalize",
+                outcome="ready",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                attachments=self._attachment_log_summary(attachments),
+                attachment_types=attachment_types,
+                rendered_count=len(rendered_texts),
+                has_text=bool(text),
+            )
+            if text:
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "max.inbound.preview",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="normalize",
+                    outcome="ready",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    preview=text,
+                )
 
             mx_msg = MaxMessage(
                 msg_id=msg_id,
@@ -979,10 +1266,29 @@ class MaxAdapter:
                 try:
                     await handler(mx_msg)
                 except Exception as e:
-                    logger.error("Message handler error: %s", e, exc_info=True)
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "max.inbound.handler_failed",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="dispatch",
+                        outcome="failed",
+                        max_chat_id=chat_id,
+                        max_msg_id=msg_id,
+                        error=str(e),
+                    )
 
         except Exception as e:
-            logger.error("_handle_raw_message error: %s", e, exc_info=True)
+            log_event(
+                logger,
+                logging.ERROR,
+                "max.inbound.failed",
+                stage="received",
+                outcome="failed",
+                reason="message_parse_failed",
+                error=str(e),
+            )
 
     def _build_failfast_interactive_ping(self, client, *, ping_interval: float,
                                          failure_limit: int, ping_opcode,
@@ -1093,43 +1399,96 @@ class MaxAdapter:
             self._client = await self._make_client()
 
             async def _on_start():
-                logger.info("MAX connected")
+                nonlocal first_connect
                 self._started = True
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.adapter.connected",
+                    stage="startup" if first_connect else "runtime",
+                    outcome="connected",
+                )
                 # Получаем ID собственного аккаунта для фильтрации эхо
                 try:
                     me = self._client.me
                     if me:
                         self._own_id = str(getattr(me, "id", None) or "")
-                        logger.info("Own MAX user_id=%s", self._own_id)
                     else:
-                        logger.warning("client.me is None after connect")
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "max.adapter.own_id_missing",
+                            stage="startup",
+                            outcome="warning",
+                        )
                 except Exception as e:
-                    logger.warning("Could not get own user_id: %s", e)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.adapter.own_id_failed",
+                        stage="startup",
+                        outcome="warning",
+                        error=str(e),
+                    )
 
-                nonlocal first_connect
                 if first_connect:
                     first_connect = False
                     for h in self._start_handlers:
                         try:
                             await h()
                         except Exception as e:
-                            logger.error("on_start handler error: %s", e)
+                            log_event(
+                                logger,
+                                logging.ERROR,
+                                "max.adapter.start_handler_failed",
+                                stage="startup",
+                                outcome="failed",
+                                error=str(e),
+                            )
                 else:
-                    logger.info("MAX reconnected")
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "max.adapter.reconnected",
+                        stage="runtime",
+                        outcome="connected",
+                    )
 
             self._client.on_start(_on_start)
             self._client.on_message()(self._handle_raw_message)
             self._client.on_message_edit()(self._handle_raw_message)
             self._client.on_message_delete()(self._handle_raw_message)
 
-            logger.info("Starting MAX adapter phone=%s", self._phone)
+            log_event(
+                logger,
+                logging.INFO,
+                "max.adapter.starting",
+                stage="startup" if first_connect else "runtime",
+                outcome="started",
+                phone=mask_phone(self._phone),
+            )
             try:
                 await self._client.start()
             except Exception as e:
-                logger.error("MAX client error: %s", e)
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "max.adapter.failed",
+                    stage="runtime",
+                    outcome="failed",
+                    reason="client_error",
+                    error=str(e),
+                )
 
             # Клиент завершился — ждём перед перезапуском
-            logger.info("MAX disconnected, reconnecting in %ds...", retry_delay)
+            log_event(
+                logger,
+                logging.INFO,
+                "max.adapter.reconnecting",
+                stage="runtime",
+                outcome="retrying",
+                retry_in_seconds=retry_delay,
+            )
             self._started = False
             await asyncio.sleep(retry_delay)
 
