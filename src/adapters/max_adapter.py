@@ -587,7 +587,23 @@ class MaxAdapter:
         return upper
 
     def _attachment_filename(self, attach) -> Optional[str]:
-        return getattr(attach, "filename", None) or getattr(attach, "name", None)
+        name = getattr(attach, "filename", None) or getattr(attach, "name", None)
+        return self._fix_filename_encoding(name) if name else None
+
+    @staticmethod
+    def _fix_filename_encoding(name: str) -> str:
+        """Fix cp1251-as-latin-1 mojibake in filenames from MAX.
+
+        MAX CDN sometimes returns filenames with cp1251 bytes decoded as latin-1,
+        producing garbled text like "Âàëüñ" instead of "Вальс".
+        Heuristic: if the string fits in latin-1 and decodes cleanly as cp1251, use it.
+        Pure ASCII and already-correct UTF-8 strings pass through unchanged.
+        """
+        try:
+            fixed = name.encode("latin-1").decode("cp1251")
+            return fixed if fixed != name else name
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return name
 
     def _build_filename(self, prefix: str, filename_hint: Optional[str],
                         url: Optional[str], content_type: Optional[str],

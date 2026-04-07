@@ -487,3 +487,27 @@ async def test_on_tg_reply_logs_forward_completion(caplog):
         and event.get("outcome") == "delivered"
         for event in events
     )
+
+
+# ---------------------------------------------------------------------------
+# MaxAdapter._fix_filename_encoding — cp1251-as-latin-1 mojibake
+# ---------------------------------------------------------------------------
+
+def test_fix_filename_encoding_fixes_cyrillic_mojibake():
+    from src.adapters.max_adapter import MaxAdapter
+    # "Вальс из к/ф Маскарад - Арам Хачатурян.mp3" stored as cp1251, read as latin-1
+    garbled = "Âàëüñ èç ê/ô Ìàñêàðàä - Àðàì Õà÷àòóðÿí.mp3"
+    fixed = MaxAdapter._fix_filename_encoding(garbled)
+    assert fixed == "Вальс из к/ф Маскарад - Арам Хачатурян.mp3"
+
+
+def test_fix_filename_encoding_leaves_ascii_unchanged():
+    from src.adapters.max_adapter import MaxAdapter
+    assert MaxAdapter._fix_filename_encoding("audio_track.ogg") == "audio_track.ogg"
+
+
+def test_fix_filename_encoding_leaves_proper_utf8_unchanged():
+    from src.adapters.max_adapter import MaxAdapter
+    # Already correct UTF-8 Cyrillic — encode("latin-1") raises, original returned
+    name = "Вальс.mp3"
+    assert MaxAdapter._fix_filename_encoding(name) == name
