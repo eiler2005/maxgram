@@ -14,6 +14,8 @@ class DummyRepo:
         self.bindings = []
         self.activity_map = {}
         self.binding_by_chat = {}
+        self.saved_users: dict[str, str] = {}   # user_id → name
+        self._find_user_result: str | None = None
 
     async def get_binding_by_topic(self, tg_topic_id: int):
         return SimpleNamespace(max_chat_id="-70000000000003", tg_topic_id=tg_topic_id, mode="active")
@@ -44,10 +46,31 @@ class DummyRepo:
     async def get_chat_activity_map_since(self, since_ts: int):
         return self.activity_map
 
+    async def save_user(self, user_id: str, display_name: str):
+        self.saved_users[user_id] = display_name
+
+    async def find_user_by_name(self, display_name: str) -> str | None:
+        return self._find_user_result
+
+    async def is_duplicate(self, max_msg_id: str, max_chat_id: str) -> bool:
+        return False
+
 
 class DummyMax:
+    def __init__(self):
+        self._find_user_result: str | None = None
+
     def on_message(self, handler):
         self.handler = handler
+
+    def get_own_id(self) -> str | None:
+        return "999"
+
+    def get_dm_partner_id(self, chat_id: str) -> str | None:
+        return None
+
+    def find_user_by_name(self, name: str) -> str | None:
+        return self._find_user_result
 
     async def resolve_user_name(self, user_id: str):
         return None
@@ -65,12 +88,16 @@ class DummyTelegram:
     def __init__(self):
         self.calls = []
         self.commands = {}
+        self.arg_commands = {}
 
     def on_reply(self, handler):
         self.handler = handler
 
     def on_command(self, cmd: str, handler):
         self.commands[cmd] = handler
+
+    def on_arg_command(self, cmd: str, handler):
+        self.arg_commands[cmd] = handler
 
     async def send_photo(self, topic_id, path, caption="", flow_id=None):
         self.calls.append(("photo", caption))
@@ -511,3 +538,164 @@ def test_fix_filename_encoding_leaves_proper_utf8_unchanged():
     # Already correct UTF-8 Cyrillic — encode("latin-1") raises, original returned
     name = "Вальс.mp3"
     assert MaxAdapter._fix_filename_encoding(name) == name
+
+
+# ---------------------------------------------------------------------------
+# /dm command
+# ---------------------------------------------------------------------------
+
+def _make_bridge(repo=None, max_adapter=None, tg_adapter=None):
+    return BridgeCore(
+        config=DummyConfig(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo or DummyRepo(),
+        max_adapter=max_adapter or DummyMax(),
+        tg_adapter=tg_adapter or DummyTelegram(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_cmd_dm_finds_user_in_db_and_sends():
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+
+    async def find_by_name_specific(name):
+        return "12345" if name == "Татьяна Геннадиевна Ладина" else None
+
+    repo.find_user_by_name = find_by_name_specific
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter)
+
+    result = await bridge._cmd_dm("Татьяна Геннадиевна Ладина Добрый день!")
+
+    assert "✅" in result
+    assert "Татьяна Геннадиевна Ладина" in result
+    assert max_adapter.sent[0] == "12345"
+    assert max_adapter.sent[1] == "Добрый день!"
+
+
+@pytest.mark.asyncio
+async def test_cmd_dm_falls_back_to_pymax_cache_when_db_empty():
+    repo = DummyRepo()
+    repo._find_user_result = None  # DB miss
+    max_adapter = DummyMax()
+    max_adapter._find_user_result = "99999"  # pymax cache hit
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter)
+
+    result = await bridge._cmd_dm("Марина Ермилова привет")
+
+    assert "✅" in result
+    assert max_adapter.sent[0] == "99999"
+    assert max_adapter.sent[1] == "привет"
+
+
+@pytest.mark.asyncio
+async def test_cmd_dm_returns_error_when_user_not_found():
+    bridge = _make_bridge()  # both DB and pymax return None
+
+    result = await bridge._cmd_dm("Несуществующий Человек текст")
+
+    assert "❌" in result
+    assert "не найден" in result
+
+
+@pytest.mark.asyncio
+async def test_cmd_dm_returns_usage_hint_when_no_args():
+    bridge = _make_bridge()
+
+    result = await bridge._cmd_dm("")
+    assert "Формат" in result
+
+    result = await bridge._cmd_dm("ОдноСлово")
+    assert "Формат" in result
+
+
+@pytest.mark.asyncio
+async def test_cmd_dm_tries_longest_name_prefix_first():
+    """3-word name match should win over 1-word match."""
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+
+    call_log = []
+
+    async def find_by_name_db(name):
+        call_log.append(("db", name))
+        if name == "Татьяна Геннадиевна Ладина":
+            return "777"
+        return None
+
+    repo.find_user_by_name = find_by_name_db
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter)
+
+    result = await bridge._cmd_dm("Татьяна Геннадиевна Ладина вечер")
+
+    # Input is 4 words: min(4, 4-1)=3, so first attempt IS the 3-word name
+    assert call_log[0] == ("db", "Татьяна Геннадиевна Ладина")
+    assert max_adapter.sent[0] == "777"
+    assert max_adapter.sent[1] == "вечер"
+
+
+# ---------------------------------------------------------------------------
+# Sender persistence in _on_max_message
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_on_max_message_persists_sender_to_db():
+    repo = DummyRepo()
+    repo.binding_by_chat = {}
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    msg = MaxMessage(
+        msg_id="m1",
+        chat_id="-70000000000003",
+        chat_title="Хор Гармония",
+        sender_id="42",
+        sender_name="Татьяна Геннадиевна Ладина",
+        text="Добрый день",
+        attachments=[],
+        attachment_types=[],
+        rendered_texts=[],
+        message_type="TEXT",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert repo.saved_users.get("42") == "Татьяна Геннадиевна Ладина"
+
+
+@pytest.mark.asyncio
+async def test_on_max_message_does_not_persist_own_sender():
+    """Own messages (is_own=True) must not be saved as known_users."""
+    repo = DummyRepo()
+    bridge = _make_bridge(repo=repo)
+
+    msg = MaxMessage(
+        msg_id="m2",
+        chat_id="-70000000000003",
+        chat_title="Хор Гармония",
+        sender_id="999",
+        sender_name="Марина Ермилова",
+        text="Сообщение",
+        attachments=[],
+        attachment_types=[],
+        rendered_texts=[],
+        message_type="TEXT",
+        status=None,
+        is_dm=False,
+        is_own=True,
+        raw=None,
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert "999" not in repo.saved_users

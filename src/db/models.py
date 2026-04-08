@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS delivery_log (
     last_attempt_at INTEGER NOT NULL
 );
 
+-- Известные пользователи MAX (name ↔ user_id, для /dm поиска)
+CREATE TABLE IF NOT EXISTS known_users (
+    max_user_id  TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_known_users_name ON known_users(display_name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_message_map_max ON message_map(max_msg_id, max_chat_id);
 CREATE INDEX IF NOT EXISTS idx_message_map_tg  ON message_map(tg_msg_id);
 CREATE INDEX IF NOT EXISTS idx_delivery_status ON delivery_log(status, last_attempt_at);

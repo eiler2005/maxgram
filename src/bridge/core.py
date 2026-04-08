@@ -120,6 +120,10 @@ class BridgeCore:
                 max_msg_id=msg.msg_id,
             )
 
+        # Персистим отправителя в known_users (для /dm поиска по имени)
+        if msg.sender_id and msg.sender_name and not msg.is_own:
+            await self._repo.save_user(msg.sender_id, msg.sender_name)
+
         # Сохраняем сразу (idempotency key)
         await self._repo.save_message(MessageRecord(
             max_msg_id=msg.msg_id,
@@ -864,7 +868,11 @@ class BridgeCore:
             candidate_msg = " ".join(words[name_len:])
             if not candidate_msg.strip():
                 continue
-            uid = self._max.find_user_by_name(candidate_name)
+            # DB первым (персистентно, работает после рестарта)
+            uid = await self._repo.find_user_by_name(candidate_name)
+            # Fallback: in-memory кеш pymax
+            if not uid:
+                uid = self._max.find_user_by_name(candidate_name)
             if uid:
                 found_user_id = uid
                 found_name = candidate_name

@@ -1,6 +1,6 @@
 import pytest
 
-from src.db.repository import MessageRecord, Repository
+from src.db.repository import MessageRecord, Repository, KnownUser
 
 
 @pytest.mark.asyncio
@@ -87,5 +87,55 @@ async def test_get_chat_activity_map_since_groups_by_chat(tmp_path):
 
         assert result["chat-1"] == {"inbound": 1, "outbound": 1, "total": 2}
         assert result["chat-2"] == {"inbound": 1, "outbound": 0, "total": 1}
+    finally:
+        await repo.close()
+
+
+# ── known_users ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_save_and_find_user_by_name(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    try:
+        await repo.save_user("111", "Татьяна Геннадиевна Ладина")
+        result = await repo.find_user_by_name("Татьяна Геннадиевна Ладина")
+        assert result == "111"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_find_user_case_insensitive(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    try:
+        await repo.save_user("222", "Марина Ермилова")
+        assert await repo.find_user_by_name("марина ермилова") == "222"
+        assert await repo.find_user_by_name("МАРИНА ЕРМИЛОВА") == "222"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_save_user_upserts_name(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    try:
+        await repo.save_user("333", "Старое Имя")
+        await repo.save_user("333", "Новое Имя")
+        assert await repo.find_user_by_name("Новое Имя") == "333"
+        assert await repo.find_user_by_name("Старое Имя") is None
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_find_user_returns_none_when_not_found(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    try:
+        result = await repo.find_user_by_name("Несуществующий Человек")
+        assert result is None
     finally:
         await repo.close()
