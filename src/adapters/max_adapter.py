@@ -246,6 +246,12 @@ class MaxAdapter:
             if event in {"joinbylink", "join_by_link", "joinedbylink"}:
                 if rendered_users:
                     return f"Присоединились по ссылке: {rendered_users}"
+                # Имя присоединившегося может прийти через sender
+                name = actor
+                if not name and sender_id:
+                    name = await self.resolve_user_name(sender_id)
+                if name:
+                    return f"Присоединился по ссылке: {name}"
                 return "Участник присоединился по ссылке"
             if rendered_users:
                 return f"Добавлены участники: {rendered_users}"

@@ -150,6 +150,39 @@ async def test_handle_raw_message_renders_control_join_by_link(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_renders_join_by_link_with_sender_when_no_user_ids(tmp_path):
+    """joinbylink без userIds — имя берётся из sender."""
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = LookupClient(
+        users={7001: make_user("Екатерина", "Глебова")},
+        chats=[SimpleNamespace(id=-70000000000003, title="Родительский чат")],
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=3,
+        chat_id=-70000000000003,
+        sender=7001,
+        text="",
+        type="USER",
+        status=None,
+        attaches=[SimpleNamespace(type="CONTROL", event="joinbylink", extra={})],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].rendered_texts == ["Присоединился по ссылке: Екатерина Глебова"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("attach", "expected"),
     [
