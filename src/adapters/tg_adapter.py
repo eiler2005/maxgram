@@ -430,8 +430,14 @@ class TelegramAdapter:
         if message.from_user and message.from_user.is_bot:
             return
 
-        # Команды: принимаем от владельца в группе или в личном чате
+        # Команды
         if message.text and message.text.startswith("/"):
+            cmd = message.text.split()[0].lstrip("/").lower()
+            # /dm в General топике (без thread_id) — доступна всем участникам группы
+            if cmd in self._arg_command_handlers and is_group and not message.message_thread_id:
+                await self._handle_command(message)
+                return
+            # Остальные команды — только от владельца
             if not self._is_owner(message):
                 return
             await self._handle_command(message)

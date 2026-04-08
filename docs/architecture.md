@@ -104,8 +104,12 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 - Ограничением команд только владельцем
 
 Поддерживает два типа команд:
-- `on_command(cmd, handler)` — без аргументов (`/status`, `/chats`, `/help`)
-- `on_arg_command(cmd, handler)` — с произвольным текстом после команды (`/dm Имя текст`)
+- `on_command(cmd, handler)` — без аргументов (`/status`, `/chats`, `/help`) — только владелец
+- `on_arg_command(cmd, handler)` — с произвольным текстом (`/dm Имя текст`)
+
+**Политика доступа к командам:**
+- Все команды: только от `TG_OWNER_ID` (владелец) — в любом топике или личном чате с ботом
+- `/dm` (и любая `on_arg_command`) в топике **General** (без `message_thread_id`): доступна всем участникам форум-группы
 
 ### Bridge Core (`src/bridge/core.py`)
 
