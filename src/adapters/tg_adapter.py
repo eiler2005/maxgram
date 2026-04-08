@@ -42,10 +42,15 @@ class TelegramAdapter:
         self._dp: Optional[Dispatcher] = None
         self._reply_handlers: list[ReplyHandler] = []
         self._command_handlers: dict[str, Callable] = {}
+        self._arg_command_handlers: dict[str, Callable] = {}
 
     def on_command(self, cmd: str, handler: Callable):
-        """Зарегистрировать внешний обработчик команды (без слэша)."""
+        """Зарегистрировать внешний обработчик команды без аргументов."""
         self._command_handlers[cmd.lstrip("/")] = handler
+
+    def on_arg_command(self, cmd: str, handler: Callable):
+        """Зарегистрировать обработчик команды, принимающий аргументы (строку после команды)."""
+        self._arg_command_handlers[cmd.lstrip("/")] = handler
 
     def on_reply(self, handler: ReplyHandler):
         self._reply_handlers.append(handler)
@@ -540,19 +545,24 @@ class TelegramAdapter:
             await self._dispatch_incoming_message(message)
 
     async def _handle_command(self, message: Message):
-        cmd = message.text.split()[0].lstrip("/").lower()
-        if cmd in self._command_handlers:
-            try:
+        parts = message.text.split()
+        cmd = parts[0].lstrip("/").lower()
+        args = " ".join(parts[1:])
+        try:
+            if cmd in self._arg_command_handlers:
+                reply_text = await self._arg_command_handlers[cmd](args)
+                await message.reply(reply_text)
+            elif cmd in self._command_handlers:
                 reply_text = await self._command_handlers[cmd]()
                 await message.reply(reply_text)
-            except Exception as e:
-                logger.error("Command handler /%s error: %s", cmd, e)
-                await message.reply("⚠️ Ошибка при выполнении команды")
-        elif cmd == "reauth":
-            await message.reply(
-                "⚠️ Для повторной авторизации MAX:\n"
-                "Перезапусти bridge и введи новый SMS код."
-            )
+            elif cmd == "reauth":
+                await message.reply(
+                    "⚠️ Для повторной авторизации MAX:\n"
+                    "Перезапусти bridge и введи новый SMS код."
+                )
+        except Exception as e:
+            logger.error("Command handler /%s error: %s", cmd, e)
+            await message.reply("⚠️ Ошибка при выполнении команды")
 
     # ── Жизненный цикл ────────────────────────────────────────────────────
 

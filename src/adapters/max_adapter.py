@@ -566,6 +566,42 @@ class MaxAdapter:
         """Вернуть ID нашего MAX аккаунта (для фильтрации собственных сообщений)."""
         return self._own_id
 
+    def find_user_by_name(self, name: str) -> Optional[str]:
+        """Найти user_id по отображаемому имени (регистронезависимо).
+
+        Поиск в двух источниках:
+          1. client.contacts — контакты, загруженные при sync.
+          2. Кеш участников известных DM-диалогов (client.dialogs).
+
+        Возвращает str(user_id) или None если не найден.
+        Если несколько пользователей с одним именем — возвращает первого.
+        """
+        if not self._client:
+            return None
+        name_lower = name.strip().lower()
+
+        # 1. Контакты из sync (самый полный источник)
+        for contact in getattr(self._client, "contacts", []):
+            contact_name = self._extract_user_name(contact)
+            if contact_name and contact_name.strip().lower() == name_lower:
+                return str(contact.id)
+
+        # 2. Участники известных DM-диалогов через user cache
+        own_id = self._own_id
+        for dialog in getattr(self._client, "dialogs", []):
+            for pid in (dialog.participants or {}):
+                if str(pid) == own_id:
+                    continue
+                try:
+                    user = self._client.get_cached_user(int(pid))
+                    if user:
+                        user_name = self._extract_user_name(user)
+                        if user_name and user_name.strip().lower() == name_lower:
+                            return str(pid)
+                except Exception:
+                    pass
+        return None
+
     def get_dm_partner_id(self, chat_id: str) -> Optional[str]:
         """Для DM-чата вернуть user_id СОБЕСЕДНИКА (не нашего аккаунта).
 

@@ -51,6 +51,8 @@ class BridgeCore:
         self._tg.on_reply(self._on_tg_reply)
         self._tg.on_command("status", self._build_status_message)
         self._tg.on_command("chats", self._build_chats_message)
+        self._tg.on_command("help", self._build_help_message)
+        self._tg.on_arg_command("dm", self._cmd_dm)
 
     # ── MAX → Telegram ────────────────────────────────────────────────────
 
@@ -819,6 +821,72 @@ class BridgeCore:
             )
 
         return "\n".join(lines)
+
+    async def _build_help_message(self) -> str:
+        """Справка по командам bridge."""
+        return (
+            "ℹ️ MAX Bridge — пересылка чатов MAX ↔ Telegram\n"
+            "\n"
+            "Каждый MAX-чат = отдельный топик в этой группе.\n"
+            "Reply в топике = ответ обратно в MAX.\n"
+            "\n"
+            "📋 Команды:\n"
+            "  /status — состояние bridge, статистика за 4ч\n"
+            "  /chats  — список чатов с активностью за 24ч\n"
+            "  /help   — эта справка\n"
+            "  /dm Имя Фамилия текст — начать новый DM в MAX\n"
+            "\n"
+            "💡 Пример /dm:\n"
+            "  /dm Татьяна Геннадиевна Ладина Добрый день!"
+        )
+
+    async def _cmd_dm(self, args: str) -> str:
+        """Инициировать новый DM в MAX по имени пользователя.
+
+        Формат: /dm Имя Фамилия текст сообщения
+        Bridge ищет пользователя в contacts и dialogs кеше pymax.
+        Топик в Telegram создаётся автоматически из echo-сообщения.
+        """
+        words = args.strip().split()
+        if len(words) < 2:
+            return (
+                "⚠️ Формат: /dm Имя Фамилия текст сообщения\n"
+                "Пример: /dm Татьяна Геннадиевна Ладина Добрый день!"
+            )
+
+        # Перебираем префиксы от длинного к короткому (до 4 слов имя, минимум 1 слово сообщение)
+        found_user_id: Optional[str] = None
+        found_name: Optional[str] = None
+        message_text: Optional[str] = None
+
+        for name_len in range(min(4, len(words) - 1), 0, -1):
+            candidate_name = " ".join(words[:name_len])
+            candidate_msg = " ".join(words[name_len:])
+            if not candidate_msg.strip():
+                continue
+            uid = self._max.find_user_by_name(candidate_name)
+            if uid:
+                found_user_id = uid
+                found_name = candidate_name
+                message_text = candidate_msg
+                break
+
+        if not found_user_id:
+            preview = " ".join(words[:3])
+            return (
+                f"❌ Пользователь не найден: «{preview}…»\n"
+                "Имя должно совпадать с отображаемым в MAX.\n"
+                "Пользователь должен быть в контактах или ранее писать в известные чаты."
+            )
+
+        sent_id = await self._max.send_message(
+            chat_id=found_user_id,
+            text=message_text,
+            flow_id="tg_cmd_dm",
+        )
+        if sent_id:
+            return f"✅ Сообщение отправлено {found_name}. Топик появится автоматически."
+        return f"❌ Не удалось отправить сообщение {found_name}."
 
     async def run_periodic_status(self, interval_hours: int = 4):
         """Автоматически отправлять статусный отчёт каждые interval_hours часов."""
