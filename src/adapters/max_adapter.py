@@ -569,18 +569,20 @@ class MaxAdapter:
     def find_user_by_name(self, name: str) -> Optional[str]:
         """Найти user_id по отображаемому имени (регистронезависимо).
 
-        Поиск в двух источниках:
+        Поиск в трёх источниках (от быстрого к более широкому):
           1. client.contacts — контакты, загруженные при sync.
           2. Кеш участников известных DM-диалогов (client.dialogs).
+          3. client._users — все пользователи, чьи имена были резолвнуты
+             в этой сессии (каждый отправитель любого сообщения в известные чаты).
 
         Возвращает str(user_id) или None если не найден.
-        Если несколько пользователей с одним именем — возвращает первого.
+        Если несколько пользователей с одинаковым именем — возвращает первого.
         """
         if not self._client:
             return None
         name_lower = name.strip().lower()
 
-        # 1. Контакты из sync (самый полный источник)
+        # 1. Контакты из sync
         for contact in getattr(self._client, "contacts", []):
             contact_name = self._extract_user_name(contact)
             if contact_name and contact_name.strip().lower() == name_lower:
@@ -600,6 +602,20 @@ class MaxAdapter:
                             return str(pid)
                 except Exception:
                     pass
+
+        # 3. Полный кеш пользователей сессии (_users): все отправители всех
+        #    сообщений, прошедших через bridge (группы + DM).
+        users_cache: dict = getattr(self._client, "_users", {})
+        for uid, user in users_cache.items():
+            if str(uid) == own_id:
+                continue
+            try:
+                user_name = self._extract_user_name(user)
+                if user_name and user_name.strip().lower() == name_lower:
+                    return str(uid)
+            except Exception:
+                pass
+
         return None
 
     def get_dm_partner_id(self, chat_id: str) -> Optional[str]:
