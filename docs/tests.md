@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 python -m pytest -v
 ```
 
-Всего: **39 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **62 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -19,12 +19,16 @@ python -m pytest -v
 
 ---
 
-## test_repository.py — работа с SQLite (2 теста)
+## test_repository.py — работа с SQLite (6 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_save_message_upserts_tg_fields` | При двойном `save_message` с одним `max_msg_id` второй вызов дополняет запись: `tg_msg_id` и `tg_topic_id` обновляются через `ON CONFLICT DO UPDATE SET ... = COALESCE(excluded, existing)`. Проверяет что `get_max_msg_id_by_tg` находит запись по `tg_msg_id`. |
 | `test_get_chat_activity_map_since_groups_by_chat` | SQL-агрегация активности по чатам: корректно считает `inbound`, `outbound`, `total` для `/chats`. |
+| `test_save_and_find_user_by_name` | `save_user()` сохраняет запись в `known_users`; `find_user_by_name()` возвращает корректный `max_user_id`. |
+| `test_find_user_case_insensitive` | `find_user_by_name()` работает без учёта регистра для кириллицы (Python-level сравнение, т.к. SQLite NOCASE не покрывает кириллицу). |
+| `test_save_user_upserts_name` | Повторный `save_user()` с тем же `user_id` обновляет `display_name` и `updated_at` (upsert через `ON CONFLICT`). |
+| `test_find_user_returns_none_when_not_found` | Возвращает `None` для имени, которого нет в таблице. |
 
 ---
 
@@ -79,9 +83,11 @@ python -m pytest -v
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (7 тестов)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (19 тестов)
 
-Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`. Нет I/O, нет сети.
+Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
+
+### Пересылка сообщений
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -90,8 +96,40 @@ python -m pytest -v
 | `test_forward_to_telegram_uses_rendered_text_without_media` | Сообщение типа `CONTROL` без вложений: отправляется только текст из `rendered_texts`. Файловые методы не вызываются. |
 | `test_on_tg_reply_prefixes_sender_name_for_max` | Reply из Telegram: текст отправляется в MAX с префиксом `[Марина Ермилова]\nПроверка связи`; `reply_to_msg_id` разрешается через `get_max_msg_id_by_tg`. |
 | `test_on_tg_reply_rejects_too_large_media` | TG→MAX: если файл превышает лимит `max_file_size_mb`, bridge не отправляет его в MAX и отдаёт явное сообщение в топик. |
+| `test_on_tg_reply_logs_forward_completion` | После успешной доставки TG→MAX в логах присутствует событие `bridge.outbound.forward_finished` с `outcome=delivered`. |
+| `test_get_or_create_topic_resolves_group_title_via_live_max_lookup` | Если `chat_title=None`, `_get_or_create_topic` делает live запрос `resolve_chat_title` и создаёт топик с правильным именем. |
+
+### Статус и чаты
+
+| Тест | Что проверяет |
+|------|--------------|
 | `test_build_chats_message_lists_topics_with_activity` | `/chats` показывает чат, topic_id, режим и счётчики `↓/↑` за период. |
 | `test_watchdog_sends_gap_notice_after_reconnect` | После offline-окна watchdog отправляет и alert про downtime, и уведомление о возможном `missed messages gap` после восстановления. |
+
+### Кодировка файлов
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_fix_filename_encoding_fixes_cyrillic_mojibake` | `_fix_filename_encoding()` исправляет cp1251-как-latin-1 кракозябры в именах файлов MAX. |
+| `test_fix_filename_encoding_leaves_ascii_unchanged` | ASCII-имена остаются нетронутыми. |
+| `test_fix_filename_encoding_leaves_proper_utf8_unchanged` | Корректные UTF-8 строки не изменяются. |
+
+### Команда `/dm`
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_cmd_dm_finds_user_in_db_and_sends` | Пользователь найден в `known_users` БД → сообщение отправлено в MAX с правильным `user_id` и текстом. |
+| `test_cmd_dm_falls_back_to_pymax_cache_when_db_empty` | При пустой БД поиск переходит к pymax in-memory кешу → сообщение доставлено. |
+| `test_cmd_dm_returns_error_when_user_not_found` | Если ни БД, ни pymax кеш не содержат пользователя → возвращается понятная ошибка `❌`. |
+| `test_cmd_dm_returns_usage_hint_when_no_args` | При пустом или однословном аргументе → возвращается подсказка о формате команды. |
+| `test_cmd_dm_tries_longest_name_prefix_first` | Алгоритм пробует самый длинный prefix (3 слова для 4-словного ввода) раньше более коротких. |
+
+### Персистирование пользователей
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_on_max_message_persists_sender_to_db` | При входящем сообщении от другого пользователя `save_user()` вызывается с правильными `sender_id` и `sender_name`. |
+| `test_on_max_message_does_not_persist_own_sender` | Собственные сообщения (`is_own=True`) не сохраняются в `known_users`. |
 
 ---
 
@@ -107,12 +145,13 @@ python -m pytest -v
 
 ---
 
-## test_tg_adapter.py — входящие сообщения Telegram (2 теста)
+## test_tg_adapter.py — входящие сообщения Telegram (3 теста)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_dispatch_incoming_message_accepts_non_owner_group_member` | Сообщение от не-владельца (user_id=2) в форум-группе в топике → передаётся в reply-обработчик с правильными `(topic_id, text, reply_to_tg_id, sender_name)`. |
 | `test_dispatch_incoming_message_ignores_non_owner_commands` | Команда `/status` от не-владельца в форум-группе → `_handle_command` не вызывается. |
+| `test_tg_retry_logs_retry_and_success` | `_tg_retry` делает повторную попытку при `TelegramRetryAfter` и логирует событие retry; после успеха возвращает корректный результат. |
 
 ---
 

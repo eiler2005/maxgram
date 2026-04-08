@@ -81,6 +81,8 @@ Telegram Update (reply в топике форум-группы)
 - Парсингом входящих сообщений → `MaxMessage` dataclass
 - Скачиванием медиавложений в `data/tmp/`
 - Отправкой сообщений с retry при reconnect
+- `get_dm_partner_id(chat_id)` — поиск реального собеседника в DM через `client.dialogs`, фильтруя собственный `own_id`
+- `find_user_by_name(name)` — поиск user_id по имени в `contacts`, `dialogs` и `_users` кеше pymax
 
 Используемая библиотека:
 - GitHub: `https://github.com/MaxApiTeam/PyMax`
@@ -99,7 +101,11 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 - Созданием/переименованием топиков в форум-группе
 - Отправкой текста, фото, видео, аудио, voice и документов в топики
 - Получением reply от участников форум-группы → callback в Bridge Core
-- Ограничением команд `/status`, `/chats` и `/reauth` только владельцем
+- Ограничением команд только владельцем
+
+Поддерживает два типа команд:
+- `on_command(cmd, handler)` — без аргументов (`/status`, `/chats`, `/help`)
+- `on_arg_command(cmd, handler)` — с произвольным текстом после команды (`/dm Имя текст`)
 
 ### Bridge Core (`src/bridge/core.py`)
 
@@ -109,6 +115,12 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 - Auto-create + auto-rename топиков
 - Проверка режима чата (active/readonly/disabled)
 - Определение имени топика (`config → chat_title → MAX API → fallback`)
+- Персистирование отправителей входящих сообщений в `known_users`
+- Команды: `/status`, `/chats`, `/help`, `/dm Имя текст`
+
+**`/dm` — инициация нового DM в MAX из Telegram:**
+Алгоритм longest-prefix matching (до 4 слов для имени, минимум 1 слово сообщение).
+Поиск пользователя: DB `known_users` → pymax in-memory кеш (`contacts`, `dialogs`, `_users`).
 
 ### Repository (`src/db/repository.py`)
 
@@ -251,6 +263,15 @@ delivery_log (
     created_at      INTEGER,
     last_attempt_at INTEGER
 )
+
+-- Справочник пользователей MAX (для /dm поиска по имени)
+known_users (
+    max_user_id  TEXT PK,
+    display_name TEXT NOT NULL,
+    updated_at   INTEGER NOT NULL
+)
+-- Заполняется при каждом входящем сообщении от не-собственного отправителя.
+-- Поиск по имени — Python-level case-insensitive (SQLite NOCASE не покрывает кириллицу).
 ```
 
 ## Конфигурационная модель
