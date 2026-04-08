@@ -333,15 +333,45 @@ class BridgeCore:
             if title:
                 return title
 
-        # 4. DM: резолвим имя собеседника через MAX API
-        #    В DM chat_id == user_id собеседника (не нашего аккаунта!)
-        #    Пробуем chat_id первым, потом sender_id (если это не наш аккаунт)
+        # 4. DM: резолвим имя СОБЕСЕДНИКА (не нашего аккаунта!) через MAX API.
+        #
+        #    Проблема: chat_id не всегда указывает на собеседника.
+        #    Когда наш аккаунт инициирует чат (is_own=True), MAX может вернуть
+        #    в echo chat_id == own_id, а sender_id тоже == own_id.
+        #    Либо chat_id == Tatyana's ID, но resolve_user_name не возвращает имя
+        #    (новый контакт), и код откатывается к sender_id == own_id.
+        #
+        #    Решение (три уровня):
+        #      a) dialogs кеш pymax — надёжнее всего, явно видит обоих участников
+        #      b) chat_id, если он != own_id (для входящих DM это всегда верно)
+        #      c) sender_id, если != own_id и != chat_id (edge-case)
+        #
+        #    own_id НИКОГДА не попадает в кандидаты — он не может быть собеседником.
         if msg.is_dm:
-            other_id = msg.chat_id  # собеседник всегда = chat_id для DM
-            sender_is_other = msg.sender_id and msg.sender_id != other_id
+            own_id = self._max.get_own_id()
+
+            # a) Из кеша dialogs — самый надёжный источник
+            dm_partner_id = self._max.get_dm_partner_id(msg.chat_id)
+
+            # b) chat_id как кандидат — только если не наш ID
+            chat_id_candidate = msg.chat_id if msg.chat_id != own_id else None
+
+            # c) sender_id — только если отличается от уже имеющихся кандидатов и не наш
+            sender_candidate = (
+                msg.sender_id
+                if (
+                    msg.sender_id
+                    and msg.sender_id != own_id
+                    and msg.sender_id != dm_partner_id
+                    and msg.sender_id != msg.chat_id
+                )
+                else None
+            )
+
             candidates = list(dict.fromkeys(filter(None, [
-                other_id,
-                msg.sender_id if sender_is_other else None,
+                dm_partner_id,
+                chat_id_candidate,
+                sender_candidate,
             ])))
             for uid in candidates:
                 name = await self._max.resolve_user_name(uid)
@@ -810,8 +840,16 @@ class BridgeCore:
         for binding in bindings:
             if not binding.title.startswith("Чат "):
                 continue
-            # Для DM-чатов chat_id == user_id собеседника — пробуем резолвить
-            candidate_id = binding.max_chat_id
+            # Для DM-чатов пробуем найти собеседника через dialogs кеш,
+            # а не через chat_id напрямую — chat_id может совпадать с own_id
+            # когда чат был инициирован нашим аккаунтом.
+            own_id = self._max.get_own_id()
+            candidate_id = (
+                self._max.get_dm_partner_id(binding.max_chat_id)
+                or (binding.max_chat_id if binding.max_chat_id != own_id else None)
+            )
+            if not candidate_id:
+                continue
             name = await self._max.resolve_user_name(candidate_id)
             if name:
                 await self._tg.rename_topic(binding.tg_topic_id, name)

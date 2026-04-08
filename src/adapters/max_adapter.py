@@ -566,6 +566,30 @@ class MaxAdapter:
         """Вернуть ID нашего MAX аккаунта (для фильтрации собственных сообщений)."""
         return self._own_id
 
+    def get_dm_partner_id(self, chat_id: str) -> Optional[str]:
+        """Для DM-чата вернуть user_id СОБЕСЕДНИКА (не нашего аккаунта).
+
+        Использует кеш dialogs из pymax (populated при sync).
+        Нужен когда наш аккаунт инициировал чат: в этом случае chat_id может
+        совпадать с own_id, и resolve_user_name(chat_id) вернёт наше имя.
+        Возвращает None если диалог не найден или собеседник не определён.
+        """
+        if not self._client or not self._own_id:
+            return None
+        try:
+            chat_id_int = int(chat_id)
+            dialog = next(
+                (d for d in getattr(self._client, "dialogs", []) if d.id == chat_id_int),
+                None,
+            )
+            if dialog:
+                for pid in (dialog.participants or {}):
+                    if str(pid) != self._own_id:
+                        return str(pid)
+        except Exception:
+            pass
+        return None
+
     def _attachment_type_name(self, attach) -> str:
         atype = getattr(attach, "type", None)
         if atype is None:
