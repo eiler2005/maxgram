@@ -4,6 +4,20 @@ All notable changes to Maxgram are documented here.
 
 ---
 
+## [1.1.5] — 2026-04-10
+
+### Changed
+- **MAX channel/forward forwarding** — `CHANNEL` and forward wrappers are unwrapped into the real forwarded text and media. Media downloads now use the source `chat_id/message_id` from the forwarded payload, and duplicate pymax wrapper events are suppressed.
+- **Unknown MAX message diagnostics** — unsupported message shapes now render as `[Неизвестное сообщение MAX]` with `type`, `status`, `link_*`, text/attachment counts, attachment types, and raw field names instead of a short system placeholder.
+
+### Tests
+- Added coverage for `link.message` forward unwrap with media source ids.
+- Added coverage for raw `CHANNEL` wrapper unwrap and duplicate suppression.
+- Added coverage for detailed unknown MAX message fallback.
+- All 66 tests pass.
+
+---
+
 ## [1.1.4] — 2026-04-05
 
 ### Added

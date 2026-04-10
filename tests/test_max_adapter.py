@@ -51,6 +51,31 @@ class DummyDownloadAdapter(MaxAdapter):
         )
 
 
+class CapturingDownloadAdapter(DummyDownloadAdapter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.download_calls = []
+
+    async def _download_attachment(
+        self,
+        chat_id: str,
+        msg_id: str,
+        attach,
+        index: int = 0,
+        flow_id=None,
+    ):
+        self.download_calls.append(
+            (chat_id, msg_id, self._attachment_type_name(attach), index)
+        )
+        return await super()._download_attachment(
+            chat_id,
+            msg_id,
+            attach,
+            index,
+            flow_id,
+        )
+
+
 @pytest.mark.asyncio
 async def test_handle_raw_message_renders_control_leave(tmp_path):
     adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
@@ -83,6 +108,172 @@ async def test_handle_raw_message_renders_control_leave(tmp_path):
     assert received[0].rendered_texts == ["Тестовый Пользователь вышел(а) из чата"]
     assert received[0].attachment_types == ["CONTROL"]
     assert received[0].chat_title == "Тестовая группа"
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
+    adapter = CapturingDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(
+        users={7001: make_user("Тестовый", "Пользователь")},
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")],
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    forwarded_message = SimpleNamespace(
+        id=901,
+        chat_id=-80000000000001,
+        sender=None,
+        text="Пост из канала",
+        type="TEXT",
+        status=None,
+        attaches=[
+            SimpleNamespace(type="PHOTO", url="https://cdn.example.test/photo.jpg")
+        ],
+        link=None,
+    )
+    message = SimpleNamespace(
+        id=101,
+        chat_id=-70000000000003,
+        sender=7001,
+        text="",
+        type="CHANNEL",
+        status=None,
+        attaches=[],
+        link=SimpleNamespace(
+            type="FORWARD",
+            chat_id=-80000000000001,
+            message=forwarded_message,
+        ),
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].msg_id == "101"
+    assert received[0].chat_id == "-70000000000003"
+    assert received[0].text == "Пост из канала"
+    assert received[0].message_type == "TEXT"
+    assert received[0].attachment_types == ["PHOTO"]
+    assert adapter.download_calls == [("-80000000000001", "901", "PHOTO", 0)]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_receive_unwraps_channel_wrapper_and_skips_pymax_duplicate(tmp_path):
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")]
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    raw_event = {
+        "opcode": 128,
+        "payload": {
+            "chatId": -70000000000003,
+            "message": {
+                "id": 102,
+                "time": 1,
+                "sender": 7001,
+                "text": "",
+                "type": "CHANNEL",
+                "attaches": [],
+                "message": {
+                    "id": 902,
+                    "time": 1,
+                    "sender": None,
+                    "text": "Реальный пост канала",
+                    "type": "TEXT",
+                    "attaches": [],
+                },
+            },
+        },
+    }
+
+    await adapter._handle_raw_receive(raw_event)
+    await adapter._handle_raw_message(
+        SimpleNamespace(
+            id=102,
+            chat_id=-70000000000003,
+            sender=7001,
+            text="",
+            type="CHANNEL",
+            status=None,
+            attaches=[],
+            link=None,
+        )
+    )
+
+    assert len(received) == 1
+    assert received[0].msg_id == "102"
+    assert received[0].chat_id == "-70000000000003"
+    assert received[0].text == "Реальный пост канала"
+    assert received[0].message_type == "TEXT"
+    assert received[0].rendered_texts == []
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_renders_unknown_message_details(tmp_path):
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")]
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=103,
+        chat_id=-70000000000003,
+        sender=7001,
+        text="",
+        type="CHANNEL",
+        status=None,
+        attaches=[],
+        link=SimpleNamespace(type="FORWARD", chat_id=-80000000000001, message=None),
+        mysteryPayload={"kind": "new-shape"},
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].rendered_texts
+    rendered = received[0].rendered_texts[0]
+    assert rendered.startswith("[Неизвестное сообщение MAX]")
+    assert "type=CHANNEL" in rendered
+    assert "link_type=FORWARD" in rendered
+    assert "link_chat_id=-80000000000001" in rendered
+    assert "outer_fields=" in rendered
+    assert "mysteryPayload" in rendered
 
 
 @pytest.mark.asyncio

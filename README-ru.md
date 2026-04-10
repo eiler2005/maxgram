@@ -44,6 +44,8 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Startup self-check** — после старта в production бот пишет результат встроенного `pytest`-прогона
 - **Устойчивое скачивание MAX-видео** — bridge предпочитает реальные `MP4_*` потоки вместо `EXTERNAL` HTML-плеера и подбирает `User-Agent` по `srcAg`
 - **Post-validation загрузок** — после скачивания проверяются `Content-Type` и сигнатура файла, HTML/player fallback не уходит как медиа
+- **Реальная пересылка MAX channel/forward** — `CHANNEL`/forward-обёртки разворачиваются до исходного текста и медиа вместо служебной заглушки
+- **Диагностика неизвестных MAX-сообщений** — новый формат MAX уходит в Telegram как подробный блок с `type`, `link_*`, счётчиками и списком полей
 - **Нативные voice bubbles** — MAX `VOICE` пересылается в Telegram через `send_voice`
 
 ---
@@ -169,7 +171,7 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Regression-набор покрывает: routing, дедупликацию, системные MAX-события, media forwarding, reply routing, Telegram topic filtering.
+Regression-набор покрывает: routing, дедупликацию, системные MAX-события, MAX channel/forward unwrap, media forwarding, reply routing, Telegram topic filtering.
 
 Смоук-проверка:
 ```bash
@@ -247,7 +249,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 | [docs/runbooks/operations.md](docs/runbooks/operations.md) | Операционные процедуры |
 | [docs/runbooks/deployment.md](docs/runbooks/deployment.md) | Деплой: локально, Docker, Hetzner, Fly.io |
 | [docs/runbooks/hetzner-production.md](docs/runbooks/hetzner-production.md) | Безопасный production-деплой |
-| [docs/tests.md](docs/tests.md) | Описание всех 39 тестов |
+| [docs/tests.md](docs/tests.md) | Описание regression-набора |
 | [PROJECT.md](PROJECT.md) | Полная техническая документация |
 | [CHANGELOG.md](CHANGELOG.md) | История изменений |
 

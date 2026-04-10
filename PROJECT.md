@@ -200,6 +200,8 @@ Fallback rename:
 - **ContactAttach:** пересылается как текст `Контакт: ...`
 - **StickerAttach:** пересылается текстом (`[Стикер]` / `[Аудиостикер]`)
 - **EDITED/REMOVED:** приходят как отдельные уведомления, чтобы bridge не терял эти статусы
+- **CHANNEL/forward:** bridge разворачивает `link.message` и raw `CHANNEL`-обёртки до исходного текста/медиа; файлы скачиваются по исходным `chat_id/message_id`, а pymax-дубликат обёртки подавляется.
+- **Неизвестные типы:** вместо короткой заглушки bridge отправляет диагностический блок `[Неизвестное сообщение MAX]` с `type`, `status`, `link_*`, количеством текста/вложений и списком полей объекта.
 
 ### Группы: имя отправителя
 
@@ -246,7 +248,7 @@ for _ in range(3):
 
 В проекте есть базовый regression-набор на `pytest`:
 
-- `tests/test_max_adapter.py` — системные MAX события, supported attachments, echo/ack исходящих
+- `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих
 - `tests/test_bridge_core.py` — пересылка media и rendered text в Telegram
 - `tests/test_tg_adapter.py` — приём сообщений от участников группы и command filtering
 - `tests/test_main.py` — startup notification с runtime/location/masked IP и статусом startup `pytest`

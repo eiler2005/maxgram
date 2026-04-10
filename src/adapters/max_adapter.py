@@ -16,6 +16,7 @@ import mimetypes
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable, Optional, Awaitable
 from urllib.parse import urlparse
 from urllib.parse import parse_qs
@@ -85,6 +86,15 @@ class MaxMessage:
     raw: object                     # оригинальный объект библиотеки
 
 
+@dataclass
+class ForwardedPayload:
+    """Развёрнутое содержимое forward/channel сообщения MAX."""
+    message: object
+    chat_id: Optional[str]
+    msg_id: Optional[str]
+    link_type: Optional[str]
+
+
 MessageHandler = Callable[[MaxMessage], Awaitable[None]]
 
 
@@ -101,6 +111,7 @@ class MaxAdapter:
         self._own_id: Optional[str] = None  # ID нашего аккаунта в MAX
         self._pending_outbound_acks: list[PendingOutboundAck] = []
         self._expected_outbound_ids: dict[tuple[str, str], float] = {}
+        self._raw_unwrapped_message_ids: dict[tuple[str, str], float] = {}
         self._interactive_ping_failure_limit = 3
 
     def on_message(self, handler: MessageHandler):
@@ -190,6 +201,319 @@ class MaxAdapter:
         if linked_id is None:
             linked_id = getattr(link, "message_id", None)
         return str(linked_id) if linked_id is not None else None
+
+    def _extract_forwarded_payload(self, message) -> Optional[ForwardedPayload]:
+        """Вернуть вложенное MAX-сообщение для forward/channel link.
+
+        В MAX пересланные сообщения и посты каналов могут приходить как обычное
+        сообщение-обёртка с `link.message`. `REPLY` оставляем reply, всё
+        остальное с вложенным message разворачиваем как реальный контент.
+        """
+        link = getattr(message, "link", None)
+        if link:
+            link_type = str(getattr(link, "type", "") or "").upper() or None
+            linked_message = getattr(link, "message", None)
+            if linked_message is not None and link_type != "REPLY":
+                linked_id = getattr(linked_message, "id", None)
+                return ForwardedPayload(
+                    message=linked_message,
+                    chat_id=str(getattr(link, "chat_id", "") or "") or None,
+                    msg_id=str(linked_id) if linked_id is not None else None,
+                    link_type=link_type,
+                )
+
+        for attr in (
+            "forwarded_message",
+            "forward_message",
+            "forwardedMessage",
+            "forwardMessage",
+            "channel_message",
+            "channelMessage",
+        ):
+            linked_message = getattr(message, attr, None)
+            if linked_message is None:
+                continue
+            linked_chat_id = (
+                getattr(linked_message, "chat_id", None)
+                or getattr(message, "_forward_source_chat_id", None)
+            )
+            linked_id = getattr(linked_message, "id", None)
+            return ForwardedPayload(
+                message=linked_message,
+                chat_id=str(linked_chat_id) if linked_chat_id is not None else None,
+                msg_id=str(linked_id) if linked_id is not None else None,
+                link_type=attr,
+            )
+
+        return None
+
+    def _object_field_names(self, value) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            return sorted(str(key) for key in value if not str(key).startswith("_"))
+        raw_fields = getattr(value, "__dict__", None)
+        if isinstance(raw_fields, dict):
+            return sorted(str(key) for key in raw_fields if not str(key).startswith("_"))
+        return []
+
+    def _object_text_len(self, value) -> Optional[int]:
+        text = getattr(value, "text", None)
+        return len(text) if isinstance(text, str) else None
+
+    def _object_attach_count(self, value) -> Optional[int]:
+        attaches = getattr(value, "attaches", None)
+        if attaches is None:
+            return None
+        if isinstance(attaches, list):
+            return len(attaches)
+        return 1
+
+    def _render_unknown_message_details(
+        self,
+        *,
+        message,
+        content_message,
+        message_type: Optional[str],
+        status: Optional[str],
+        raw_attachment_types: list[str],
+        forwarded: Optional[ForwardedPayload],
+    ) -> str:
+        details: list[tuple[str, object]] = [
+            ("type", message_type or "unknown"),
+            ("status", status),
+            ("outer_text_len", self._object_text_len(message)),
+            ("content_text_len", self._object_text_len(content_message)),
+            ("outer_attach_count", self._object_attach_count(message)),
+            ("content_attach_count", self._object_attach_count(content_message)),
+        ]
+
+        link = getattr(message, "link", None)
+        if forwarded:
+            details.extend([
+                ("link_type", forwarded.link_type),
+                ("link_chat_id", forwarded.chat_id),
+                ("link_message_id", forwarded.msg_id),
+            ])
+        elif link:
+            linked_message = getattr(link, "message", None)
+            details.extend([
+                ("link_type", getattr(link, "type", None)),
+                ("link_chat_id", getattr(link, "chat_id", None)),
+                ("link_message_id", getattr(linked_message, "id", None)),
+            ])
+
+        if raw_attachment_types:
+            details.append(("raw_attachment_types", ",".join(raw_attachment_types)))
+
+        outer_fields = self._object_field_names(message)
+        content_fields = self._object_field_names(content_message)
+        if outer_fields:
+            details.append(("outer_fields", ",".join(outer_fields)))
+        if content_fields and content_fields != outer_fields:
+            details.append(("content_fields", ",".join(content_fields)))
+
+        lines = ["[Неизвестное сообщение MAX]"]
+        for key, value in details:
+            if value is None or value == "":
+                continue
+            lines.append(f"{key}={value}")
+        return "\n".join(lines)
+
+    def _cleanup_raw_unwrapped_state(self):
+        now = time.monotonic()
+        self._raw_unwrapped_message_ids = {
+            key: expires_at
+            for key, expires_at in self._raw_unwrapped_message_ids.items()
+            if expires_at > now
+        }
+
+    def _mark_raw_unwrapped_message(self, chat_id: str, msg_id: str):
+        self._cleanup_raw_unwrapped_state()
+        self._raw_unwrapped_message_ids[(str(chat_id), str(msg_id))] = (
+            time.monotonic() + 30
+        )
+
+    def _consume_raw_unwrapped_message(self, chat_id: str, msg_id: str) -> bool:
+        self._cleanup_raw_unwrapped_state()
+        return (
+            self._raw_unwrapped_message_ids.pop((str(chat_id), str(msg_id)), None)
+            is not None
+        )
+
+    def _payload_value(self, data: dict, *keys: str):
+        normalized = {
+            str(k).lower().replace("_", ""): v
+            for k, v in data.items()
+        }
+        for key in keys:
+            candidate = key.lower().replace("_", "")
+            if candidate in normalized:
+                return normalized[candidate]
+        return None
+
+    def _normalize_message_dict(self, data: dict) -> dict:
+        normalized = dict(data)
+        if "_type" in normalized and "type" not in normalized:
+            normalized["type"] = normalized["_type"]
+        if "chat_id" in normalized and "chatId" not in normalized:
+            normalized["chatId"] = normalized["chat_id"]
+        for source, target in {
+            "baseUrl": "base_url",
+            "fileId": "file_id",
+            "videoId": "video_id",
+        }.items():
+            if source in normalized and target not in normalized:
+                normalized[target] = normalized[source]
+        return normalized
+
+    def _find_nested_message_dict(self, wrapper: dict) -> tuple[Optional[dict], Optional[str]]:
+        for key in (
+            "message",
+            "forwardedMessage",
+            "forwardMessage",
+            "channelMessage",
+            "sourceMessage",
+            "originalMessage",
+        ):
+            value = self._payload_value(wrapper, key)
+            if not isinstance(value, dict):
+                continue
+            source_chat_id = self._payload_value(value, "chatId", "chat_id")
+            nested = self._payload_value(value, "message")
+            if isinstance(nested, dict):
+                return self._normalize_message_dict(nested), (
+                    str(source_chat_id) if source_chat_id is not None else None
+                )
+            return self._normalize_message_dict(value), (
+                str(source_chat_id) if source_chat_id is not None else None
+            )
+        return None, None
+
+    def _message_object_from_dict(self, message: dict, chat_id: Optional[str]):
+        payload = {
+            "chatId": (
+                int(chat_id)
+                if chat_id and str(chat_id).lstrip("-").isdigit()
+                else chat_id
+            ),
+            "message": self._normalize_message_dict(message),
+        }
+        try:
+            from pymax.types import Message
+
+            return Message.from_dict(payload)
+        except Exception:
+            attaches = [
+                SimpleNamespace(**self._normalize_message_dict(attach))
+                for attach in (message.get("attaches") or [])
+                if isinstance(attach, dict)
+            ]
+            return SimpleNamespace(
+                id=message.get("id"),
+                chat_id=chat_id,
+                sender=message.get("sender"),
+                text=message.get("text") or "",
+                type=message.get("type"),
+                status=message.get("status"),
+                attaches=attaches,
+                link=None,
+                reactionInfo=message.get("reactionInfo"),
+            )
+
+    def _build_unwrapped_channel_message(self, payload: dict):
+        if not isinstance(payload, dict):
+            return None
+
+        outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
+        wrapper = self._payload_value(payload, "message")
+        if not isinstance(wrapper, dict):
+            return None
+
+        wrapper = self._normalize_message_dict(wrapper)
+        nested, nested_chat_id = self._find_nested_message_dict(wrapper)
+        if not nested:
+            return None
+
+        wrapper_type = str(self._payload_value(wrapper, "type") or "").upper()
+        wrapper_has_content = bool(
+            (self._payload_value(wrapper, "text") or "").strip()
+            or self._payload_value(wrapper, "attaches")
+        )
+        nested_has_content = bool(
+            (self._payload_value(nested, "text") or "").strip()
+            or self._payload_value(nested, "attaches")
+        )
+        if wrapper_type not in {"CHANNEL", "FORWARD", "FORWARDED"} and (
+            wrapper_has_content or not nested_has_content
+        ):
+            return None
+
+        source_chat_id = (
+            nested_chat_id
+            or self._payload_value(nested, "chatId", "chat_id")
+            or self._payload_value(wrapper, "chatId", "chat_id")
+            or outer_chat_id
+        )
+        nested_msg_id = self._payload_value(nested, "id", "messageId", "message_id")
+        outer_msg_id = (
+            self._payload_value(wrapper, "id", "messageId", "message_id")
+            or nested_msg_id
+        )
+        outer_status = self._payload_value(wrapper, "status")
+        nested_obj = self._message_object_from_dict(
+            nested,
+            str(source_chat_id) if source_chat_id else None,
+        )
+
+        return SimpleNamespace(
+            id=outer_msg_id,
+            chat_id=outer_chat_id or source_chat_id,
+            sender=(
+                self._payload_value(wrapper, "sender")
+                or getattr(nested_obj, "sender", None)
+            ),
+            text=getattr(nested_obj, "text", None),
+            type=getattr(nested_obj, "type", None),
+            status=outer_status or getattr(nested_obj, "status", None),
+            attaches=getattr(nested_obj, "attaches", None),
+            link=None,
+            reactionInfo=(
+                self._payload_value(wrapper, "reactionInfo")
+                or getattr(nested_obj, "reactionInfo", None)
+            ),
+            _forward_source_chat_id=(
+                str(source_chat_id) if source_chat_id is not None else None
+            ),
+            _forward_source_msg_id=(
+                str(nested_msg_id) if nested_msg_id is not None else None
+            ),
+            _forward_link_type=wrapper_type or "CHANNEL",
+            _from_raw_unwrapped=True,
+        )
+
+    async def _handle_raw_receive(self, data: dict):
+        """Перехватить channel wrappers до потери вложенного контента в pymax."""
+        try:
+            from pymax.static.enum import Opcode
+
+            notif_message_opcode = Opcode.NOTIF_MESSAGE.value
+        except Exception:
+            notif_message_opcode = 128
+
+        if not isinstance(data, dict) or data.get("opcode") != notif_message_opcode:
+            return
+
+        unwrapped = self._build_unwrapped_channel_message(data.get("payload") or {})
+        if unwrapped is None:
+            return
+
+        chat_id = str(getattr(unwrapped, "chat_id", "") or "")
+        msg_id = str(getattr(unwrapped, "id", "") or "")
+        if chat_id and msg_id:
+            self._mark_raw_unwrapped_message(chat_id, msg_id)
+
+        await self._handle_raw_message(unwrapped)
 
     def _get_extra_value(self, extra: dict, *keys: str):
         normalized = {
@@ -1172,16 +1496,58 @@ class MaxAdapter:
         try:
             raw_msg_id = str(getattr(message, "id", None) or "")
             chat_id = str(getattr(message, "chat_id", "") or "")
-            text    = getattr(message, "text", None) or None
+            if (
+                raw_msg_id
+                and chat_id
+                and not getattr(message, "_from_raw_unwrapped", False)
+                and self._consume_raw_unwrapped_message(chat_id, raw_msg_id)
+            ):
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "max.inbound.skipped",
+                    direction="inbound",
+                    stage="received",
+                    outcome="skipped",
+                    reason="raw_unwrapped_duplicate",
+                    max_chat_id=chat_id,
+                    max_msg_id=raw_msg_id,
+                )
+                return
+
+            forwarded = self._extract_forwarded_payload(message)
+            content_message = forwarded.message if forwarded else message
+
+            text = (
+                getattr(content_message, "text", None)
+                or getattr(message, "text", None)
+                or None
+            )
             if text == "":
                 text = None
-            message_type = str(getattr(message, "type", None) or "") or None
+            message_type = str(
+                getattr(content_message, "type", None)
+                or getattr(message, "type", None)
+                or ""
+            ) or None
             status = str(getattr(message, "status", None) or "").upper() or None
             reaction_info = (
                 getattr(message, "reactionInfo", None)
                 or getattr(message, "reaction_info", None)
+                or getattr(content_message, "reactionInfo", None)
+                or getattr(content_message, "reaction_info", None)
             )
             msg_id = f"{raw_msg_id}:{status}" if raw_msg_id and status else raw_msg_id
+            media_chat_id = (
+                forwarded.chat_id
+                if forwarded
+                else getattr(message, "_forward_source_chat_id", None)
+            ) or chat_id
+            media_msg_id = (
+                forwarded.msg_id
+                if forwarded
+                else getattr(message, "_forward_source_msg_id", None)
+            ) or raw_msg_id
 
             # Отправитель: message.sender — это int
             sender_int = getattr(message, "sender", None)
@@ -1258,7 +1624,7 @@ class MaxAdapter:
             if sender_id:
                 sender_name = await self.resolve_user_name(sender_id)
 
-            attaches = getattr(message, "attaches", None) or []
+            attaches = getattr(content_message, "attaches", None) or []
             attach_list = attaches if isinstance(attaches, list) else [attaches]
             raw_attachment_types = [
                 self._attachment_type_name(attach)
@@ -1303,7 +1669,11 @@ class MaxAdapter:
                 atype = self._normalize_attachment_type(raw_type)
                 if atype in {"PHOTO", "VIDEO", "AUDIO", "FILE"}:
                     attachment = await self._download_attachment(
-                        chat_id, raw_msg_id, attach, index=media_index, flow_id=flow_id
+                        media_chat_id,
+                        media_msg_id,
+                        attach,
+                        index=media_index,
+                        flow_id=flow_id,
                     )
                     media_index += 1
                     if attachment:
@@ -1352,7 +1722,16 @@ class MaxAdapter:
 
             if not text and not attachments and not rendered_texts and message_type:
                 if message_type.upper() not in {"TEXT", "USER"}:
-                    rendered_texts.append(f"[Системное сообщение MAX: {message_type.lower()}]")
+                    rendered_texts.append(
+                        self._render_unknown_message_details(
+                            message=message,
+                            content_message=content_message,
+                            message_type=message_type,
+                            status=status,
+                            raw_attachment_types=raw_attachment_types,
+                            forwarded=forwarded,
+                        )
+                    )
 
             log_event(
                 logger,
@@ -1593,6 +1972,8 @@ class MaxAdapter:
                     )
 
             self._client.on_start(_on_start)
+            if hasattr(self._client, "on_raw_receive"):
+                self._client.on_raw_receive(self._handle_raw_receive)
             self._client.on_message()(self._handle_raw_message)
             self._client.on_message_edit()(self._handle_raw_message)
             self._client.on_message_delete()(self._handle_raw_message)

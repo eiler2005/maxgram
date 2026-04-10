@@ -54,6 +54,8 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Media forwarding in both directions: photos, video, audio, voice, documents
 - MAX video downloads prefer real `MP4_*` streams over `EXTERNAL` player pages and use an adaptive CDN user-agent (`CHROME` vs mobile Safari)
 - MAX downloader validates `Content-Type` + file signature and rejects HTML/text fallbacks for expected media
+- MAX `CHANNEL`/forward wrappers are unwrapped into the real forwarded text and media instead of a generic system placeholder
+- Unknown MAX message shapes are forwarded with diagnostic metadata (`type`, `link_*`, counts, raw field names) so new formats can be fixed from the next occurrence
 - MAX attachment aliases (`IMAGE`, `VOICE`, `DOCUMENT`, `DOC`) are normalized consistently across dispatch and download stages
 - MAX `VOICE` attachments are delivered as native Telegram voice notes (`send_voice` bubbles)
 - Control events are rendered in human-friendly text (including `joinbylink` join notifications)
