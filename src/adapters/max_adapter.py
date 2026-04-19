@@ -95,6 +95,13 @@ class ForwardedPayload:
     link_type: Optional[str]
 
 
+@dataclass
+class OutboundFailureState:
+    """Последняя ошибка исходящей отправки в MAX."""
+    error: Optional[str]
+    attempts: int = 0
+
+
 MessageHandler = Callable[[MaxMessage], Awaitable[None]]
 
 
@@ -113,6 +120,7 @@ class MaxAdapter:
         self._expected_outbound_ids: dict[tuple[str, str], float] = {}
         self._raw_unwrapped_message_ids: dict[tuple[str, str], float] = {}
         self._interactive_ping_failure_limit = 3
+        self._last_outbound_failure = OutboundFailureState(error=None, attempts=0)
 
     def on_message(self, handler: MessageHandler):
         self._handlers.append(handler)
@@ -122,6 +130,45 @@ class MaxAdapter:
 
     def _normalize_outbound_text(self, text: Optional[str]) -> str:
         return (text or "").strip()
+
+    def _set_last_outbound_failure(self, error: Optional[str], *, attempts: int = 0):
+        self._last_outbound_failure = OutboundFailureState(error=error, attempts=attempts)
+
+    def get_last_outbound_error(self) -> Optional[str]:
+        return self._last_outbound_failure.error
+
+    def get_last_outbound_attempts(self) -> int:
+        return self._last_outbound_failure.attempts
+
+    def _is_retryable_send_error(self, error: BaseException) -> bool:
+        if isinstance(
+            error,
+            (
+                asyncio.TimeoutError,
+                TimeoutError,
+                ConnectionError,
+                BrokenPipeError,
+                ConnectionResetError,
+            ),
+        ):
+            return True
+
+        error_text = str(error).lower()
+        retryable_markers = (
+            "socket is not connected",
+            "must be online session",
+            "недопустимое состояние сессии",
+            "broken pipe",
+            "connection reset",
+            "no route to host",
+            "network is unreachable",
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "tlsv1 alert",
+            "ssl:",
+        )
+        return any(marker in error_text for marker in retryable_markers)
 
     def _cleanup_pending_state(self):
         now = time.monotonic()
@@ -674,6 +721,7 @@ class MaxAdapter:
           None — ошибка
         """
         # Ждём подключения до 15 секунд (на случай reconnect)
+        self._set_last_outbound_failure(None, attempts=0)
         if not self._started:
             log_event(
                 logger,
@@ -692,72 +740,184 @@ class MaxAdapter:
                 if self._started:
                     break
             else:
+                self._set_last_outbound_failure("MAX adapter is not connected", attempts=1)
                 return None
 
         if not self._client:
+            self._set_last_outbound_failure("MAX client is not initialized", attempts=1)
             return None
 
         normalized_text = self._normalize_outbound_text(text)
-        loop = asyncio.get_running_loop()
-        pending = PendingOutboundAck(
-            chat_id=str(chat_id),
-            text=normalized_text,
-            reply_to_msg_id=reply_to_msg_id,
-            created_monotonic=time.monotonic(),
-            future=loop.create_future(),
-        )
-        self._pending_outbound_acks.append(pending)
-        log_event(
-            logger,
-            logging.INFO,
-            "max.outbound.send",
-            flow_id=flow_id,
-            direction="outbound",
-            stage="transport",
-            outcome="started",
-            max_chat_id=chat_id,
-            media_type=media_type,
-            has_text=bool(normalized_text),
-            reply_to_max_id=reply_to_msg_id,
-            filename=sanitize_path(media_path),
-        )
+        max_attempts = 3
+        retry_delays = (1, 2)
 
-        try:
-            from pymax.files import File, Photo, Video
+        for attempt in range(1, max_attempts + 1):
+            loop = asyncio.get_running_loop()
+            pending = PendingOutboundAck(
+                chat_id=str(chat_id),
+                text=normalized_text,
+                reply_to_msg_id=reply_to_msg_id,
+                created_monotonic=time.monotonic(),
+                future=loop.create_future(),
+            )
+            self._pending_outbound_acks.append(pending)
+            log_event(
+                logger,
+                logging.INFO,
+                "max.outbound.send",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="transport",
+                outcome="started",
+                max_chat_id=chat_id,
+                media_type=media_type,
+                has_text=bool(normalized_text),
+                reply_to_max_id=reply_to_msg_id,
+                filename=sanitize_path(media_path),
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
 
-            attachment = None
-            if media_path and Path(media_path).exists():
-                if media_type == "photo":
-                    attachment = Photo(path=media_path)
-                elif media_type == "video":
-                    attachment = Video(path=media_path)
-                else:  # audio, document
-                    attachment = File(path=media_path)
+            try:
+                from pymax.files import File, Photo, Video
 
-            kwargs: dict = {"chat_id": int(chat_id), "text": text}
-            if reply_to_msg_id:
-                kwargs["reply_to"] = int(reply_to_msg_id)
-            if attachment is not None:
-                kwargs["attachment"] = attachment
-            result = await self._client.send_message(**kwargs)
-            msg_id = self._extract_result_msg_id(result)
-            if msg_id:
-                self._remember_expected_outbound_id(chat_id, msg_id)
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "max.outbound.sent",
-                    flow_id=flow_id,
-                    direction="outbound",
-                    stage="transport",
-                    outcome="sent",
-                    max_chat_id=chat_id,
-                    max_msg_id=msg_id,
-                    media_type=media_type,
-                )
-                return msg_id
+                attachment = None
+                if media_path and Path(media_path).exists():
+                    if media_type == "photo":
+                        attachment = Photo(path=media_path)
+                    elif media_type == "video":
+                        attachment = Video(path=media_path)
+                    else:  # audio, document
+                        attachment = File(path=media_path)
 
-            if not normalized_text:
+                kwargs: dict = {"chat_id": int(chat_id), "text": text}
+                if reply_to_msg_id:
+                    kwargs["reply_to"] = int(reply_to_msg_id)
+                if attachment is not None:
+                    kwargs["attachment"] = attachment
+                result = await self._client.send_message(**kwargs)
+                msg_id = self._extract_result_msg_id(result)
+                if msg_id:
+                    self._remember_expected_outbound_id(chat_id, msg_id)
+                    self._set_last_outbound_failure(None, attempts=attempt)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "max.outbound.sent",
+                        flow_id=flow_id,
+                        direction="outbound",
+                        stage="transport",
+                        outcome="sent",
+                        max_chat_id=chat_id,
+                        max_msg_id=msg_id,
+                        media_type=media_type,
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                    )
+                    return msg_id
+
+                if not normalized_text:
+                    error = "MAX send returned no message id"
+                    self._set_last_outbound_failure(error, attempts=attempt)
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "max.outbound.failed",
+                        flow_id=flow_id,
+                        direction="outbound",
+                        stage="transport",
+                        outcome="failed",
+                        reason="max_send_failed",
+                        max_chat_id=chat_id,
+                        media_type=media_type,
+                        error=error,
+                        attempts=attempt,
+                    )
+                    return None
+
+                try:
+                    echoed_id = await asyncio.wait_for(asyncio.shield(pending.future), timeout=10)
+                    self._set_last_outbound_failure(None, attempts=attempt)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "max.outbound.sent",
+                        flow_id=flow_id,
+                        direction="outbound",
+                        stage="transport",
+                        outcome="sent",
+                        max_chat_id=chat_id,
+                        max_msg_id=str(echoed_id),
+                        media_type=media_type,
+                        reason="echo_ack",
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                    )
+                    return str(echoed_id)
+                except asyncio.TimeoutError:
+                    error = "MAX outbound ack timeout"
+                    if attempt < max_attempts:
+                        retry_in_seconds = retry_delays[attempt - 1]
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "max.outbound.retry",
+                            flow_id=flow_id,
+                            direction="outbound",
+                            stage="transport",
+                            outcome="retry",
+                            reason="ack_timeout",
+                            max_chat_id=chat_id,
+                            media_type=media_type,
+                            error=error,
+                            attempt=attempt,
+                            max_attempts=max_attempts,
+                            retry_in_seconds=retry_in_seconds,
+                        )
+                        await asyncio.sleep(retry_in_seconds)
+                        continue
+
+                    self._set_last_outbound_failure(error, attempts=attempt)
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "max.outbound.failed",
+                        flow_id=flow_id,
+                        direction="outbound",
+                        stage="transport",
+                        outcome="failed",
+                        reason="ack_timeout",
+                        max_chat_id=chat_id,
+                        media_type=media_type,
+                        error=error,
+                        attempts=attempt,
+                    )
+                    return None
+            except Exception as e:
+                error = str(e)
+                retryable = self._is_retryable_send_error(e)
+                if retryable and attempt < max_attempts:
+                    retry_in_seconds = retry_delays[attempt - 1]
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.outbound.retry",
+                        flow_id=flow_id,
+                        direction="outbound",
+                        stage="transport",
+                        outcome="retry",
+                        reason="transport_error",
+                        max_chat_id=chat_id,
+                        media_type=media_type,
+                        error=error,
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        retry_in_seconds=retry_in_seconds,
+                    )
+                    await asyncio.sleep(retry_in_seconds)
+                    continue
+
+                self._set_last_outbound_failure(error, attempts=attempt)
                 log_event(
                     logger,
                     logging.ERROR,
@@ -769,59 +929,18 @@ class MaxAdapter:
                     reason="max_send_failed",
                     max_chat_id=chat_id,
                     media_type=media_type,
+                    error=error,
+                    attempts=attempt,
+                    retryable=retryable,
                 )
                 return None
+            finally:
+                if pending in self._pending_outbound_acks:
+                    self._pending_outbound_acks.remove(pending)
+                if not pending.future.done():
+                    pending.future.cancel()
 
-            try:
-                echoed_id = await asyncio.wait_for(asyncio.shield(pending.future), timeout=10)
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "max.outbound.sent",
-                    flow_id=flow_id,
-                    direction="outbound",
-                    stage="transport",
-                    outcome="sent",
-                    max_chat_id=chat_id,
-                    max_msg_id=str(echoed_id),
-                    media_type=media_type,
-                    reason="echo_ack",
-                )
-                return str(echoed_id)
-            except asyncio.TimeoutError:
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "max.outbound.failed",
-                    flow_id=flow_id,
-                    direction="outbound",
-                    stage="transport",
-                    outcome="failed",
-                    reason="ack_timeout",
-                    max_chat_id=chat_id,
-                    media_type=media_type,
-                )
-                return None
-        except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "max.outbound.failed",
-                flow_id=flow_id,
-                direction="outbound",
-                stage="transport",
-                outcome="failed",
-                reason="max_send_failed",
-                max_chat_id=chat_id,
-                media_type=media_type,
-                error=str(e),
-            )
-            return None
-        finally:
-            if pending in self._pending_outbound_acks:
-                self._pending_outbound_acks.remove(pending)
-            if not pending.future.done():
-                pending.future.cancel()
+        return None
 
     async def resolve_user_name(self, user_id: str) -> Optional[str]:
         """Получить имя пользователя по ID (для DM чатов без названия).

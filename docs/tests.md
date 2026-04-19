@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 python -m pytest -v
 ```
 
-Всего: **66 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **70 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -73,6 +73,8 @@ python -m pytest -v
 |------|--------------|
 | `test_send_message_waits_for_echo_ack_when_pymax_does_not_return_id` | Когда pymax не возвращает реальный `id` (только `accepted=True`), `send_message` ждёт эхо-сообщение от самого MAX и возвращает его `msg_id`. Обработчик не вызывается (эхо подавляется). |
 | `test_own_echo_is_suppressed_when_send_message_returns_real_id` | Когда pymax возвращает настоящий `id`, он сохраняется как "отправленный". Последующее эхо-сообщение с тем же `id` от MAX подавляется — обработчик не вызывается. |
+| `test_send_message_retries_retryable_transport_error_and_succeeds` | Временная ошибка транспорта (`Socket is not connected`) вызывает retry; следующая успешная попытка возвращает `msg_id`, а в логах появляется `max.outbound.retry`. |
+| `test_send_message_exposes_final_error_after_retries` | После исчерпания retry `send_message()` возвращает `None`, а адаптер сохраняет последнюю ошибку и реальное число попыток для последующей записи в `delivery_log`. |
 
 ### Устойчивость reconnect и video CDN
 
@@ -105,6 +107,8 @@ python -m pytest -v
 | `test_on_tg_reply_prefixes_sender_name_for_max` | Reply из Telegram: текст отправляется в MAX с префиксом `[Марина Ермилова]\nПроверка связи`; `reply_to_msg_id` разрешается через `get_max_msg_id_by_tg`. |
 | `test_on_tg_reply_rejects_too_large_media` | TG→MAX: если файл превышает лимит `max_file_size_mb`, bridge не отправляет его в MAX и отдаёт явное сообщение в топик. |
 | `test_on_tg_reply_logs_forward_completion` | После успешной доставки TG→MAX в логах присутствует событие `bridge.outbound.forward_finished` с `outcome=delivered`. |
+| `test_on_tg_reply_logs_failed_delivery_with_max_error` | Если TG→MAX отправка окончательно не удалась, bridge пишет `failed` в `delivery_log` с последней ошибкой MAX и числом попыток. |
+| `test_on_tg_reply_logs_too_large_outbound_failure` | Явно отклонённый oversized TG→MAX файл тоже фиксируется в `delivery_log`, а не только показывается в Telegram topic. |
 | `test_get_or_create_topic_resolves_group_title_via_live_max_lookup` | Если `chat_title=None`, `_get_or_create_topic` делает live запрос `resolve_chat_title` и создаёт топик с правильным именем. |
 
 ### Статус и чаты

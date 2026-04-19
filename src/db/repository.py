@@ -142,13 +142,14 @@ class Repository:
     # ── DeliveryLog ────────────────────────────────────────────────────────
 
     async def log_delivery(self, max_msg_id: str, max_chat_id: str,
-                           direction: str, status: str, error: str = None):
+                           direction: str, status: str, error: str = None,
+                           attempts: int = 1):
         now = int(time.time())
         await self._db.execute(
             """INSERT INTO delivery_log
                (max_msg_id, max_chat_id, direction, status, error, attempts, created_at, last_attempt_at)
-               VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
-            (max_msg_id, max_chat_id, direction, status, error, now, now),
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (max_msg_id, max_chat_id, direction, status, error, attempts, now, now),
         )
         await self._db.commit()
 

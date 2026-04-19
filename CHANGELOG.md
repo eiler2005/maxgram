@@ -4,6 +4,20 @@ All notable changes to Maxgram are documented here.
 
 ---
 
+## [1.1.6] — 2026-04-19
+
+### Changed
+- **TG→MAX transport retry** — outbound MAX sends now retry temporary transport/session failures (`Socket is not connected`, `Must be ONLINE session`, timeout, broken pipe, reset) up to 3 attempts with short backoff before surfacing an error to Telegram.
+- **Outbound failure audit trail** — failed Telegram→MAX deliveries are now always persisted into `delivery_log` with a synthetic `out_fail:<topic_id>:<tg_msg_id>` id, stored error reason, and real `attempts` count, so operational queries no longer miss visible send failures.
+
+### Tests
+- Added coverage for successful retry after a temporary MAX transport failure.
+- Added coverage for exposing the final MAX error after all retries are exhausted.
+- Added coverage for persisting failed outbound deliveries with the MAX error and attempt count.
+- Added coverage for persisting oversized outbound media rejection into `delivery_log`.
+
+---
+
 ## [1.1.5] — 2026-04-10
 
 ### Changed

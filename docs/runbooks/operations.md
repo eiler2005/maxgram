@@ -193,6 +193,16 @@ rg 'event=bridge\.(inbound|outbound)\.forward_finished' data/bridge.log
 
 # только retry/fail отправки в Telegram
 rg 'event=tg\.outbound\.(retry|failed|sent)' data/bridge.log
+
+# retry/fail отправки из Telegram в MAX
+rg 'event=max\.outbound\.(retry|failed|sent)' data/bridge.log
+
+# последние неуспешные TG -> MAX доставки из SQLite
+sqlite3 -header -column data/bridge.db \
+  "SELECT max_msg_id, max_chat_id, error, attempts, datetime(created_at, 'unixepoch', 'localtime') AS created_local \
+   FROM delivery_log \
+   WHERE direction='outbound' AND status='failed' \
+   ORDER BY created_at DESC LIMIT 20"
 ```
 
 Полезные `event`-группы:
@@ -317,8 +327,33 @@ asyncio.run(main())
 
 ## Проблема: "❌ Не удалось отправить сообщение в MAX"
 
-Происходит если MAX reconnect > 15 сек. Bridge ждёт 3×5 сек и возвращает ошибку.
-Решение: подождать несколько секунд и отправить ещё раз.
+Теперь bridge сначала делает до 3 попыток отправки при временных транспортных ошибках MAX:
+
+- `Socket is not connected`
+- `Must be ONLINE session`
+- timeout / broken pipe / connection reset
+
+Если после retry сообщение всё равно не ушло:
+
+- в Telegram появится `❌ Не удалось отправить сообщение в MAX`
+- в `delivery_log` появится запись `direction='outbound'`, `status='failed'`
+- в `error` будет последняя причина, а в `attempts` — число попыток
+
+Быстрая проверка:
+
+```bash
+sqlite3 -header -column data/bridge.db \
+  "SELECT max_msg_id, error, attempts, datetime(created_at, 'unixepoch', 'localtime') AS created_local \
+   FROM delivery_log \
+   WHERE direction='outbound' AND status='failed' \
+   ORDER BY created_at DESC LIMIT 10"
+```
+
+И в логах:
+
+```bash
+rg 'event=max\.outbound\.(retry|failed|sent)' data/bridge.log
+```
 
 ## Проблема: сообщение не появилось (потеряно)
 

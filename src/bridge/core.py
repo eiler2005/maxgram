@@ -391,6 +391,21 @@ class BridgeCore:
         parts = [part.strip() for part in [primary, secondary] if part and part.strip()]
         return "\n".join(parts)
 
+    def _build_failed_outbound_id(self, topic_id: int, tg_msg_id: Optional[int]) -> str:
+        suffix = tg_msg_id if tg_msg_id is not None else int(time.time())
+        return f"out_fail:{topic_id}:{suffix}"
+
+    async def _log_outbound_failure(self, *, topic_id: int, tg_msg_id: Optional[int],
+                                    max_chat_id: str, error: str, attempts: int = 1):
+        await self._repo.log_delivery(
+            self._build_failed_outbound_id(topic_id, tg_msg_id),
+            max_chat_id,
+            "outbound",
+            "failed",
+            error,
+            attempts=max(attempts, 1),
+        )
+
     def _is_file_too_large(self, path: str) -> bool:
         max_size_mb = self._cfg.bridge.max_file_size_mb
         if max_size_mb <= 0:
@@ -552,6 +567,13 @@ class BridgeCore:
         binding = await self._repo.get_binding_by_topic(topic_id)
         if not binding:
             await self._tg.send_notification(f"⚠️ Не найден MAX чат для топика {topic_id}")
+            await self._log_outbound_failure(
+                topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+                max_chat_id=f"tg_topic:{topic_id}",
+                error="no_topic",
+                attempts=1,
+            )
             log_event(
                 logger,
                 logging.ERROR,
@@ -618,6 +640,13 @@ class BridgeCore:
             except Exception:
                 pass
             self._stats["failed_outbound"] += 1
+            await self._log_outbound_failure(
+                topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+                max_chat_id=binding.max_chat_id,
+                error=f"too_large:{Path(media_path).name}",
+                attempts=1,
+            )
             log_event(
                 logger,
                 logging.ERROR,
@@ -671,6 +700,20 @@ class BridgeCore:
                 pass
 
         if sent_id is None:
+            get_last_error = getattr(self._max, "get_last_outbound_error", None)
+            get_last_attempts = getattr(self._max, "get_last_outbound_attempts", None)
+            max_error = get_last_error() if callable(get_last_error) else None
+            attempts = get_last_attempts() if callable(get_last_attempts) else 0
+            delivery_error = max_error or "max_send_failed"
+            if attempts > 1:
+                delivery_error = f"{delivery_error} (attempts={attempts})"
+            await self._log_outbound_failure(
+                topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+                max_chat_id=binding.max_chat_id,
+                error=delivery_error,
+                attempts=attempts or 1,
+            )
             await self._tg.send_text(topic_id, "❌ Не удалось отправить сообщение в MAX", flow_id=flow_id)
             self._stats["failed_outbound"] += 1
             log_event(
@@ -685,6 +728,8 @@ class BridgeCore:
                 tg_topic_id=topic_id,
                 tg_msg_id=tg_msg_id,
                 max_chat_id=binding.max_chat_id,
+                error=max_error,
+                attempts=attempts,
             )
             return
 

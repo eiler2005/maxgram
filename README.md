@@ -43,7 +43,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Privacy-first design** — no message text or media is ever stored; SQLite only holds routing metadata (chat bindings, message ID map, delivery log)
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
 - **Async Python monolith** — single `asyncio.TaskGroup` process; no queues, no microservices, no external state
-- **Resilient delivery** — Telegram API calls retry with exponential backoff; MAX watchdog alerts on offline > 60s; `/status` gives live health snapshot on demand
+- **Resilient delivery** — Telegram API calls retry with exponential backoff; temporary TG→MAX transport failures retry automatically; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; `/status` gives live health snapshot on demand
 
 ---
 
@@ -71,6 +71,8 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - MAX offline watchdog — alert if MAX unreachable > 60 seconds
 - Reconnect gap warning — after recovery, owner gets a reminder about possible missed messages during downtime
 - Telegram API retry with exponential backoff (3 attempts, respects `Retry-After`)
+- MAX outbound retry for temporary transport/session failures (3 attempts, short backoff)
+- Failed TG→MAX deliveries are persisted in `delivery_log` with error reason and attempt count
 - Startup self-check in production — after boot, the bot notification includes `pytest` result summary
 
 ---

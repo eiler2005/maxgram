@@ -41,6 +41,8 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Watchdog MAX** — уведомление, если MAX недоступен более 60 секунд
 - **Gap-уведомление после reconnect** — после восстановления бот предупреждает о возможном пропуске сообщений за время простоя
 - **Retry Telegram API** — 3 попытки с экспоненциальным backoff, поддержка `Retry-After`
+- **Retry TG→MAX на временных ошибках транспорта** — bridge повторяет отправку в MAX при `Socket is not connected`, `Must be ONLINE session`, timeout и похожих временных сбоях
+- **Аудит неотправленных TG→MAX сообщений** — все неуспешные outbound-доставки пишутся в `delivery_log` с причиной ошибки и числом попыток
 - **Startup self-check** — после старта в production бот пишет результат встроенного `pytest`-прогона
 - **Устойчивое скачивание MAX-видео** — bridge предпочитает реальные `MP4_*` потоки вместо `EXTERNAL` HTML-плеера и подбирает `User-Agent` по `srcAg`
 - **Post-validation загрузок** — после скачивания проверяются `Content-Type` и сигнатура файла, HTML/player fallback не уходит как медиа
@@ -171,7 +173,7 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-Regression-набор покрывает: routing, дедупликацию, системные MAX-события, MAX channel/forward unwrap, media forwarding, reply routing, Telegram topic filtering.
+Regression-набор покрывает: routing, дедупликацию, системные MAX-события, MAX channel/forward unwrap, media forwarding, reply routing, Telegram topic filtering, MAX outbound retry и запись failed outbound delivery в SQLite.
 
 Смоук-проверка:
 ```bash

@@ -592,6 +592,72 @@ async def test_own_echo_is_suppressed_when_send_message_returns_real_id(tmp_path
     assert received == []
 
 
+class FlakyRetryClient(LookupClient):
+    def __init__(self, outcomes):
+        super().__init__()
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    async def send_message(self, **kwargs):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+@pytest.mark.asyncio
+async def test_send_message_retries_retryable_transport_error_and_succeeds(tmp_path, monkeypatch, caplog):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._started = True
+    adapter._client = FlakyRetryClient(
+        [
+            RuntimeError("Socket is not connected"),
+            SimpleNamespace(id=4243),
+        ]
+    )
+
+    async def fake_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        msg_id = await adapter.send_message("123456789", "тест")
+
+    assert msg_id == "4243"
+    assert adapter._client.calls == 2
+    assert adapter.get_last_outbound_error() is None
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    assert any(event.get("event") == "max.outbound.retry" for event in events)
+    assert any(event.get("event") == "max.outbound.sent" and event.get("attempt") == 2 for event in events)
+
+
+@pytest.mark.asyncio
+async def test_send_message_exposes_final_error_after_retries(tmp_path, monkeypatch):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._started = True
+    adapter._client = FlakyRetryClient(
+        [
+            RuntimeError("Socket is not connected"),
+            RuntimeError("Socket is not connected"),
+            RuntimeError("Socket is not connected"),
+        ]
+    )
+
+    async def fake_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    msg_id = await adapter.send_message("123456789", "тест")
+
+    assert msg_id is None
+    assert adapter._client.calls == 3
+    assert adapter.get_last_outbound_error() == "Socket is not connected"
+    assert adapter.get_last_outbound_attempts() == 3
+
+
 class FakeSocketNotConnectedError(Exception):
     pass
 

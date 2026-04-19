@@ -16,6 +16,7 @@ class DummyRepo:
         self.binding_by_chat = {}
         self.saved_users: dict[str, str] = {}   # user_id → name
         self._find_user_result: str | None = None
+        self.delivery_logs = []
 
     async def get_binding_by_topic(self, tg_topic_id: int):
         return SimpleNamespace(max_chat_id="-70000000000003", tg_topic_id=tg_topic_id, mode="active")
@@ -38,6 +39,7 @@ class DummyRepo:
             binding.title = title
 
     async def log_delivery(self, *args, **kwargs):
+        self.delivery_logs.append((args, kwargs))
         self.logged = (args, kwargs)
 
     async def list_bindings(self):
@@ -59,6 +61,8 @@ class DummyRepo:
 class DummyMax:
     def __init__(self):
         self._find_user_result: str | None = None
+        self._last_outbound_error: str | None = None
+        self._last_outbound_attempts: int = 0
 
     def on_message(self, handler):
         self.handler = handler
@@ -82,6 +86,12 @@ class DummyMax:
                            media_path=None, media_type=None, flow_id=None):
         self.sent = (chat_id, text, reply_to_msg_id, flow_id)
         return "mx-out-1"
+
+    def get_last_outbound_error(self) -> str | None:
+        return self._last_outbound_error
+
+    def get_last_outbound_attempts(self) -> int:
+        return self._last_outbound_attempts
 
 
 class DummyTelegram:
@@ -514,6 +524,69 @@ async def test_on_tg_reply_logs_forward_completion(caplog):
         and event.get("outcome") == "delivered"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_on_tg_reply_logs_failed_delivery_with_max_error():
+    class FailingMax(DummyMax):
+        async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None,
+                               media_path=None, media_type=None, flow_id=None):
+            self.sent = (chat_id, text, reply_to_msg_id, flow_id)
+            self._last_outbound_error = "Socket is not connected"
+            self._last_outbound_attempts = 3
+            return None
+
+    repo = DummyRepo()
+    max_adapter = FailingMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    await bridge._on_tg_reply(
+        topic_id=99,
+        tg_msg_id=888,
+        text="Проверка ошибки",
+        reply_to_tg_msg_id=None,
+        sender_name="Марина Ермилова",
+    )
+
+    assert tg_adapter.calls[-1] == ("text", "❌ Не удалось отправить сообщение в MAX")
+    args, kwargs = repo.delivery_logs[-1]
+    assert args[0] == "out_fail:99:888"
+    assert args[1] == "-70000000000003"
+    assert args[2] == "outbound"
+    assert args[3] == "failed"
+    assert args[4] == "Socket is not connected (attempts=3)"
+    assert kwargs["attempts"] == 3
+
+
+@pytest.mark.asyncio
+async def test_on_tg_reply_logs_too_large_outbound_failure(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+    bridge._cfg.bridge.max_file_size_mb = 0.000001
+
+    media_path = Path(tmp_path) / "huge.bin"
+    media_path.write_bytes(b"0123456789")
+
+    await bridge._on_tg_reply(
+        topic_id=99,
+        tg_msg_id=889,
+        text="",
+        reply_to_tg_msg_id=None,
+        sender_name="Марина Ермилова",
+        media_path=str(media_path),
+        media_type="document",
+    )
+
+    args, kwargs = repo.delivery_logs[-1]
+    assert args[0] == "out_fail:99:889"
+    assert args[1] == "-70000000000003"
+    assert args[2] == "outbound"
+    assert args[3] == "failed"
+    assert args[4] == "too_large:huge.bin"
+    assert kwargs["attempts"] == 1
 
 
 # ---------------------------------------------------------------------------
