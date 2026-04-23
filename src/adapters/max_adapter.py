@@ -14,7 +14,7 @@ import asyncio
 import logging
 import mimetypes
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Optional, Awaitable
@@ -102,6 +102,20 @@ class OutboundFailureState:
     attempts: int = 0
 
 
+@dataclass
+class MaxIssue:
+    """Диагностическое состояние проблем с подключением к MAX."""
+    kind: str
+    summary: str
+    raw_error: str
+    requires_reauth: bool = False
+    first_seen_at: int = field(default_factory=lambda: int(time.time()))
+    last_seen_at: int = field(default_factory=lambda: int(time.time()))
+
+    def signature(self) -> str:
+        return f"{self.kind}:{self.summary}"
+
+
 MessageHandler = Callable[[MaxMessage], Awaitable[None]]
 
 
@@ -115,18 +129,26 @@ class MaxAdapter:
         self._handlers: list[MessageHandler] = []
         self._started = False
         self._start_handlers: list[Callable] = []
+        self._issue_handlers: list[Callable[[MaxIssue], Optional[Awaitable[None]]]] = []
         self._own_id: Optional[str] = None  # ID нашего аккаунта в MAX
         self._pending_outbound_acks: list[PendingOutboundAck] = []
         self._expected_outbound_ids: dict[tuple[str, str], float] = {}
         self._raw_unwrapped_message_ids: dict[tuple[str, str], float] = {}
         self._interactive_ping_failure_limit = 3
         self._last_outbound_failure = OutboundFailureState(error=None, attempts=0)
+        self._last_start_error: Optional[str] = None
+        self._last_issue: Optional[MaxIssue] = None
+        self._last_issue_notification_signature: Optional[str] = None
+        self._last_connected_at: Optional[int] = None
 
     def on_message(self, handler: MessageHandler):
         self._handlers.append(handler)
 
     def on_start(self, handler: Callable):
         self._start_handlers.append(handler)
+
+    def on_issue(self, handler: Callable[[MaxIssue], Optional[Awaitable[None]]]):
+        self._issue_handlers.append(handler)
 
     def _normalize_outbound_text(self, text: Optional[str]) -> str:
         return (text or "").strip()
@@ -139,6 +161,119 @@ class MaxAdapter:
 
     def get_last_outbound_attempts(self) -> int:
         return self._last_outbound_failure.attempts
+
+    def get_last_start_error(self) -> Optional[str]:
+        return self._last_start_error
+
+    def get_last_issue(self) -> Optional[MaxIssue]:
+        return self._last_issue
+
+    def get_last_connected_at(self) -> Optional[int]:
+        return self._last_connected_at
+
+    def _clear_runtime_issue(self):
+        self._last_start_error = None
+        self._last_issue = None
+        self._last_issue_notification_signature = None
+
+    def _classify_runtime_error(self, error: BaseException) -> Optional[MaxIssue]:
+        raw_error = str(error).strip() or error.__class__.__name__
+        lowered = raw_error.lower()
+
+        if "unsupported file format" in lowered:
+            return MaxIssue(
+                kind="session_corrupt",
+                summary="MAX session.db повреждён или не читается",
+                raw_error=raw_error,
+                requires_reauth=True,
+            )
+
+        invalid_token_markers = (
+            "invalid token",
+            "login.token",
+            "авторизируйтесь снова",
+            "please, login again",
+        )
+        if any(marker in lowered for marker in invalid_token_markers):
+            return MaxIssue(
+                kind="session_invalid",
+                summary="MAX сессия недействительна, нужна повторная авторизация",
+                raw_error=raw_error,
+                requires_reauth=True,
+            )
+
+        if "must be online session" in lowered or "недопустимое состояние сессии" in lowered:
+            return MaxIssue(
+                kind="session_offline",
+                summary="MAX сессия не перешла в ONLINE-состояние",
+                raw_error=raw_error,
+                requires_reauth=False,
+            )
+
+        return None
+
+    def _remember_runtime_issue(self, issue: MaxIssue) -> MaxIssue:
+        now = int(time.time())
+        if (
+            self._last_issue is not None
+            and self._last_issue.kind == issue.kind
+            and self._last_issue.summary == issue.summary
+        ):
+            self._last_issue.raw_error = issue.raw_error
+            self._last_issue.last_seen_at = now
+            self._last_issue.requires_reauth = issue.requires_reauth
+            return self._last_issue
+
+        issue.first_seen_at = now
+        issue.last_seen_at = now
+        self._last_issue = issue
+        return issue
+
+    async def _emit_runtime_issue(self, issue: MaxIssue):
+        signature = issue.signature()
+        if self._last_issue_notification_signature == signature:
+            return
+
+        self._last_issue_notification_signature = signature
+        for handler in self._issue_handlers:
+            try:
+                result = handler(issue)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "max.adapter.issue_handler_failed",
+                    stage="runtime",
+                    outcome="failed",
+                    issue_kind=issue.kind,
+                    error=str(e),
+                )
+
+    async def _capture_runtime_error(self, error: BaseException):
+        self._last_start_error = str(error).strip() or error.__class__.__name__
+        issue = self._classify_runtime_error(error)
+        if issue is not None:
+            issue = self._remember_runtime_issue(issue)
+            await self._emit_runtime_issue(issue)
+
+    def _wrap_client_stage(self, client, attr_name: str):
+        original = getattr(client, attr_name, None)
+        if original is None or not asyncio.iscoroutinefunction(original):
+            return
+        if getattr(original, "_maxtg_wrapped", False):
+            return
+
+        async def wrapped(*args, **kwargs):
+            try:
+                return await original(*args, **kwargs)
+            except Exception as e:
+                await self._capture_runtime_error(e)
+                raise
+
+        wrapped._maxtg_wrapped = True  # type: ignore[attr-defined]
+        setattr(client, attr_name, wrapped)
 
     def _is_retryable_send_error(self, error: BaseException) -> bool:
         if isinstance(
@@ -2020,6 +2155,8 @@ class MaxAdapter:
             reconnect=False,              # управляем reconnect сами
             send_fake_telemetry=False,    # отключаем телеметрию — она вызывает SSL ошибки
         )
+        self._wrap_client_stage(client, "_sync")
+        self._wrap_client_stage(client, "_login")
         return self._install_failfast_interactive_ping(client)
 
     async def start(self):
@@ -2032,82 +2169,103 @@ class MaxAdapter:
         first_connect = True
 
         while True:
-            self._client = await self._make_client()
+            failure_logged = False
+            try:
+                self._client = await self._make_client()
 
-            async def _on_start():
-                nonlocal first_connect
-                self._started = True
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "max.adapter.connected",
-                    stage="startup" if first_connect else "runtime",
-                    outcome="connected",
-                )
-                # Получаем ID собственного аккаунта для фильтрации эхо
-                try:
-                    me = self._client.me
-                    if me:
-                        self._own_id = str(getattr(me, "id", None) or "")
-                    else:
-                        log_event(
-                            logger,
-                            logging.WARNING,
-                            "max.adapter.own_id_missing",
-                            stage="startup",
-                            outcome="warning",
-                        )
-                except Exception as e:
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "max.adapter.own_id_failed",
-                        stage="startup",
-                        outcome="warning",
-                        error=str(e),
-                    )
-
-                if first_connect:
-                    first_connect = False
-                    for h in self._start_handlers:
-                        try:
-                            await h()
-                        except Exception as e:
-                            log_event(
-                                logger,
-                                logging.ERROR,
-                                "max.adapter.start_handler_failed",
-                                stage="startup",
-                                outcome="failed",
-                                error=str(e),
-                            )
-                else:
+                async def _on_start():
+                    nonlocal first_connect
+                    self._started = True
+                    self._last_connected_at = int(time.time())
+                    self._clear_runtime_issue()
                     log_event(
                         logger,
                         logging.INFO,
-                        "max.adapter.reconnected",
-                        stage="runtime",
+                        "max.adapter.connected",
+                        stage="startup" if first_connect else "runtime",
                         outcome="connected",
                     )
+                    # Получаем ID собственного аккаунта для фильтрации эхо
+                    try:
+                        me = self._client.me
+                        if me:
+                            self._own_id = str(getattr(me, "id", None) or "")
+                        else:
+                            log_event(
+                                logger,
+                                logging.WARNING,
+                                "max.adapter.own_id_missing",
+                                stage="startup",
+                                outcome="warning",
+                            )
+                    except Exception as e:
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "max.adapter.own_id_failed",
+                            stage="startup",
+                            outcome="warning",
+                            error=str(e),
+                        )
 
-            self._client.on_start(_on_start)
-            if hasattr(self._client, "on_raw_receive"):
-                self._client.on_raw_receive(self._handle_raw_receive)
-            self._client.on_message()(self._handle_raw_message)
-            self._client.on_message_edit()(self._handle_raw_message)
-            self._client.on_message_delete()(self._handle_raw_message)
+                    if first_connect:
+                        first_connect = False
+                        for h in self._start_handlers:
+                            try:
+                                await h()
+                            except Exception as e:
+                                log_event(
+                                    logger,
+                                    logging.ERROR,
+                                    "max.adapter.start_handler_failed",
+                                    stage="startup",
+                                    outcome="failed",
+                                    error=str(e),
+                                )
+                    else:
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "max.adapter.reconnected",
+                            stage="runtime",
+                            outcome="connected",
+                        )
 
-            log_event(
-                logger,
-                logging.INFO,
-                "max.adapter.starting",
-                stage="startup" if first_connect else "runtime",
-                outcome="started",
-                phone=mask_phone(self._phone),
-            )
-            try:
+                self._client.on_start(_on_start)
+                if hasattr(self._client, "on_raw_receive"):
+                    self._client.on_raw_receive(self._handle_raw_receive)
+                self._client.on_message()(self._handle_raw_message)
+                self._client.on_message_edit()(self._handle_raw_message)
+                self._client.on_message_delete()(self._handle_raw_message)
+
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.adapter.starting",
+                    stage="startup" if first_connect else "runtime",
+                    outcome="started",
+                    phone=mask_phone(self._phone),
+                )
                 await self._client.start()
+
+                if not self._started and self._last_start_error:
+                    issue = self._last_issue
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "max.adapter.failed",
+                        stage="runtime",
+                        outcome="failed",
+                        reason="client_error",
+                        error=self._last_start_error,
+                        issue_kind=issue.kind if issue is not None else None,
+                        requires_reauth=issue.requires_reauth if issue is not None else False,
+                    )
+                    failure_logged = True
             except Exception as e:
+                if self._last_start_error != (str(e).strip() or e.__class__.__name__):
+                    await self._capture_runtime_error(e)
+                issue = self._last_issue
                 log_event(
                     logger,
                     logging.ERROR,
@@ -2115,10 +2273,26 @@ class MaxAdapter:
                     stage="runtime",
                     outcome="failed",
                     reason="client_error",
-                    error=str(e),
+                    error=self._last_start_error,
+                    issue_kind=issue.kind if issue is not None else None,
+                    requires_reauth=issue.requires_reauth if issue is not None else False,
                 )
+                failure_logged = True
 
             # Клиент завершился — ждём перед перезапуском
+            if not failure_logged and not self._started and self._last_start_error:
+                issue = self._last_issue
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "max.adapter.failed",
+                    stage="runtime",
+                    outcome="failed",
+                    reason="client_error",
+                    error=self._last_start_error,
+                    issue_kind=issue.kind if issue is not None else None,
+                    requires_reauth=issue.requires_reauth if issue is not None else False,
+                )
             log_event(
                 logger,
                 logging.INFO,

@@ -4,18 +4,19 @@
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest -v
+PYTHONPATH=. .venv/bin/pytest -q
 ```
 
-Всего: **70 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **80 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
 
 ---
 
-## test_config_loader.py — конфигурация (1 тест)
+## test_config_loader.py — конфигурация (2 теста)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_load_config_merges_optional_local_override` | `config.local.yaml` перекрывает `config.yaml`: `bridge.default_mode`, список `chats` с `max_chat_id`, `title`, `mode`. Переменные окружения (`TG_BOT_TOKEN` и др.) подставляются в YAML через env-interpolation. |
+| `test_load_config_reads_secrets_from_dotenv_secrets` | `load_config()` подхватывает секреты из `.env.secrets`, а не только из уже экспортированного окружения; заодно проверяет что `DATA_DIR` берётся из `.env`. |
 
 ---
 
@@ -104,7 +105,7 @@ python -m pytest -v
 | `test_forward_to_telegram_sends_media_then_rendered_system_text` | Сообщение с видео-вложением и `rendered_texts`: сначала отправляется видео (`send_video` с caption `[Имя]`), затем текст системного события (`send_text`). Возвращает `message_id` медиа. |
 | `test_forward_to_telegram_sends_voice_note_for_voice_source` | Вложение с `source_type=VOICE` отправляется как нативный `send_voice` (voice bubble), а не как обычное аудио. |
 | `test_forward_to_telegram_uses_rendered_text_without_media` | Сообщение типа `CONTROL` без вложений: отправляется только текст из `rendered_texts`. Файловые методы не вызываются. |
-| `test_on_tg_reply_prefixes_sender_name_for_max` | Reply из Telegram: текст отправляется в MAX с префиксом `[Марина Ермилова]\nПроверка связи`; `reply_to_msg_id` разрешается через `get_max_msg_id_by_tg`. |
+| `test_on_tg_reply_prefixes_sender_name_for_max` | Reply из Telegram: текст отправляется в MAX с префиксом `[Мария Иванова]\nПроверка связи`; `reply_to_msg_id` разрешается через `get_max_msg_id_by_tg`. |
 | `test_on_tg_reply_rejects_too_large_media` | TG→MAX: если файл превышает лимит `max_file_size_mb`, bridge не отправляет его в MAX и отдаёт явное сообщение в топик. |
 | `test_on_tg_reply_logs_forward_completion` | После успешной доставки TG→MAX в логах присутствует событие `bridge.outbound.forward_finished` с `outcome=delivered`. |
 | `test_on_tg_reply_logs_failed_delivery_with_max_error` | Если TG→MAX отправка окончательно не удалась, bridge пишет `failed` в `delivery_log` с последней ошибкой MAX и числом попыток. |
@@ -116,6 +117,8 @@ python -m pytest -v
 | Тест | Что проверяет |
 |------|--------------|
 | `test_build_chats_message_lists_topics_with_activity` | `/chats` показывает чат, topic_id, режим и счётчики `↓/↑` за период. |
+| `test_build_status_message_includes_max_issue_summary` | `/status` показывает текущую MAX-проблему и необходимость `reauth`, если адаптер сообщил о деградации сессии. |
+| `test_build_status_message_uses_shared_health_snapshot` | `/status` читает единый persisted health snapshot и отражает runtime/max health из supervisor-контура. |
 | `test_watchdog_sends_gap_notice_after_reconnect` | После offline-окна watchdog отправляет и alert про downtime, и уведомление о возможном `missed messages gap` после восстановления. |
 
 ### Кодировка файлов
@@ -149,7 +152,7 @@ python -m pytest -v
 
 | Тест | Что проверяет |
 |------|--------------|
-| `test_mask_ip_hides_third_octet` | `_mask_ip("204.168.239.217")` → `"204.168.*.217"` (третий октет заменяется `*`). |
+| `test_mask_ip_hides_third_octet` | `_mask_ip("203.0.113.217")` → `"203.0.*.217"` (третий октет заменяется `*`). |
 | `test_infer_location_from_hetzner_hostname` | `_infer_location("ubuntu-4gb-hel1-6")` → `"Helsinki"` (из маппинга токенов имён датацентров). |
 | `test_extract_pytest_summary_uses_terminal_summary` | Из stdout `pytest` извлекается итоговая строка вида `"17 passed in 1.49s"` для последующего включения в startup-уведомление. |
 | `test_build_startup_notification_includes_runtime_details` | Стартовое уведомление содержит `"Maxgram запущен и подключён к MAX"`, `runtime: Docker`, hostname, `location: Helsinki`, masked IP. Использует `monkeypatch` для `socket.gethostname`, `Path.exists`, `_detect_primary_ipv4`. |
@@ -157,13 +160,25 @@ python -m pytest -v
 
 ---
 
-## test_tg_adapter.py — входящие сообщения Telegram (3 теста)
+## test_tg_adapter.py — входящие сообщения Telegram и system notifications (5 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_dispatch_incoming_message_accepts_non_owner_group_member` | Сообщение от не-владельца (user_id=2) в форум-группе в топике → передаётся в reply-обработчик с правильными `(topic_id, text, reply_to_tg_id, sender_name)`. |
 | `test_dispatch_incoming_message_ignores_non_owner_commands` | Команда `/status` от не-владельца в форум-группе → `_handle_command` не вызывается. |
 | `test_tg_retry_logs_retry_and_success` | `_tg_retry` делает повторную попытку при `TelegramRetryAfter` и логирует событие retry; после успеха возвращает корректный результат. |
+| `test_send_system_notification_fans_out_to_dm_and_ops_topic` | Системное уведомление уходит и в owner DM, и в ops topic, если `ops_topic_id` задан. |
+| `test_send_system_notification_queues_failed_target_and_flushes_outbox` | Неотправленный ops-alert попадает в `alert_outbox.jsonl`, а после восстановления Telegram досылается из outbox. |
+
+---
+
+## test_runtime_health.py — runtime health / supervisor (3 теста)
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_report_issue_deduplicates_same_signature` | Повтор той же причины деградации не создаёт новый alert-state-change и не должен спамить оператора. |
+| `test_mark_healthy_after_issue_returns_recovered_and_clears_issue` | Переход `degraded → healthy` формирует `recovered`, очищает active issue и готовит recovery alert. |
+| `test_supervisor_restarts_worker_and_writes_heartbeat` | Supervisor перезапускает упавший worker, увеличивает restart counter и пишет heartbeat для Docker healthcheck. |
 
 ---
 

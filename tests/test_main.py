@@ -14,7 +14,7 @@ from src.main import (
 
 
 def test_mask_ip_hides_third_octet():
-    assert _mask_ip("204.168.239.217") == "204.168.*.217"
+    assert _mask_ip("203.0.113.217") == "203.0.*.217"
 
 
 def test_infer_location_from_hetzner_hostname():
@@ -34,7 +34,7 @@ def test_extract_pytest_summary_uses_terminal_summary():
 @pytest.mark.asyncio
 async def test_build_startup_notification_includes_runtime_details(monkeypatch):
     monkeypatch.setattr("src.main.socket.gethostname", lambda: "ubuntu-4gb-hel1-6")
-    monkeypatch.setattr("src.main._detect_primary_ipv4", lambda: "204.168.239.217")
+    monkeypatch.setattr("src.main._detect_primary_ipv4", lambda: "203.0.113.217")
     monkeypatch.delenv("BRIDGE_LOCATION", raising=False)
     monkeypatch.setattr("src.main.Path.exists", lambda self: True if str(self) == "/.dockerenv" else False)
 
@@ -48,13 +48,13 @@ async def test_build_startup_notification_includes_runtime_details(monkeypatch):
     assert "runtime: Docker" in text
     assert "host: ubuntu-4gb-hel1-6" in text
     assert "location: Helsinki" in text
-    assert "ip: 204.168.*.217" in text
+    assert "ip: 203.0.*.217" in text
 
 
 @pytest.mark.asyncio
 async def test_build_startup_notification_includes_startup_test_status(monkeypatch):
     monkeypatch.setattr("src.main.socket.gethostname", lambda: "ubuntu-4gb-hel1-6")
-    monkeypatch.setattr("src.main._detect_primary_ipv4", lambda: "204.168.239.217")
+    monkeypatch.setattr("src.main._detect_primary_ipv4", lambda: "203.0.113.217")
     monkeypatch.delenv("BRIDGE_LOCATION", raising=False)
     monkeypatch.setattr("src.main.Path.exists", lambda self: True if str(self) == "/.dockerenv" else False)
 

@@ -1,6 +1,17 @@
 # Локальный override-конфиг. Не коммить в git.
 # Скопируй в config.local.yaml и заполни своими chat_id / title / mode.
 
+telegram:
+  # Основной служебный канал по умолчанию — owner DM (TG_OWNER_ID).
+  # ops_topic_id нужен только если хочешь дублировать алерты/статусы
+  # ещё и в отдельный forum topic внутри forum_group_id.
+  ops_topic_id: 1234
+
+health:
+  reminder_interval_hours: 4
+  heartbeat_interval_seconds: 30
+  worker_restart_backoff_seconds: 5
+
 chats:
   - max_chat_id: "-70000000000001"
     title: "Семейный чат"

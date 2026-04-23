@@ -7,6 +7,7 @@ import pytest
 
 from src.adapters.max_adapter import MaxAttachment, MaxMessage
 from src.bridge.core import BridgeCore
+from src.runtime.health import RuntimeHealthStore, Severity
 
 
 class DummyRepo:
@@ -310,12 +311,12 @@ async def test_on_tg_reply_prefixes_sender_name_for_max():
         tg_msg_id=555,
         text="Проверка связи",
         reply_to_tg_msg_id=123,
-        sender_name="Марина Ермилова",
+        sender_name="Мария Иванова",
     )
 
     assert max_adapter.sent == (
         "-70000000000003",
-        "[Марина Ермилова]\nПроверка связи",
+        "[Мария Иванова]\nПроверка связи",
         "mx-reply-1",
         "tg:99:555",
     )
@@ -347,7 +348,7 @@ async def test_on_tg_reply_rejects_too_large_media(tmp_path):
         tg_msg_id=555,
         text="",
         reply_to_tg_msg_id=None,
-        sender_name="Марина Ермилова",
+        sender_name="Мария Иванова",
         media_path=str(media_path),
         media_type="document",
     )
@@ -440,6 +441,103 @@ async def test_build_chats_message_lists_topics_with_activity():
 
 
 @pytest.mark.asyncio
+async def test_build_status_message_includes_max_issue_summary():
+    class IssueAwareMax(DummyMax):
+        def is_ready(self):
+            return False
+
+        def get_last_connected_at(self):
+            return 1776962052
+
+        def get_last_issue(self):
+            return SimpleNamespace(
+                summary="MAX сессия недействительна, нужна повторная авторизация",
+                requires_reauth=True,
+            )
+
+    repo = DummyRepo()
+
+    async def count_messages_since(_since):
+        return {"inbound": 0, "outbound": 0}
+
+    async def count_deliveries_since(_since):
+        return {}
+
+    async def get_chat_activity_since(_since, limit=10):
+        return []
+
+    repo.count_messages_since = count_messages_since
+    repo.count_deliveries_since = count_deliveries_since
+    repo.get_chat_activity_since = get_chat_activity_since
+    repo.list_bindings = lambda: asyncio.sleep(0, result=[])
+
+    bridge = _make_bridge(repo=repo, max_adapter=IssueAwareMax())
+
+    text = await bridge._build_status_message(period_hours=4)
+
+    assert "⚠️ Проблема MAX" in text
+    assert "MAX сессия недействительна, нужна повторная авторизация" in text
+    assert "Требуется: reauth по SMS" in text
+
+
+@pytest.mark.asyncio
+async def test_build_status_message_uses_shared_health_snapshot(tmp_path):
+    class OfflineMax(DummyMax):
+        def is_ready(self):
+            return False
+
+        def get_last_connected_at(self):
+            return 1776962052
+
+    repo = DummyRepo()
+
+    async def count_messages_since(_since):
+        return {"inbound": 1, "outbound": 2}
+
+    async def count_deliveries_since(_since):
+        return {}
+
+    async def get_chat_activity_since(_since, limit=10):
+        return []
+
+    repo.count_messages_since = count_messages_since
+    repo.count_deliveries_since = count_deliveries_since
+    repo.get_chat_activity_since = get_chat_activity_since
+    repo.list_bindings = lambda: asyncio.sleep(0, result=[])
+
+    health = RuntimeHealthStore(tmp_path)
+    await health.mark_healthy("runtime", summary="Worker running", notify=False)
+    await health.report_issue(
+        "max_link",
+        code="session_invalid",
+        summary="MAX сессия недействительна",
+        raw_cause="Invalid token",
+        severity=Severity.CRITICAL,
+        requires_reauth=True,
+    )
+
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=OfflineMax(),
+        tg_adapter=DummyTelegram(),
+        health_store=health,
+    )
+
+    text = await bridge._build_status_message(period_hours=4)
+
+    assert "🩺 Runtime Health" in text
+    assert "MAX сессия недействительна" in text
+    assert "Требуется: reauth по SMS" in text
+
+
+@pytest.mark.asyncio
 async def test_watchdog_sends_gap_notice_after_reconnect():
     class WatchdogMax:
         def __init__(self):
@@ -515,7 +613,7 @@ async def test_on_tg_reply_logs_forward_completion(caplog):
             tg_msg_id=777,
             text="Проверка логов",
             reply_to_tg_msg_id=123,
-            sender_name="Марина Ермилова",
+            sender_name="Мария Иванова",
         )
 
     events = [getattr(record, "event_fields", {}) for record in caplog.records]
@@ -546,7 +644,7 @@ async def test_on_tg_reply_logs_failed_delivery_with_max_error():
         tg_msg_id=888,
         text="Проверка ошибки",
         reply_to_tg_msg_id=None,
-        sender_name="Марина Ермилова",
+        sender_name="Мария Иванова",
     )
 
     assert tg_adapter.calls[-1] == ("text", "❌ Не удалось отправить сообщение в MAX")
@@ -575,7 +673,7 @@ async def test_on_tg_reply_logs_too_large_outbound_failure(tmp_path):
         tg_msg_id=889,
         text="",
         reply_to_tg_msg_id=None,
-        sender_name="Марина Ермилова",
+        sender_name="Мария Иванова",
         media_path=str(media_path),
         media_type="document",
     )
@@ -659,7 +757,7 @@ async def test_cmd_dm_falls_back_to_pymax_cache_when_db_empty():
     max_adapter._find_user_result = "99999"  # pymax cache hit
     bridge = _make_bridge(repo=repo, max_adapter=max_adapter)
 
-    result = await bridge._cmd_dm("Марина Ермилова привет")
+    result = await bridge._cmd_dm("Мария Иванова привет")
 
     assert "✅" in result
     assert max_adapter.sent[0] == "99999"
@@ -757,7 +855,7 @@ async def test_on_max_message_does_not_persist_own_sender():
         chat_id="-70000000000003",
         chat_title="Хор Гармония",
         sender_id="999",
-        sender_name="Марина Ермилова",
+        sender_name="Мария Иванова",
         text="Сообщение",
         attachments=[],
         attachment_types=[],

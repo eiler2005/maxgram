@@ -6,7 +6,7 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 
 **Проблема:** MAX — обязательный мессенджер в школьных чатах России. Официального Telegram-клиента нет. Установка MAX на основной телефон создаёт cognitive overhead и privacy риски.
 
-**Решение:** Unofficial userbot + Python async монолит + Telegram Forum Supergroup с Topics. Каждый MAX-чат = отдельный изолированный топик. Reply в топике = ответ в MAX.
+**Решение:** Unofficial userbot + supervisor-managed Python async worker + Telegram Forum Supergroup с Topics. Каждый MAX-чат = отдельный изолированный топик. Reply в топике = ответ в MAX.
 
 **Ключевые требования:**
 - Один пользователь, один аккаунт MAX — не SaaS
@@ -18,7 +18,7 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 
 ### Что уже сделано в production-сессии
 
-- чувствительные данные вынесены из git в `.env`, `config.local.yaml`, `.env.host`
+- чувствительные данные вынесены из git в `.env.secrets`, `config.local.yaml`, `.env.host`
 - добавлен отдельный production compose для Hetzner
 - код и состояние (`bridge.db`, MAX session) перенесены на Hetzner VM
 - настроен `deploy`-пользователь, отключены root-login и password auth
@@ -28,6 +28,8 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 - добавлен префикс автора для Telegram → MAX: `[Имя Фамилия]`
 - добавлено startup-уведомление с runtime, host, location и masked IP
 - добавлен smoke-report по SQLite для быстрых ручных проверок
+- добавлен supervisor/runtime health слой с persisted snapshot, event history, outbox и Docker heartbeat
+- основной служебный канал зафиксирован как owner DM; forum-topic fanout стал опциональным
 
 ---
 
@@ -39,23 +41,29 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Bridge Service                            │
 │                                                                 │
-│  ┌────────────────┐    ┌──────────────┐    ┌────────────────┐  │
-│  │  MAX Adapter   │    │ Bridge Core  │    │  TG Adapter    │  │
-│  │  (pymax)       │───►│  (router)    │───►│  (aiogram)     │  │
-│  │                │◄───│              │◄───│                │  │
-│  │  • connect     │    │  • routing   │    │  • topics      │  │
-│  │  • recv msgs   │    │  • dedup     │    │  • send/recv   │  │
-│  │  • send msgs   │    │  • naming    │    │  • commands    │  │
-│  │  • reconnect   │    │  • modes     │    │                │  │
-│  └────────────────┘    └──────┬───────┘    └────────────────┘  │
-│                               │                                 │
-│                        ┌──────▼───────┐                         │
-│                        │  SQLite DB   │                         │
-│                        │              │                         │
-│                        │ chat_bindings│                         │
-│                        │ message_map  │                         │
-│                        │ delivery_log │                         │
-│                        └──────────────┘                         │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Bridge Supervisor                                         │  │
+│  │  • heartbeat                                              │  │
+│  │  • restart worker                                         │  │
+│  │  • persist health state                                   │  │
+│  └───────────────┬───────────────────────────────────────────┘  │
+│                  │                                               │
+│  ┌───────────────▼───────────────────────────────────────────┐   │
+│  │  Bridge Worker                                            │   │
+│  │  ┌────────────────┐  ┌──────────────┐  ┌────────────────┐ │   │
+│  │  │  MAX Adapter   │  │ Bridge Core  │  │  TG Adapter    │ │   │
+│  │  │  (pymax)       │─►│  (router)    │─►│  (aiogram)     │ │   │
+│  │  │                │◄─│              │◄─│                │ │   │
+│  │  └────────────────┘  └──────┬───────┘  └────────────────┘ │   │
+│  └──────────────────────────────┼─────────────────────────────┘   │
+│                                 │                                  │
+│                      ┌──────────▼──────────┐                       │
+│                      │ SQLite + Health     │                       │
+│                      │ bridge.db           │                       │
+│                      │ health_state.json   │                       │
+│                      │ health_events.jsonl │                       │
+│                      │ alert_outbox.jsonl  │                       │
+│                      └─────────────────────┘                       │
 └─────────────────────────────────────────────────────────────────┘
          │                                             │
    MAX WebSocket                               Telegram Bot API
@@ -207,7 +215,7 @@ Fallback rename:
 
 Для групповых чатов (не DM) к тексту добавляется префикс `[Имя Отправителя]`:
 ```
-[Светлана Иванова] Завтра собрание в 18:00
+[Участник чата] Завтра собрание в 18:00
 ```
 
 ### Telegram → MAX: имя автора
@@ -215,7 +223,7 @@ Fallback rename:
 Для сообщений, отправленных из Telegram в MAX, bridge добавляет имя Telegram-пользователя:
 
 ```text
-[Марина Ермилова]
+[Мария Иванова]
 Проверка связи
 ```
 
@@ -225,6 +233,8 @@ Pymax `reconnect=True` имеет OOM-баг (см. [ADR-004](docs/decisions/ADR
 
 ```python
 # Правильная стратегия:
+# MAX Adapter держит собственный reconnect loop,
+# а внешний supervisor поднимает весь worker при crash task-group.
 while True:
     client = SocketMaxClient(
         reconnect=False,           # управляем сами
@@ -258,8 +268,24 @@ for _ in range(3):
 ```bash
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest -q
+PYTHONPATH=. .venv/bin/pytest -q
 ```
+
+Автоматизация:
+
+- локально: `PYTHONPATH=. .venv/bin/pytest -q`
+- в CI: GitHub Actions workflow `tests.yml`
+- в production: startup self-check запускается после первого успешного `MAX connected`
+
+### Секреты и приватные данные
+
+Реальные секреты и приватные данные должны жить только в ignored-файлах:
+
+- `.env.secrets` — `TG_BOT_TOKEN`, `TG_OWNER_ID`, `TG_FORUM_GROUP_ID`, `MAX_PHONE`
+- `.env` — только не-секретные локальные env (`DATA_DIR`, optional `CONFIG_LOCAL_PATH`)
+- `config.local.yaml` — реальные `max_chat_id`, названия частных чатов и локальные override
+- `deploy/server.local.md` — server IP / локальные заметки
+- `data/` — SQLite, MAX session, runtime health artifacts
 
 ---
 
@@ -355,6 +381,13 @@ chats:
 ### .env (не в git)
 
 ```
+DATA_DIR=./data
+CONFIG_LOCAL_PATH=config.local.yaml  # optional
+```
+
+### .env.secrets (не в git)
+
+```
 TG_BOT_TOKEN=...
 TG_OWNER_ID=...        # Telegram user_id владельца
 TG_FORUM_GROUP_ID=...  # ID форум-супергруппы (отрицательное число)
@@ -434,13 +467,13 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 
 # Первая авторизация MAX (интерактивно, вводить SMS)
-python src/main.py
+python -m src.main
 
 # Фоновый запуск
-nohup .venv/bin/python src/main.py >> data/bridge.log 2>&1 &
+nohup .venv/bin/python -m src.main >> data/bridge.log 2>&1 &
 
 # Проверка
-ps aux | grep main.py | grep -v grep
+ps aux | grep 'python -m src.main' | grep -v grep
 tail -f data/bridge.log
 ```
 
@@ -471,8 +504,8 @@ asyncio.run(main())
 ### Docker
 
 ```bash
-docker-compose -f deploy/docker-compose.yml up -d
-docker-compose -f deploy/docker-compose.yml logs -f
+docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml logs -f
 ```
 
 ### Hetzner Cloud (текущее production-окружение)

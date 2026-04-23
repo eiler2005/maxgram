@@ -42,8 +42,9 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Idempotent message deduplication** — `max_msg_id` is written to SQLite *before* forwarding to Telegram, making the system safe to restart at any point without duplicates
 - **Privacy-first design** — no message text or media is ever stored; SQLite only holds routing metadata (chat bindings, message ID map, delivery log)
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
-- **Async Python monolith** — single `asyncio.TaskGroup` process; no queues, no microservices, no external state
+- **Supervisor runtime shell** — PID1 is now a supervisor that keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
 - **Resilient delivery** — Telegram API calls retry with exponential backoff; temporary TG→MAX transport failures retry automatically; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; `/status` gives live health snapshot on demand
+- **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
 
 ---
 
@@ -67,13 +68,15 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Stable reconnect — no OOM, no SSL storm
 - `/status` command — uptime, message stats, top active chats; works in forum group and personal DM with bot
 - `/chats` command — list of bridged chats with topic id, mode, and inbound/outbound counters
-- Periodic 4-hour status report — automatic delivery stats sent to owner
+- Periodic 4-hour status report — automatic delivery stats sent to owner DM, with optional fanout to a dedicated forum topic
 - MAX offline watchdog — alert if MAX unreachable > 60 seconds
 - Reconnect gap warning — after recovery, owner gets a reminder about possible missed messages during downtime
 - Telegram API retry with exponential backoff (3 attempts, respects `Retry-After`)
 - MAX outbound retry for temporary transport/session failures (3 attempts, short backoff)
 - Failed TG→MAX deliveries are persisted in `delivery_log` with error reason and attempt count
 - Startup self-check in production — after boot, the bot notification includes `pytest` result summary
+- System alerts survive temporary Telegram outages via persistent outbox + retry
+- Docker healthcheck is tied to supervisor heartbeat, not external MAX/TG availability
 
 ---
 
@@ -88,7 +91,7 @@ MAX WebSocket ──► MAX Adapter ──► Bridge Core ──► TG Adapter �
                                delivery log)
 ```
 
-One Python async process. No external services. SQLite as the sole state store.
+One Python service with two layers: a long-lived supervisor plus a restartable bridge worker. No external queues or services. SQLite and persisted health files are the only state stores.
 
 Details: [docs/architecture.md](docs/architecture.md)
 
@@ -113,9 +116,10 @@ Bridge is running in production on **Hetzner Cloud**.
 
 - Runtime: Docker Compose (non-root container, `cap_drop: ALL`, `restart: always`)
 - State: SQLite + MAX session in a bind-mounted `data/` directory
+- Health: Docker `HEALTHCHECK` uses supervisor heartbeat freshness instead of checking external integrations
 - Access: SSH key only, restricted by IP via UFW
 - Security: `fail2ban`, `unattended-upgrades`, no public HTTP ports
-- Boot signal: startup notification in Telegram includes runtime/host info plus startup `pytest` summary
+- Boot signal: startup notification in Telegram owner DM includes runtime/host info plus startup `pytest` summary
 
 ---
 
@@ -128,23 +132,25 @@ Bridge is running in production on **Hetzner Cloud**.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. Secrets
+# 2. Config + secrets
 cp .env.example .env
-# Fill in: TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE
+cp .env.secrets.example .env.secrets
+# Fill in secrets in .env.secrets:
+# TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE
 
 # 3. (optional) Local chat bindings
 cp config.local.yaml.example config.local.yaml
 
 # 4. First run — MAX authorization via SMS code
-python src/main.py
+.venv/bin/python -m src.main
 
 # 5. Background run
-nohup .venv/bin/python src/main.py >> data/bridge.log 2>&1 &
+nohup .venv/bin/python -m src.main >> data/bridge.log 2>&1 &
 ```
 
 Via Docker:
 ```bash
-docker-compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml up -d
 ```
 
 ---
@@ -154,13 +160,17 @@ docker-compose -f deploy/docker-compose.yml up -d
 ```
 maxgram/
 ├── src/
-│   ├── main.py                ← entry point, asyncio.TaskGroup
+│   ├── main.py                ← supervisor entry point + worker bootstrap
 │   ├── adapters/
 │   │   ├── max_adapter.py     ← MAX userbot: connect, recv, send, reconnect
-│   │   └── tg_adapter.py     ← Telegram bot: topics, send, receive
+│   │   └── tg_adapter.py      ← Telegram bot: topics, send, receive, ops alerts
 │   ├── bridge/
 │   │   └── core.py           ← all routing logic
 │   ├── config/loader.py
+│   ├── runtime/
+│   │   ├── health.py         ← persisted health snapshot/events/outbox/heartbeat
+│   │   ├── supervisor.py     ← worker restart loop + alert integration
+│   │   └── healthcheck.py    ← Docker healthcheck entry point
 │   └── db/
 │       ├── models.py          ← SQLite schema (3 tables)
 │       └── repository.py
@@ -187,6 +197,7 @@ maxgram/
 - Messages during downtime are **lost** — pymax has no history replay API
 - Unofficial userbot — potential ToS violation with MAX
 - Bot commands (`/status`, `/chats`, `/reauth`) are owner-only
+- `ops_topic_id` is optional; without it, ops alerts go only to owner DM
 
 ---
 

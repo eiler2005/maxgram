@@ -4,24 +4,30 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Bridge Service                        │
+│                   Bridge Service (Supervisor)                │
 │                                                             │
-│  ┌──────────────┐    ┌─────────────┐    ┌───────────────┐  │
-│  │  MAX Adapter │    │ Bridge Core │    │  TG Adapter   │  │
-│  │  (userbot)   │───►│  (router)   │───►│  (aiogram)    │  │
-│  │              │◄───│             │◄───│               │  │
-│  └──────────────┘    └──────┬──────┘    └───────────────┘  │
-│                             │                               │
-│                       ┌─────▼──────┐                        │
-│                       │  SQLite DB │                        │
-│                       │ (bindings, │                        │
-│                       │  messages) │                        │
-│                       └────────────┘                        │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │                   Bridge Worker                       │  │
+│  │                                                       │  │
+│  │  ┌──────────────┐  ┌─────────────┐  ┌───────────────┐ │  │
+│  │  │  MAX Adapter │  │ Bridge Core │  │  TG Adapter   │ │  │
+│  │  │  (userbot)   │─►│  (router)   │─►│  (aiogram)    │ │  │
+│  │  │              │◄─│             │◄─│               │ │  │
+│  │  └──────────────┘  └──────┬──────┘  └───────────────┘ │  │
+│  └───────────────────────────┼───────────────────────────┘  │
+│                              │                               │
+│    ┌─────────────────────────▼──────────────────────────┐    │
+│    │ SQLite + Runtime Health Files                      │    │
+│    │ bridge.db · health_state.json · health_events.jsonl│    │
+│    │ alert_outbox.jsonl · health_heartbeat.json         │    │
+│    └────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
          │                                         │
    MAX WebSocket                          Telegram Bot API
    (personal account)                    (HTTPS long-polling)
 ```
+
+Supervisor never exits on MAX/TG integration failures. It restarts the worker, persists health transitions, and keeps Docker `HEALTHCHECK` green as long as the runtime loop itself is alive.
 
 ## Потоки данных
 
@@ -73,6 +79,28 @@ Telegram Update (reply в топике форум-группы)
 
 ## Компоненты
 
+### Supervisor / Runtime Health (`src/runtime/*.py`)
+
+Новый runtime слой:
+
+- `supervisor.py` — PID1-процесс, который запускает bridge worker, ловит его аварийный выход и перезапускает с backoff
+- `health.py` — единая модель `HealthSnapshot / SubsystemState / HealthIssue / Severity`
+- persisted артефакты:
+  - `data/health_state.json`
+  - `data/health_events.jsonl`
+  - `data/alert_outbox.jsonl`
+  - `data/health_heartbeat.json`
+- `healthcheck.py` — Docker healthcheck по freshness heartbeat, а не по доступности MAX/TG API
+
+Подсистемы health-model:
+
+- `runtime`
+- `max_link`
+- `tg_link`
+- `storage`
+- `scheduler`
+- `alerting`
+
 ### MAX Adapter (`src/adapters/max_adapter.py`)
 
 Обёртка над `pymax.SocketMaxClient`. Управляет:
@@ -102,6 +130,10 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 - Отправкой текста, фото, видео, аудио, voice и документов в топики
 - Получением reply от участников форум-группы → callback в Bridge Core
 - Ограничением команд только владельцем
+- Системными ops-уведомлениями:
+  - основной канал: owner DM (`TG_OWNER_ID`)
+  - опциональный fanout: `telegram.ops_topic_id` внутри forum group
+  - outbox/retry, если Telegram временно не принимает alert
 
 Поддерживает два типа команд:
 - `on_command(cmd, handler)` — без аргументов (`/status`, `/chats`, `/help`) — только владелец
@@ -121,6 +153,7 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 - Определение имени топика (`config → chat_title → MAX API → fallback`)
 - Персистирование отправителей входящих сообщений в `known_users`
 - Команды: `/status`, `/chats`, `/help`, `/dm Имя текст`
+- Health-aware `/status`, periodic status и watchdog: все они читают один и тот же persisted health snapshot
 
 **`/dm` — инициация нового DM в MAX из Telegram:**
 Алгоритм longest-prefix matching (до 4 слов для имени, минимум 1 слово сообщение).
@@ -283,7 +316,10 @@ known_users (
 ```
 config.yaml                 ← в git (базовая конфигурация)
 config.local.yaml           ← НЕ в git (локальные chat bindings / titles)
-.env                        ← НЕ в git (секреты)
+.env                        ← НЕ в git (не-секретные локальные env)
+  DATA_DIR
+  CONFIG_LOCAL_PATH (optional)
+.env.secrets                ← НЕ в git (секреты)
   TG_BOT_TOKEN
   TG_OWNER_ID
   TG_FORUM_GROUP_ID
@@ -309,7 +345,7 @@ config.local.yaml           ← НЕ в git (локальные chat bindings / 
 Локально:
 
 ```bash
-nohup .venv/bin/python src/main.py >> data/bridge.log 2>&1 &
+nohup .venv/bin/python -m src.main >> data/bridge.log 2>&1 &
 ```
 
 Production:

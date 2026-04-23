@@ -31,6 +31,7 @@
 
 Нужно иметь локально:
 
+- `.env.secrets`
 - `.env`
 - `config.local.yaml`
 - `data/max_bridge_session*`
@@ -39,7 +40,7 @@
 Сделай бэкап:
 
 ```bash
-tar -czf maxtg-bridge-backup.tgz .env config.local.yaml data/
+tar -czf maxtg-bridge-backup.tgz .env .env.secrets config.local.yaml data/
 ```
 
 ## 1. Создать сервер в Hetzner
@@ -152,6 +153,7 @@ chmod 700 data
 
 Скопировать на сервер:
 
+- `.env.secrets`
 - `.env`
 - `config.local.yaml`
 - содержимое `data/`
@@ -159,7 +161,7 @@ chmod 700 data
 Права:
 
 ```bash
-chmod 600 .env config.local.yaml .env.host
+chmod 600 .env .env.secrets config.local.yaml .env.host
 chmod 700 data
 ```
 
@@ -192,6 +194,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml logs -f
 docker compose --env-file .env.host -f deploy/docker-compose.prod.yml down
 docker run --rm -it \
   --env-file .env \
+  --env-file .env.secrets \
   -e CONFIG_PATH=/app/config.yaml \
   -e CONFIG_LOCAL_PATH=/app/config.local.yaml \
   -e DATA_DIR=/app/data \
@@ -199,7 +202,7 @@ docker run --rm -it \
   -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
   -v "$(pwd)/config.local.yaml:/app/config.local.yaml:ro" \
   maxtg-bridge:prod \
-  python src/main.py
+  python -m src.main
 ```
 
 ## 7. Проверка после деплоя
@@ -251,6 +254,7 @@ sudo ufw status numbered
 
 Минимум для восстановления:
 
+- `.env.secrets`
 - `.env`
 - `config.local.yaml`
 - `data/max_bridge_session*`

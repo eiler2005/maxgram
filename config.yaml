@@ -4,6 +4,11 @@ telegram:
   bot_token: "${TG_BOT_TOKEN}"
   owner_id: "${TG_OWNER_ID}"
   forum_group_id: "${TG_FORUM_GROUP_ID}"
+  # Основной служебный канал — личный чат владельца с ботом (owner_id).
+  # ops_topic_id опционален и нужен только для дополнительного дублирования
+  # ops-алертов и status-отчётов в forum topic внутри forum_group_id.
+  # Лучше задавать его в config.local.yaml на production.
+  # ops_topic_id: 1234
 
 max:
   phone: "${MAX_PHONE}"
@@ -12,6 +17,11 @@ max:
 storage:
   db_filename: "bridge.db"
   tmp_dirname: "tmp"
+
+health:
+  reminder_interval_hours: 4
+  heartbeat_interval_seconds: 30
+  worker_restart_backoff_seconds: 5
 
 bridge:
   # forward_all: true — автоматически форвардить все чаты из MAX

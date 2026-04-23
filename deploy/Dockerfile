@@ -29,4 +29,7 @@ ENV TMPDIR=/tmp/bridge-tmp
 
 USER app
 
-CMD ["python", "src/main.py"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD python -m src.runtime.healthcheck
+
+CMD ["python", "-m", "src.main"]

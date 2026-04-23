@@ -13,7 +13,7 @@ primary_region = "ams"
   destination = "/app/data"
 
 [processes]
-  app = "python src/main.py"
+  app = "python -m src.main"
 
 [[vm]]
   cpu_kind = "shared"

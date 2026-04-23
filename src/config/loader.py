@@ -17,6 +17,7 @@ class TelegramConfig:
     bot_token: str
     owner_id: int
     forum_group_id: int
+    ops_topic_id: Optional[int] = None
 
 
 @dataclass
@@ -42,6 +43,13 @@ class StorageConfig:
     @property
     def session_path(self) -> str:
         return str(self.data_dir)
+
+
+@dataclass
+class HealthConfig:
+    reminder_interval_hours: int = 4
+    heartbeat_interval_seconds: int = 30
+    worker_restart_backoff_seconds: int = 5
 
 
 @dataclass
@@ -76,6 +84,7 @@ class AppConfig:
     telegram: TelegramConfig
     max: MaxConfig
     storage: StorageConfig
+    health: HealthConfig
     bridge: BridgeConfig
     content: ContentConfig
     chats: list[ChatConfig] = field(default_factory=list)
@@ -109,6 +118,15 @@ def _resolve_env(value) -> str:
     return pattern.sub(replacer, value)
 
 
+def _resolve_optional_int(value) -> Optional[int]:
+    if value is None:
+        return None
+    rendered = _resolve_env(str(value)).strip()
+    if not rendered:
+        return None
+    return int(rendered)
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Рекурсивно объединяет словари. override имеет приоритет."""
     merged = dict(base)
@@ -121,7 +139,9 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
-    load_dotenv()
+    config_root = Path(config_path).resolve().parent
+    load_dotenv(config_root / ".env")
+    load_dotenv(config_root / ".env.secrets", override=True)
 
     with open(config_path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
@@ -137,6 +157,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         bot_token=_resolve_env(tg_raw["bot_token"]),
         owner_id=int(_resolve_env(str(tg_raw["owner_id"]))),
         forum_group_id=int(_resolve_env(str(tg_raw["forum_group_id"]))),
+        ops_topic_id=_resolve_optional_int(tg_raw.get("ops_topic_id")),
     )
 
     max_raw = raw.get("max", {})
@@ -154,6 +175,13 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         tmp_dirname=stor_raw.get("tmp_dirname", "tmp"),
     )
     stor.tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    health_raw = raw.get("health", {})
+    health = HealthConfig(
+        reminder_interval_hours=int(health_raw.get("reminder_interval_hours", 4)),
+        heartbeat_interval_seconds=int(health_raw.get("heartbeat_interval_seconds", 30)),
+        worker_restart_backoff_seconds=int(health_raw.get("worker_restart_backoff_seconds", 5)),
+    )
 
     br_raw = raw.get("bridge", {})
     br = BridgeConfig(
@@ -188,6 +216,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         telegram=tg,
         max=mx,
         storage=stor,
+        health=health,
         bridge=br,
         content=ct,
         chats=chats,

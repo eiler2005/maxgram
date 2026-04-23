@@ -6,6 +6,7 @@ services:
     image: maxtg-bridge:prod
     env_file:
       - ../.env
+      - ../.env.secrets
     environment:
       CONFIG_PATH: /app/config.yaml
       CONFIG_LOCAL_PATH: /app/config.local.yaml

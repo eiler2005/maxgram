@@ -8,42 +8,43 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Создать .env из шаблона
+# Создать env-файлы из шаблонов
 cp .env.example .env
-# Заполнить TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE
+cp .env.secrets.example .env.secrets
+# Заполнить TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE в .env.secrets
 
 # При необходимости локально описать конкретные MAX-чаты
 cp config.local.yaml.example config.local.yaml
 
-# Важно: .env, config.local.yaml и data/ не должны попадать в git
+# Важно: .env.secrets, .env, config.local.yaml и data/ не должны попадать в git
 # и исключены из Docker build context через .dockerignore
 
 # Авторизоваться в MAX (один раз, интерактивно)
-python src/main.py
+.venv/bin/python -m src.main
 # Введи SMS-код при запросе, сессия сохранится в data/max_bridge_session
 
 # Запустить в фоне
-nohup .venv/bin/python src/main.py >> data/bridge.log 2>&1 &
+nohup .venv/bin/python -m src.main >> data/bridge.log 2>&1 &
 ```
 
 Для локальной разработки и регрессионных проверок:
 ```bash
 source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest -q
+PYTHONPATH=. .venv/bin/pytest -q
 ```
 
 ## Вариант 2: Docker (локально)
 
 ```bash
 # Создать .env (см. выше)
-docker-compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml up -d
 
 # Логи
-docker-compose -f deploy/docker-compose.yml logs -f
+docker compose -f deploy/docker-compose.yml logs -f
 
 # Остановить
-docker-compose -f deploy/docker-compose.yml down
+docker compose -f deploy/docker-compose.yml down
 ```
 
 ## Вариант 2b: Docker Compose (production / Hetzner)
@@ -157,6 +158,7 @@ data/
 
 Следующие файлы/директории должны оставаться только локально:
 
+- `.env.secrets`
 - `.env`
 - `config.local.yaml`
 - `data/`

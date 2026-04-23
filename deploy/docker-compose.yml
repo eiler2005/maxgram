@@ -5,6 +5,7 @@ services:
       dockerfile: deploy/Dockerfile
     env_file:
       - ../.env
+      - ../.env.secrets
     volumes:
       # Монтируем data/ как volume — SQLite, MAX сессия и tmp переживают рестарты
       - ../data:/app/data
@@ -15,5 +16,5 @@ services:
       # - ../config.local.yaml:/app/config.local.yaml:ro
     restart: unless-stopped
     # Для spike-скриптов (переопределяет CMD из Dockerfile):
-    # docker-compose run --rm app python spike/max_spike.py
-    # docker-compose run --rm app python spike/tg_spike.py
+    # docker compose run --rm app python spike/max_spike.py
+    # docker compose run --rm app python spike/tg_spike.py

@@ -5,11 +5,12 @@ import pytest
 from aiogram.exceptions import TelegramAPIError
 
 from src.adapters.tg_adapter import TelegramAdapter
+from src.runtime.health import RuntimeHealthStore
 
 
 def _make_message(*, user_id: int, group_id: int, text: str, topic_id: int = 100,
                   is_bot: bool = False, reply_to_id: int | None = None,
-                  first_name: str = "Марина", last_name: str = "Ермилова",
+                  first_name: str = "Мария", last_name: str = "Иванова",
                   username: str | None = None, message_id: int = 321):
     reply_to = None
     if reply_to_id is not None:
@@ -58,7 +59,7 @@ async def test_dispatch_incoming_message_accepts_non_owner_group_member():
 
     await adapter._dispatch_incoming_message(message)
 
-    assert calls == [(555, 321, "Проверка связи", 777, "Марина Ермилова")]
+    assert calls == [(555, 321, "Проверка связи", 777, "Мария Иванова")]
 
 
 @pytest.mark.asyncio
@@ -94,6 +95,19 @@ class FakeRetryBot:
         return SimpleNamespace(message_id=88)
 
 
+class FakeSystemBot:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    async def send_message(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return SimpleNamespace(message_id=outcome)
+
+
 @pytest.mark.asyncio
 async def test_tg_retry_logs_retry_and_success(caplog):
     adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
@@ -106,3 +120,58 @@ async def test_tg_retry_logs_retry_and_success(caplog):
     events = [getattr(record, "event_fields", {}) for record in caplog.records]
     assert any(event.get("event") == "tg.outbound.retry" for event in events)
     assert any(event.get("event") == "tg.outbound.sent" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_send_system_notification_fans_out_to_dm_and_ops_topic(tmp_path):
+    health = RuntimeHealthStore(tmp_path)
+    adapter = TelegramAdapter(
+        "token",
+        owner_id=1,
+        forum_group_id=-100,
+        ops_topic_id=777,
+        outbox_store=health.outbox,
+        health_store=health,
+    )
+    adapter._bot = FakeSystemBot([11, 22])
+
+    ok = await adapter.send_system_notification("Runtime degraded")
+
+    assert ok is True
+    assert adapter._bot.calls == [
+        {"chat_id": 1, "text": "Runtime degraded"},
+        {"chat_id": -100, "text": "Runtime degraded", "message_thread_id": 777},
+    ]
+    assert await health.outbox.size() == 0
+
+
+@pytest.mark.asyncio
+async def test_send_system_notification_queues_failed_target_and_flushes_outbox(tmp_path):
+    health = RuntimeHealthStore(tmp_path)
+    adapter = TelegramAdapter(
+        "token",
+        owner_id=1,
+        forum_group_id=-100,
+        ops_topic_id=777,
+        outbox_store=health.outbox,
+        health_store=health,
+    )
+    adapter._bot = FakeSystemBot(
+        [
+            11,
+            TelegramAPIError(method="sendMessage", message="boom"),
+            TelegramAPIError(method="sendMessage", message="boom"),
+            TelegramAPIError(method="sendMessage", message="boom"),
+        ]
+    )
+
+    ok = await adapter.send_system_notification("Need attention")
+
+    assert ok is False
+    assert await health.outbox.size() == 1
+
+    adapter._bot = FakeSystemBot([22])
+    flushed = await adapter.flush_notification_outbox()
+
+    assert flushed == 1
+    assert await health.outbox.size() == 0

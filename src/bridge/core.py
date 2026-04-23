@@ -23,17 +23,28 @@ from ..adapters.tg_adapter import TelegramAdapter
 from ..config.loader import AppConfig
 from ..db.repository import Repository, ChatBinding, MessageRecord
 from ..logging_utils import build_max_flow_id, build_tg_flow_id, log_event, sanitize_path
+from ..runtime.health import (
+    RuntimeHealthStore,
+    Severity,
+    build_operator_alert,
+    format_timestamp,
+    render_health_summary,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class BridgeCore:
     def __init__(self, config: AppConfig, repo: Repository,
-                 max_adapter: MaxAdapter, tg_adapter: TelegramAdapter):
+                 max_adapter: MaxAdapter, tg_adapter: TelegramAdapter,
+                 ops_notifier: Optional[TelegramAdapter] = None,
+                 health_store: Optional[RuntimeHealthStore] = None):
         self._cfg = config
         self._repo = repo
         self._max = max_adapter
         self._tg = tg_adapter
+        self._ops = ops_notifier or tg_adapter
+        self._health = health_store
 
         # Счётчики в памяти (накопительные с запуска)
         self._stats = {
@@ -53,6 +64,18 @@ class BridgeCore:
         self._tg.on_command("chats", self._build_chats_message)
         self._tg.on_command("help", self._build_help_message)
         self._tg.on_arg_command("dm", self._cmd_dm)
+
+    async def _send_ops_notification(self, text: str):
+        sender = getattr(self._ops, "send_system_notification", None)
+        if callable(sender):
+            await sender(text)
+            return
+        await self._ops.send_notification(text)
+
+    async def _emit_health_alert(self, change):
+        if change is None or not getattr(change, "notify", False):
+            return
+        await self._send_ops_notification(build_operator_alert(change))
 
     # ── MAX → Telegram ────────────────────────────────────────────────────
 
@@ -566,7 +589,7 @@ class BridgeCore:
 
         binding = await self._repo.get_binding_by_topic(topic_id)
         if not binding:
-            await self._tg.send_notification(f"⚠️ Не найден MAX чат для топика {topic_id}")
+            await self._send_ops_notification(f"⚠️ Не найден MAX чат для топика {topic_id}")
             await self._log_outbound_failure(
                 topic_id=topic_id,
                 tg_msg_id=tg_msg_id,
@@ -780,6 +803,10 @@ class BridgeCore:
         # Соединения
         max_ok = "✅" if self._max.is_ready() else "❌"
         tg_ok = "✅"  # если мы дошли до /status — TG работает
+        get_last_issue = getattr(self._max, "get_last_issue", None)
+        max_issue = get_last_issue() if callable(get_last_issue) else None
+        get_last_connected_at = getattr(self._max, "get_last_connected_at", None)
+        last_connected_at = get_last_connected_at() if callable(get_last_connected_at) else None
 
         # Сообщения за период
         inbound_total = msgs.get("inbound", 0)
@@ -824,6 +851,24 @@ class BridgeCore:
             "",
             f"🗂 Всего чатов: {total_chats}  (активных: {active_chats})",
         ]
+
+        if self._health is not None:
+            snapshot = await self._health.get_snapshot()
+            lines += ["", *render_health_summary(snapshot)]
+        elif not self._max.is_ready() and max_issue is not None:
+            lines += [
+                "",
+                "⚠️ Проблема MAX",
+                f"  {max_issue.summary}",
+            ]
+            if getattr(max_issue, "requires_reauth", False):
+                lines.append("  Требуется: reauth по SMS")
+
+        if last_connected_at:
+            lines.append(
+                f"Последний успешный MAX connect: "
+                f"{format_timestamp(last_connected_at)}"
+            )
 
         return "\n".join(lines)
 
@@ -949,10 +994,28 @@ class BridgeCore:
         while True:
             try:
                 text = await self._build_status_message(interval_hours)
-                await self._tg.send_notification(text)
+                await self._send_ops_notification(text)
+                if self._health is not None:
+                    await self._health.mark_healthy(
+                        "scheduler",
+                        summary="Планировщик периодических статус-отчётов работает",
+                        notify=False,
+                    )
                 logger.info("Periodic status sent")
             except Exception as e:
                 logger.error("Periodic status error: %s", e)
+                if self._health is not None:
+                    await self._health.report_issue(
+                        "scheduler",
+                        code="periodic_status_failed",
+                        summary="Периодический 4h status не смог отправиться",
+                        raw_cause=str(e),
+                        severity=Severity.ERROR,
+                        impact="Оператор может не получить очередной health reminder вовремя.",
+                        operator_hint="Проверь Telegram notifier и состояние scheduler task.",
+                        auto_recovery="Следующая попытка будет на следующем цикле scheduler.",
+                        notify=False,
+                    )
             await asyncio.sleep(interval_hours * 3600)
 
     # ── Startup tasks ─────────────────────────────────────────────────────
@@ -1016,13 +1079,13 @@ class BridgeCore:
             await asyncio.sleep(check_interval)
 
             if self._max.is_ready():
-                if alert_sent:
+                if alert_sent and self._health is None:
                     downtime = int(time.time() - disconnected_since)
-                    await self._tg.send_notification(
+                    await self._send_ops_notification(
                         f"⚠️ Возможен пропуск сообщений MAX за время простоя (~{downtime}с): "
                         "история во время disconnect не воспроизводится автоматически"
                     )
-                    await self._tg.send_notification(
+                    await self._send_ops_notification(
                         f"✅ MAX восстановлен (простой ~{downtime}с)"
                     )
                     log_event(
@@ -1056,9 +1119,32 @@ class BridgeCore:
                         outcome="alerted",
                         downtime_seconds=int(elapsed),
                     )
-                    await self._tg.send_notification(
-                        f"⚠️ MAX недоступен уже {int(elapsed)}с — идёт переподключение"
-                    )
+                    if self._health is not None:
+                        get_last_issue = getattr(self._max, "get_last_issue", None)
+                        current_issue = get_last_issue() if callable(get_last_issue) else None
+                        if current_issue is None:
+                            change = await self._health.report_issue(
+                                "max_link",
+                                code="link_offline",
+                                summary=f"MAX недоступен уже {int(elapsed)}с — идёт переподключение",
+                                raw_cause="MAX client is offline / reconnect loop active",
+                                severity=Severity.ERROR,
+                                impact=(
+                                    "Новые MAX сообщения не приходят, а история за время disconnect "
+                                    "не воспроизводится автоматически."
+                                ),
+                                operator_hint=(
+                                    "Если reconnect затянулся, проверь /status и при необходимости сделай "
+                                    "reauth по SMS."
+                                ),
+                                auto_recovery="MAX reconnect loop уже запущен и продолжит попытки автоматически.",
+                                notify=True,
+                            )
+                            await self._emit_health_alert(change)
+                    else:
+                        await self._send_ops_notification(
+                            f"⚠️ MAX недоступен уже {int(elapsed)}с — идёт переподключение"
+                        )
                     alert_sent = True
 
     # ── Cleanup ───────────────────────────────────────────────────────────
@@ -1070,6 +1156,17 @@ class BridgeCore:
             try:
                 await self._repo.cleanup_old_messages(self._cfg.bridge.message_retention_days)
                 await self._repo.cleanup_old_logs(self._cfg.bridge.log_retention_days)
+                if self._health is not None:
+                    await self._health.mark_healthy(
+                        "storage",
+                        summary="SQLite storage отвечает и cleanup проходит штатно",
+                        notify=False,
+                    )
+                    await self._health.mark_healthy(
+                        "scheduler",
+                        summary="Cleanup scheduler работает штатно",
+                        notify=False,
+                    )
                 log_event(
                     logger,
                     logging.INFO,
@@ -1088,3 +1185,15 @@ class BridgeCore:
                     outcome="failed",
                     error=str(e),
                 )
+                if self._health is not None:
+                    await self._health.report_issue(
+                        "storage",
+                        code="cleanup_failed",
+                        summary="Cleanup старых записей в storage завершился ошибкой",
+                        raw_cause=str(e),
+                        severity=Severity.ERROR,
+                        impact="Retention cleanup не выполнен; data/ может разрастаться и health-state устаревать.",
+                        operator_hint="Проверь SQLite права/целостность и свободное место на диске.",
+                        auto_recovery="Следующая попытка cleanup будет автоматически через 30 минут.",
+                        notify=False,
+                    )

@@ -729,6 +729,35 @@ async def test_failfast_ping_resets_failure_counter_after_success(tmp_path):
     assert client.close_calls == 0
 
 
+def test_classify_runtime_error_marks_corrupt_session_as_reauth(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    issue = adapter._classify_runtime_error(RuntimeError("sqlite3.OperationalError: unsupported file format"))
+
+    assert issue is not None
+    assert issue.kind == "session_corrupt"
+    assert issue.requires_reauth is True
+
+
+@pytest.mark.asyncio
+async def test_emit_runtime_issue_notifies_only_once_per_signature(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    seen = []
+
+    async def handler(issue):
+        seen.append((issue.kind, issue.summary))
+
+    adapter.on_issue(handler)
+    issue = adapter._remember_runtime_issue(
+        adapter._classify_runtime_error(RuntimeError("Invalid token"))  # type: ignore[arg-type]
+    )
+
+    await adapter._emit_runtime_issue(issue)
+    await adapter._emit_runtime_issue(issue)
+
+    assert seen == [("session_invalid", "MAX сессия недействительна, нужна повторная авторизация")]
+
+
 class VideoPlayClient(LookupClient):
     def __init__(self, payload):
         super().__init__()
@@ -764,10 +793,10 @@ def test_extract_video_url_prefers_mp4_variant_over_external_page(tmp_path):
     payload = {
         "cache": True,
         "EXTERNAL": "https://m.ok.ru/video/13208513634267",
-        "MP4_720": "https://maxvd677.okcdn.ru/?expires=1&srcIp=204.168.239.217&type=3&id=13644091493083",
+        "MP4_720": "https://maxvd677.okcdn.ru/?expires=1&srcIp=203.0.113.217&type=3&id=13644091493083",
     }
 
-    assert adapter._extract_video_url(payload) == "https://maxvd677.okcdn.ru/?expires=1&srcIp=204.168.239.217&type=3&id=13644091493083"
+    assert adapter._extract_video_url(payload) == "https://maxvd677.okcdn.ru/?expires=1&srcIp=203.0.113.217&type=3&id=13644091493083"
 
 
 def test_download_headers_for_url_uses_chrome_user_agent_for_chrome_signed_url(tmp_path):

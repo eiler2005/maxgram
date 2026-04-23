@@ -110,9 +110,9 @@ async def test_find_user_case_insensitive(tmp_path):
     repo = Repository(str(tmp_path / "bridge.db"))
     await repo.connect()
     try:
-        await repo.save_user("222", "Марина Ермилова")
-        assert await repo.find_user_by_name("марина ермилова") == "222"
-        assert await repo.find_user_by_name("МАРИНА ЕРМИЛОВА") == "222"
+        await repo.save_user("222", "Мария Иванова")
+        assert await repo.find_user_by_name("мария иванова") == "222"
+        assert await repo.find_user_by_name("МАРИЯ ИВАНОВА") == "222"
     finally:
         await repo.close()
 
