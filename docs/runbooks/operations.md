@@ -171,6 +171,27 @@ jq . data/health_heartbeat.json
 - если проблема в MAX session, `/status` и `health_state.json` должны явно показывать `requires_reauth` / подсказку про SMS reauth
 - по умолчанию outbox относится к owner DM; forum-topic fanout участвует только если настроен `ops_topic_id`
 
+## Сценарии отказов
+
+Ниже короткая operator-матрица: что ломается, что система делает сама и когда нужен ручной шаг.
+
+| Сценарий | Что делает система автоматически | Куда пишет | Нужен ли ручной шаг |
+|---------|----------------------------------|------------|---------------------|
+| `MAX disconnected` / краткий сетевой обрыв | MAX adapter держит reconnect-loop, supervisor не даёт контейнеру упасть, health переходит в `degraded`, после восстановления фиксируется `recovered` | owner DM, `health_state.json`, `health_events.jsonl` | Обычно нет |
+| MAX reconnect длится слишком долго | bridge остаётся `Up`, watchdog и health snapshot показывают деградацию, периодический `/status` и 4h status отражают active issue | owner DM, `/status`, `health_state.json` | Иногда да, если внешний MAX реально недоступен долго |
+| `Invalid token` / битая MAX session / нужен `reauth` | runtime не падает, проблема классифицируется как issue MAX-сессии, оператор получает подсказку про SMS reauth | owner DM, `/status`, `health_state.json`, `health_events.jsonl` | Да, нужен `/reauth` и SMS-код |
+| Telegram Bot API временно недоступен | `TelegramAdapter` делает retry, неотправленные системные alert-сообщения кладутся в `alert_outbox.jsonl`, после восстановления Telegram идёт automatic flush | owner DM после восстановления, `alert_outbox.jsonl`, `health_state.json` | Обычно нет |
+| Падает сам bridge worker | supervisor перезапускает worker с backoff, контейнер остаётся `Up`, restart counter и причина попадают в health-state | owner DM, `health_state.json`, `health_events.jsonl` | Обычно нет, если crash разовый |
+| Падает или зависает сам supervisor | Docker healthcheck перестаёт видеть heartbeat, контейнер получает `unhealthy`, дальше помогает `restart: always` и ручная проверка compose/logs | `docker ps`, `docker inspect`, `health_heartbeat.json` | Да, это уже runtime-level авария |
+| Telegram-уведомление не удалось отправить сразу | сообщение не теряется, а сохраняется в outbox и досылается позже | `alert_outbox.jsonl` | Нет, если Telegram восстановился |
+| MAX лежал долго и потом поднялся | bridge пытается восстановиться сам и шлёт `recovered`, но исторические сообщения за время простоя MAX не догружаются | owner DM, `/status`, `health_events.jsonl` | Возможно, если критично вручную проверить пропущенный период |
+
+Что важно помнить:
+
+- Автовосстановление покрывает временные transport/runtime проблемы, reconnect и crash worker.
+- Автовосстановление не может само пройти SMS reauth за владельца.
+- Даже при исправном runtime pymax не умеет полноценный history replay, поэтому сообщения за длительный downtime MAX могут быть потеряны.
+
 ## Режимы логирования
 
 Поддерживаются env-переключатели:
