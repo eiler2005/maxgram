@@ -6,6 +6,7 @@
 > Ручные шаги ниже остаются источником правды для того, что Ansible намеренно
 > не автоматизирует (создание VM в панели, копирование секретов, SMS reauth)
 > и как fallback, если ansible недоступен.
+> `ansible-playbook deploy.yml --check --diff` здесь означает preflight verify без rollout, а не полную симуляцию `docker compose build/up`.
 
 ## Цель
 

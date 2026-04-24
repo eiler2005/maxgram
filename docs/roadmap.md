@@ -97,7 +97,7 @@
 
 **Цель:** превратить ручной runbook деплоя/восстановления в исполняемый код.
 
-- [x] **Ansible playbooks** — `infra/ansible/{deploy,backup,recover,bootstrap,hardening}.yml` повторяют ручной workflow без отклонений
+- [x] **Ansible playbooks** — `infra/ansible/{deploy,backup,recover,bootstrap,hardening}.yml` кодифицируют ручной workflow; в `--check` deploy работает как безопасный preflight verify текущего состояния без rollout
 - [x] **Idempotent regular deploy** — rsync релиз-бандла, `docker compose build/up -d` без `down`, polling Docker healthcheck до `healthy`, smoke check по `bridge.db`
 - [x] **Backup + recover** — `tar.gz` envs+state на локальную машину, развёртывание на новый VM с защитой от перезаписи живого prod
 - [x] **Bootstrap + hardening для новых VM** — `deploy` user, Docker, sshd template, UFW, fail2ban, unattended-upgrades; не применяются к существующему prod

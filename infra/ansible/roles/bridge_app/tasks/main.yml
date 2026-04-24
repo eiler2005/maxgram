@@ -1,10 +1,12 @@
 ---
 - name: Sync code to server
   ansible.builtin.import_tasks: sync_code.yml
+  when: not ansible_check_mode
   tags: [deploy, sync]
 
 - name: Build and start containers
   ansible.builtin.import_tasks: start.yml
+  when: not ansible_check_mode
   tags: [deploy, start]
 
 - name: Verify deployment health

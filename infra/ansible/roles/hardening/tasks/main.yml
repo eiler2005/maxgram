@@ -18,9 +18,21 @@
   tags: [hardening, sshd]
 
 # UFW — kernel modules не работают в docker, пропускаем в lab через --skip-tags ufw.
+# Сначала добавляем allow-правило для SSH, и только потом включаем firewall.
+- name: Allow SSH from trusted IP only
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    src: "{{ ssh_allowed_ip }}"
+    comment: "SSH from operator IP"
+    insert: 1
+    insert_relative_to: zero
+  become: true
+  tags: [hardening, ufw]
+
 - name: Configure UFW default policies
   community.general.ufw:
-    state: enabled
     default: "{{ item.default }}"
     direction: "{{ item.direction }}"
   loop:
@@ -29,13 +41,9 @@
   become: true
   tags: [hardening, ufw]
 
-- name: Allow SSH from trusted IP only
+- name: Enable UFW after SSH allow rule is present
   community.general.ufw:
-    rule: allow
-    port: "22"
-    proto: tcp
-    src: "{{ ssh_allowed_ip }}"
-    comment: "SSH from operator IP"
+    state: enabled
   become: true
   tags: [hardening, ufw]
 

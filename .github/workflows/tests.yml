@@ -26,3 +26,37 @@ jobs:
         env:
           PYTHONPATH: .
         run: pytest -q
+
+  ansible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install Ansible tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible-core ansible-lint
+          ansible-galaxy collection install -r infra/ansible/requirements.yml
+
+      - name: Prepare ephemeral inventory
+        run: |
+          cp infra/ansible/inventory/production.ini.example infra/ansible/inventory/production.ini
+
+      - name: Syntax check playbooks
+        working-directory: infra/ansible
+        run: |
+          ansible-playbook --syntax-check site.yml
+          ansible-playbook --syntax-check deploy.yml
+          ansible-playbook --syntax-check backup.yml
+          ansible-playbook --syntax-check recover.yml
+          ansible-playbook --syntax-check bootstrap.yml
+          ansible-playbook --syntax-check hardening.yml
+
+      - name: Lint Ansible
+        working-directory: infra/ansible
+        run: ansible-lint --format=pep8

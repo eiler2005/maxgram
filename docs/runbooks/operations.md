@@ -7,8 +7,9 @@
 ```bash
 cd infra/ansible
 
-# Регулярный deploy (rsync кода + compose build/up + healthcheck)
-ansible-playbook deploy.yml --check --diff   # сначала dry-run
+# Регулярный deploy:
+# --check --diff = безопасный preflight verify текущего состояния, без rollout
+ansible-playbook deploy.yml --check --diff
 ansible-playbook deploy.yml                   # затем реально
 
 # Бэкап на локальную машину перед рискованным изменением
@@ -21,6 +22,12 @@ ansible-playbook recover.yml -e backup_archive=../../backups/maxtg-backup-prod-<
 `bootstrap.yml` и `hardening.yml` — только для нового VM, текущий prod уже подготовлен руками.
 
 Ручной workflow ниже остаётся источником правды для шагов, которые Ansible намеренно не автоматизирует (создание VM в Hetzner панели, копирование секретов, SMS reauth).
+
+Важно:
+
+- `deploy.yml --check --diff` не симулирует `docker compose build/up`.
+- В check mode playbook делает только preflight: preconditions, healthcheck, logs, smoke-check.
+- Реальный rollout выполняется только обычным `ansible-playbook deploy.yml`.
 
 ## Production: Hetzner quick checklist
 

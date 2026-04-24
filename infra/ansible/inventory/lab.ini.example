@@ -1,0 +1,5 @@
+[bridge_servers]
+lab ansible_host=127.0.0.1 ansible_port=2222 ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+[bridge_servers:vars]
+ansible_python_interpreter=/usr/bin/python3

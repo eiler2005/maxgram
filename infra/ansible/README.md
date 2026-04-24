@@ -28,18 +28,24 @@ ansible -i infra/ansible/inventory/production.ini bridge_servers -m ping
 ```bash
 cd infra/ansible
 
-# Сначала всегда dry-run
+# Сначала всегда preflight verify
 ansible-playbook deploy.yml --check --diff
 
 # Затем (после Hetzner snapshot, если важное изменение) — реальный
 ansible-playbook deploy.yml
 ```
 
+Важно:
+
+- `deploy.yml --check --diff` здесь не пытается симулировать `docker compose build/up`.
+- В check mode playbook работает как безопасный preflight: проверяет preconditions, текущее состояние контейнера, healthcheck и smoke-check без мутаций на сервере.
+- Реальный rollout выполняется только обычным `ansible-playbook deploy.yml`.
+
 ## Playbook'и
 
 | Playbook | Когда запускать | Цель |
 |----------|----------------|------|
-| `deploy.yml` | На каждый apt-обновление кода | rsync кода + `docker compose build/up -d` + healthcheck |
+| `deploy.yml` | На каждый апдейт кода | rsync кода + `docker compose build/up -d` + healthcheck |
 | `backup.yml` | Перед любым рискованным изменением | `tar` бэкап `data/` + envs, скачать на ноут |
 | `recover.yml` | Только в аварии на пустом VM | Развернуть бэкап на свежем сервере |
 | `bootstrap.yml` | **Только для нового VM** | Юзер `deploy`, базовые пакеты, Docker |
@@ -64,7 +70,7 @@ docker exec -i ansible-lab bash -c \
   'mkdir -p /root/.ssh && cat >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys' \
   < ~/.ssh/id_rsa.pub
 
-# Скопировать inventory/lab.ini.example в inventory/lab.ini (создать пример при необходимости)
+# Скопировать inventory/lab.ini.example в inventory/lab.ini
 # Прогнать
 ansible-playbook -i inventory/lab.ini bootstrap.yml hardening.yml \
   --skip-tags ufw,unattended
@@ -85,6 +91,7 @@ docker rm -f ansible-lab
 - SMS reauth для MAX (только владелец с телефоном).
 - Содержимое `.env.secrets` / `.env` / `config.local.yaml` — копируется на сервер вручную через `scp`.
 - Auto-deploy по push в git — намеренно не делаем (запрет в [CLAUDE.md](../../CLAUDE.md)).
+- Dry-run preview контейнерного rollout — в `--check` выполняется только preflight verify, а не симуляция `docker compose build/up`.
 
 ## Verification после deploy
 

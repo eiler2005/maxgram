@@ -514,7 +514,7 @@ docker compose -f deploy/docker-compose.yml logs -f
 
 ```bash
 cd infra/ansible
-ansible-playbook deploy.yml --check --diff   # сначала dry-run
+ansible-playbook deploy.yml --check --diff   # сначала preflight verify без rollout
 ansible-playbook deploy.yml                   # затем реально
 ansible-playbook backup.yml                   # снять снимок state на ноут
 ```

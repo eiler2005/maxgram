@@ -15,13 +15,18 @@
     dest: "{{ project_root }}/{{ item }}"
     delete: "{{ item.endswith('/') }}"
     recursive: true
-    rsync_opts:
-      - "--exclude=__pycache__"
-      - "--exclude=*.pyc"
-      - "--exclude=.pytest_cache"
-      - "--exclude=.ruff_cache"
-      - "--exclude=.mypy_cache"
-      - "--exclude=.DS_Store"
+    rsync_opts: >-
+      {{
+        [
+          '--exclude=__pycache__',
+          '--exclude=*.pyc',
+          '--exclude=.pytest_cache',
+          '--exclude=.ruff_cache',
+          '--exclude=.mypy_cache',
+          '--exclude=.DS_Store'
+        ]
+        + (sync_excludes | map('regex_replace', '^(.*)$', '--exclude=\\1') | list)
+      }}
   loop: "{{ sync_paths }}"
   loop_control:
     label: "{{ item }}"

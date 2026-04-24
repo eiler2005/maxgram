@@ -11,6 +11,7 @@ All notable changes to Maxgram are documented here.
 
 ### Changed
 - Раздел "Запуск через Ansible" добавлен в `docs/runbooks/operations.md`; `infra/ansible/` упомянут в карте файлов `CLAUDE.md`.
+- `deploy.yml --check --diff` теперь явно документирован как preflight verify текущего состояния без `docker compose build/up`, чтобы dry-run semantics не обещали несуществующую симуляцию контейнерного rollout.
 
 ---
 

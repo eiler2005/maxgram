@@ -38,17 +38,13 @@
   loop_control:
     label: "{{ item.item }}"
 
-- name: Create gzipped tar archive on server
-  community.general.archive:
-    path:
-      - "{{ project_root }}/{{ env_file }}"
-      - "{{ project_root }}/{{ env_secrets_file }}"
-      - "{{ project_root }}/{{ env_host_file }}"
-      - "{{ project_root }}/{{ config_local_file }}"
-      - "{{ project_root }}/{{ data_dir }}"
-    dest: "{{ backup_remote_path }}"
-    format: gz
-    mode: "0600"
+- name: Create gzipped tar archive on server with paths relative to project_root  # noqa: command-instead-of-module
+  ansible.builtin.command:
+    cmd: >-
+      tar -czf {{ backup_remote_path }}
+      -C {{ project_root }}
+      {{ env_file }} {{ env_secrets_file }} {{ env_host_file }} {{ config_local_file }} {{ data_dir }}
+  changed_when: true
 
 - name: Compute checksum of remote archive
   ansible.builtin.stat:

@@ -51,26 +51,60 @@
           {{ project_root }} отсутствует. Сначала запусти bootstrap.yml на новом VM.
       when: not recover_project_root_stat.stat.exists
 
-    - name: Check that env files do NOT already exist (safety check against overwriting live prod)
-      ansible.builtin.stat:
-        path: "{{ project_root }}/{{ item }}"
-      loop:
-        - "{{ env_file }}"
-        - "{{ env_secrets_file }}"
-        - "{{ config_local_file }}"
-      register: recover_existing_files
+    - name: List top-level project_root entries
+      ansible.builtin.find:
+        paths:
+          - "{{ project_root }}"
+        file_type: any
+        recurse: false
+        hidden: true
+      register: recover_project_root_entries
 
-    - name: Fail if existing prod files would be overwritten
+    - name: Fail if project_root contains anything except an empty data directory
       ansible.builtin.fail:
         msg: |
-          На сервере уже есть {{ item.item }}.
-          recover.yml отказывается перезаписывать живые prod-файлы.
-          Если ты действительно хочешь восстановить поверх — удали файлы вручную:
-            ssh {{ ansible_user }}@{{ ansible_host }} 'rm {{ project_root }}/{{ item.item }}'
-      when: item.stat.exists
-      loop: "{{ recover_existing_files.results }}"
-      loop_control:
-        label: "{{ item.item }}"
+          {{ project_root }} не выглядит пустым staging-каталогом для recovery.
+          recover.yml разрешает только пустой project_root или bootstrap-created empty {{ data_dir }}/.
+          Лишние entries:
+          {{
+            recover_project_root_entries.files
+            | map(attribute='path')
+            | reject('equalto', project_root ~ '/' ~ data_dir)
+            | list
+          }}
+      when: >-
+        (
+          recover_project_root_entries.files
+          | map(attribute='path')
+          | reject('equalto', project_root ~ '/' ~ data_dir)
+          | list
+          | length
+        ) > 0
+
+    - name: Inspect data directory before recovery
+      ansible.builtin.find:
+        paths:
+          - "{{ project_root }}/{{ data_dir }}"
+        file_type: any
+        recurse: true
+        hidden: true
+      register: recover_data_dir_entries
+      when: >
+        recover_project_root_entries.files
+        | map(attribute='path')
+        | select('equalto', project_root ~ '/' ~ data_dir)
+        | list
+        | length > 0
+
+    - name: Fail if bootstrap-created data directory is not empty
+      ansible.builtin.fail:
+        msg: |
+          {{ project_root }}/{{ data_dir }} уже содержит файлы.
+          recover.yml отказывается смешивать recovery-архив с существующим state.
+          Очисти каталог вручную или используй новый VM.
+      when:
+        - recover_data_dir_entries is defined
+        - recover_data_dir_entries.matched | int > 0
 
   tasks:
     - name: Define remote archive path

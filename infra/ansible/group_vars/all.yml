@@ -56,3 +56,4 @@ sync_excludes:
   - backups/
   - "*.log"
   - .DS_Store
+  - server.local.md

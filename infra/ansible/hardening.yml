@@ -12,6 +12,7 @@
 
 - name: Harden new MAX→Telegram Bridge server
   hosts: bridge_servers
+  serial: 1
   gather_facts: true
   become: true
 
