@@ -1,0 +1,6 @@
+---
+# Точка входа. Сейчас просто включает deploy.yml.
+# Если в будущем понадобится "полный prod refresh" — добавить сюда другие плейбуки.
+
+- name: Site — full deploy
+  ansible.builtin.import_playbook: deploy.yml

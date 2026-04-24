@@ -1,0 +1,86 @@
+---
+# Verify-секция: ждём healthy, тащим логи, прогоняем smoke check.
+# Если healthcheck не зашёл в healthy за timeout — fail с логами.
+# Все команды read-only → check_mode: false (выполняются и в --check режиме).
+
+- name: Get bridge container ID
+  ansible.builtin.command:
+    cmd: >-
+      docker compose
+      --project-name {{ compose_project }}
+      --env-file {{ env_host_file }}
+      -f {{ compose_file }}
+      ps -q bridge
+    chdir: "{{ project_root }}"
+  register: bridge_app_container_id
+  changed_when: false
+  check_mode: false
+
+- name: Fail if bridge container is not running
+  ansible.builtin.fail:
+    msg: "docker compose ps -q bridge вернул пусто — контейнер не запустился"
+  when: bridge_app_container_id.stdout | trim == ""
+
+- name: Poll Docker healthcheck until healthy
+  ansible.builtin.command:
+    cmd: "docker inspect --format '{{ '{{' }}.State.Health.Status{{ '}}' }}' {{ bridge_app_container_id.stdout | trim }}"
+  register: bridge_app_health_status
+  until: bridge_app_health_status.stdout | trim == "healthy"
+  retries: "{{ (healthcheck_timeout_seconds / healthcheck_poll_interval_seconds) | int }}"
+  delay: "{{ healthcheck_poll_interval_seconds }}"
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Tail container logs on healthcheck failure
+  ansible.builtin.command:
+    cmd: >-
+      docker compose
+      --project-name {{ compose_project }}
+      --env-file {{ env_host_file }}
+      -f {{ compose_file }}
+      logs --tail=100 bridge
+    chdir: "{{ project_root }}"
+  register: bridge_app_failure_logs
+  when: bridge_app_health_status.stdout | trim != "healthy"
+  changed_when: false
+  check_mode: false
+
+- name: Fail with logs if healthcheck did not become healthy
+  ansible.builtin.fail:
+    msg: |
+      Healthcheck не вышел в `healthy` за {{ healthcheck_timeout_seconds }}s.
+      Текущий статус: {{ bridge_app_health_status.stdout | trim }}.
+      Последние 100 строк логов:
+      {{ bridge_app_failure_logs.stdout }}
+  when: bridge_app_health_status.stdout | trim != "healthy"
+
+- name: Show docker compose ps
+  ansible.builtin.command:
+    cmd: >-
+      docker compose
+      --project-name {{ compose_project }}
+      --env-file {{ env_host_file }}
+      -f {{ compose_file }}
+      ps
+    chdir: "{{ project_root }}"
+  register: bridge_app_compose_ps
+  changed_when: false
+  check_mode: false
+
+- name: Display compose ps output
+  ansible.builtin.debug:
+    var: bridge_app_compose_ps.stdout_lines
+
+- name: Run smoke check against bridge.db
+  ansible.builtin.command:
+    cmd: "python3 scripts/smoke_check.py --db {{ data_dir }}/bridge.db --minutes {{ smoke_check_minutes }}"
+    chdir: "{{ project_root }}"
+  register: bridge_app_smoke_check
+  changed_when: false
+  failed_when: bridge_app_smoke_check.rc != 0
+  check_mode: false
+
+- name: Display smoke check output
+  ansible.builtin.debug:
+    var: bridge_app_smoke_check.stdout_lines

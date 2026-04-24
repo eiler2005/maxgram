@@ -1,0 +1,75 @@
+---
+# Создать tar-архив state+envs на сервере, забрать на локальную машину, прибрать.
+# Read-only по сути: ничего не меняет на сервере, кроме временного файла в /tmp.
+
+- name: Generate backup timestamp
+  ansible.builtin.set_fact:
+    backup_timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+- name: Define remote and local backup paths
+  ansible.builtin.set_fact:
+    backup_remote_path: "/tmp/maxtg-backup-{{ backup_timestamp }}.tgz"
+    backup_local_dir: "{{ playbook_dir }}/../../backups"
+
+- name: Ensure local backup directory exists
+  ansible.builtin.file:
+    path: "{{ backup_local_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+
+- name: Verify all required files/dirs exist before backup
+  ansible.builtin.stat:
+    path: "{{ project_root }}/{{ item }}"
+  loop:
+    - "{{ env_file }}"
+    - "{{ env_secrets_file }}"
+    - "{{ env_host_file }}"
+    - "{{ config_local_file }}"
+    - "{{ data_dir }}"
+  register: backup_files_stat
+
+- name: Fail if any backup target is missing
+  ansible.builtin.fail:
+    msg: "Отсутствует {{ item.item }} — нечего бэкапить, прерываемся."
+  when: not item.stat.exists
+  loop: "{{ backup_files_stat.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create gzipped tar archive on server
+  community.general.archive:
+    path:
+      - "{{ project_root }}/{{ env_file }}"
+      - "{{ project_root }}/{{ env_secrets_file }}"
+      - "{{ project_root }}/{{ env_host_file }}"
+      - "{{ project_root }}/{{ config_local_file }}"
+      - "{{ project_root }}/{{ data_dir }}"
+    dest: "{{ backup_remote_path }}"
+    format: gz
+    mode: "0600"
+
+- name: Compute checksum of remote archive
+  ansible.builtin.stat:
+    path: "{{ backup_remote_path }}"
+    checksum_algorithm: sha256
+  register: backup_remote_stat
+
+- name: Fetch backup archive to local machine
+  ansible.builtin.fetch:
+    src: "{{ backup_remote_path }}"
+    dest: "{{ backup_local_dir }}/maxtg-backup-{{ inventory_hostname }}-{{ backup_timestamp }}.tgz"
+    flat: true
+
+- name: Remove temporary backup archive from server
+  ansible.builtin.file:
+    path: "{{ backup_remote_path }}"
+    state: absent
+
+- name: Show backup summary
+  ansible.builtin.debug:
+    msg:
+      - "Бэкап сохранён локально: {{ backup_local_dir }}/maxtg-backup-{{ inventory_hostname }}-{{ backup_timestamp }}.tgz"
+      - "Размер: {{ (backup_remote_stat.stat.size / 1024 / 1024) | round(2) }} MB"
+      - "SHA256: {{ backup_remote_stat.stat.checksum }}"

@@ -1,0 +1,28 @@
+---
+# sshd + UFW + fail2ban + unattended-upgrades для нового VM.
+# НИКОГДА не применять к текущему prod — он уже захардёнен руками по runbook'у.
+#
+# Pre-condition:
+#   - bootstrap.yml уже отработал (есть user deploy, базовые пакеты)
+#   - переменная ssh_allowed_ip определена (через -e или vault)
+#
+# Lab-mode (docker container, без kernel UFW и без работающего dpkg-reconfigure):
+#   ansible-playbook -i inventory/lab.ini hardening.yml \
+#     -e ssh_allowed_ip=0.0.0.0/0 --skip-tags ufw,unattended
+
+- name: Harden new MAX→Telegram Bridge server
+  hosts: bridge_servers
+  gather_facts: true
+  become: true
+
+  pre_tasks:
+    - name: Validate ssh_allowed_ip was provided
+      ansible.builtin.fail:
+        msg: |
+          Не задана переменная ssh_allowed_ip (CIDR разрешённого IP для SSH).
+          Запускай: ansible-playbook hardening.yml -e ssh_allowed_ip=1.2.3.4/32
+          Или храни в group_vars/production.vault.yml через ansible-vault.
+      when: ssh_allowed_ip is not defined
+
+  roles:
+    - role: hardening

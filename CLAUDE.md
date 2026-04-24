@@ -32,6 +32,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 | `src/config/loader.py` | YAML конфиг + env переменные |
 | `src/db/models.py` | SQLite схема (3 таблицы) |
 | `src/db/repository.py` | Data access layer |
+| `infra/ansible/` | Ansible playbooks: deploy, backup, recover, bootstrap, hardening (см. `infra/ansible/README.md`) |
 
 ## База данных (SQLite)
 

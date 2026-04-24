@@ -1,0 +1,15 @@
+---
+# Ansible Galaxy зависимости.
+# Установить: ansible-galaxy collection install -r requirements.yml
+collections:
+  # Для модуля ansible.posix.synchronize (rsync wrapper) в bridge_app role.
+  - name: ansible.posix
+    version: ">=2.0.0"
+  # Для модуля community.general.archive (tar.gz wrapper) в backup role.
+  - name: community.general
+    version: ">=11.0.0"
+  # Если позже мигрируем на community.docker.docker_compose_v2 — раскомментировать.
+  # - name: community.docker
+  #   version: ">=3.10.0"
+
+roles: []

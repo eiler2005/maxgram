@@ -1,5 +1,27 @@
 # Runbook: Операционные процедуры
 
+## Запуск через Ansible
+
+Альтернатива ручному SSH-workflow ниже. Все playbook'и — в [infra/ansible/](../../infra/ansible/), детали в [infra/ansible/README.md](../../infra/ansible/README.md).
+
+```bash
+cd infra/ansible
+
+# Регулярный deploy (rsync кода + compose build/up + healthcheck)
+ansible-playbook deploy.yml --check --diff   # сначала dry-run
+ansible-playbook deploy.yml                   # затем реально
+
+# Бэкап на локальную машину перед рискованным изменением
+ansible-playbook backup.yml
+
+# Восстановление на свежем VM (после bootstrap.yml)
+ansible-playbook recover.yml -e backup_archive=../../backups/maxtg-backup-prod-<TS>.tgz
+```
+
+`bootstrap.yml` и `hardening.yml` — только для нового VM, текущий prod уже подготовлен руками.
+
+Ручной workflow ниже остаётся источником правды для шагов, которые Ansible намеренно не автоматизирует (создание VM в Hetzner панели, копирование секретов, SMS reauth).
+
 ## Production: Hetzner quick checklist
 
 Текущий production-сценарий:

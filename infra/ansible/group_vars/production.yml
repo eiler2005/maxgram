@@ -1,0 +1,6 @@
+---
+# Production-specific non-secret vars.
+# Реальные secrets (.env / .env.secrets / config.local.yaml) живут на сервере, ансибл их не трогает.
+# Vault-encrypted vars (например, ssh_allowed_ip) — в production.vault.yml (создать через `ansible-vault create`).
+
+env: production

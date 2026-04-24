@@ -1,0 +1,30 @@
+---
+# Build & up. Никогда не делаем `docker compose down` — это сломает restart:always
+# поведение после reboot VM.
+
+- name: Build docker compose images
+  ansible.builtin.command:
+    cmd: >-
+      docker compose
+      --project-name {{ compose_project }}
+      --env-file {{ env_host_file }}
+      -f {{ compose_file }}
+      build
+    chdir: "{{ project_root }}"
+  register: bridge_app_compose_build
+  changed_when: true
+
+- name: Start docker compose stack
+  ansible.builtin.command:
+    cmd: >-
+      docker compose
+      --project-name {{ compose_project }}
+      --env-file {{ env_host_file }}
+      -f {{ compose_file }}
+      up -d
+    chdir: "{{ project_root }}"
+  register: bridge_app_compose_up
+  changed_when: >-
+    'Started' in bridge_app_compose_up.stderr
+    or 'Recreated' in bridge_app_compose_up.stderr
+    or 'Created' in bridge_app_compose_up.stderr

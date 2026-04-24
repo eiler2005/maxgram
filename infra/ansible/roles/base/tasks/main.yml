@@ -1,0 +1,72 @@
+---
+# Базовая подготовка свежей Ubuntu 24.04: пользователь deploy, пакеты, project_root.
+# Запускается под root (initial bootstrap), либо под уже существующим sudo-юзером.
+
+- name: Update apt cache (max age 1 hour)
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - git
+      - rsync
+      - jq
+      - sqlite3
+      - python3
+      - python3-apt
+      - ufw
+      - fail2ban
+      - unattended-upgrades
+    state: present
+  become: true
+
+- name: Create deploy user
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    shell: /bin/bash
+    groups: sudo
+    append: true
+    create_home: true
+    state: present
+  become: true
+
+- name: Allow deploy user passwordless sudo
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/90-{{ deploy_user }}"
+    content: "{{ deploy_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  become: true
+
+- name: Authorize SSH key for deploy user (from current ansible_user)
+  ansible.posix.authorized_key:
+    user: "{{ deploy_user }}"
+    state: present
+    key: "{{ lookup('file', deploy_user_pubkey) }}"
+  become: true
+  when: deploy_user_pubkey is defined
+
+- name: Create project_root directory
+  ansible.builtin.file:
+    path: "{{ project_root }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0750"
+  become: true
+
+- name: Create data directory
+  ansible.builtin.file:
+    path: "{{ project_root }}/{{ data_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_user }}"
+    mode: "0700"
+  become: true

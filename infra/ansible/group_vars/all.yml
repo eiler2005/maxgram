@@ -1,0 +1,58 @@
+---
+# Общие vars для всех окружений. Без секретов.
+
+project_root: /opt/maxtg-bridge
+deploy_user: deploy
+
+# Пути относительно project_root
+compose_file: deploy/docker-compose.prod.yml
+# Compose project name. На текущем prod = "deploy" (исторически контейнер запущен из директории deploy/).
+# Менять только если переименовываешь проект осознанно — иначе будет создан второй контейнер
+# рядом с существующим, и оба будут пытаться держать одну MAX-сессию.
+compose_project: deploy
+env_host_file: .env.host
+env_file: .env
+env_secrets_file: .env.secrets
+config_local_file: config.local.yaml
+data_dir: data
+
+# Verify
+healthcheck_timeout_seconds: 90
+healthcheck_poll_interval_seconds: 3
+smoke_check_minutes: 15
+
+# Локальный source root, откуда rsync берёт код. Резолвится автоматически от playbook'а.
+local_source_root: "{{ playbook_dir }}/../.."
+
+# Что синхронизировать на сервер. Минимальный релиз-бандл.
+sync_paths:
+  - src/
+  - deploy/
+  - scripts/
+  - config.yaml
+  - requirements.txt
+  - requirements-dev.txt
+  - pytest.ini
+
+# Что никогда не должно попасть на сервер через rsync.
+# (data/, env'ы, config.local.yaml, .git, .venv, docs, tests, локальные logs)
+sync_excludes:
+  - .git/
+  - .venv/
+  - venv/
+  - __pycache__/
+  - "*.pyc"
+  - .pytest_cache/
+  - .ruff_cache/
+  - .mypy_cache/
+  - data/
+  - .env
+  - .env.*
+  - .env.host
+  - config.local.yaml
+  - config.local.*
+  - docs/
+  - tests/
+  - backups/
+  - "*.log"
+  - .DS_Store

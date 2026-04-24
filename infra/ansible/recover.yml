@@ -1,0 +1,116 @@
+---
+# Восстановить bridge на пустом VM из локального tar-архива.
+# Pre-condition:
+#   - VM прошла bootstrap.yml (есть user `deploy`, Docker, /opt/maxtg-bridge пустой)
+#   - локально есть архив, путь передан через -e backup_archive=...
+# Усиление безопасности: проверяем что project_root пустой — чтобы случайно
+# не перезаписать живой prod.
+#
+# Запуск:
+#   ansible-playbook recover.yml -e backup_archive=backups/maxtg-backup-prod-20260424T120000.tgz
+
+- name: Recover MAX→Telegram Bridge from backup
+  hosts: bridge_servers
+  gather_facts: true
+  become: false
+
+  pre_tasks:
+    - name: Validate backup_archive variable was provided
+      ansible.builtin.fail:
+        msg: |
+          Не передан backup_archive. Запускай:
+            ansible-playbook recover.yml -e backup_archive=path/to/archive.tgz
+      when: backup_archive is not defined or backup_archive | length == 0
+
+    - name: Resolve absolute backup archive path on local machine
+      ansible.builtin.set_fact:
+        backup_archive_abs: "{{ backup_archive | realpath }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Verify local backup archive exists
+      ansible.builtin.stat:
+        path: "{{ backup_archive_abs }}"
+      register: backup_archive_stat
+      delegate_to: localhost
+      become: false
+
+    - name: Fail if local backup archive is missing
+      ansible.builtin.fail:
+        msg: "Архив {{ backup_archive_abs }} не найден на локальной машине."
+      when: not backup_archive_stat.stat.exists
+
+    - name: Verify project_root exists on server
+      ansible.builtin.stat:
+        path: "{{ project_root }}"
+      register: recover_project_root_stat
+
+    - name: Fail if project_root does not exist
+      ansible.builtin.fail:
+        msg: |
+          {{ project_root }} отсутствует. Сначала запусти bootstrap.yml на новом VM.
+      when: not recover_project_root_stat.stat.exists
+
+    - name: Check that env files do NOT already exist (safety check against overwriting live prod)
+      ansible.builtin.stat:
+        path: "{{ project_root }}/{{ item }}"
+      loop:
+        - "{{ env_file }}"
+        - "{{ env_secrets_file }}"
+        - "{{ config_local_file }}"
+      register: recover_existing_files
+
+    - name: Fail if existing prod files would be overwritten
+      ansible.builtin.fail:
+        msg: |
+          На сервере уже есть {{ item.item }}.
+          recover.yml отказывается перезаписывать живые prod-файлы.
+          Если ты действительно хочешь восстановить поверх — удали файлы вручную:
+            ssh {{ ansible_user }}@{{ ansible_host }} 'rm {{ project_root }}/{{ item.item }}'
+      when: item.stat.exists
+      loop: "{{ recover_existing_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+  tasks:
+    - name: Define remote archive path
+      ansible.builtin.set_fact:
+        recover_remote_archive: "/tmp/maxtg-recover-{{ ansible_date_time.iso8601_basic_short }}.tgz"
+
+    - name: Copy backup archive to server
+      ansible.builtin.copy:
+        src: "{{ backup_archive_abs }}"
+        dest: "{{ recover_remote_archive }}"
+        mode: "0600"
+
+    - name: Extract archive into project_root
+      ansible.builtin.unarchive:
+        src: "{{ recover_remote_archive }}"
+        dest: "{{ project_root }}"
+        remote_src: true
+
+    - name: Set restrictive permissions on env files
+      ansible.builtin.file:
+        path: "{{ project_root }}/{{ item }}"
+        mode: "0600"
+      loop:
+        - "{{ env_file }}"
+        - "{{ env_secrets_file }}"
+        - "{{ env_host_file }}"
+        - "{{ config_local_file }}"
+
+    - name: Set permissions on data directory
+      ansible.builtin.file:
+        path: "{{ project_root }}/{{ data_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Remove temporary archive from server
+      ansible.builtin.file:
+        path: "{{ recover_remote_archive }}"
+        state: absent
+
+  post_tasks:
+    - name: Run deploy (sync code + start + verify)
+      ansible.builtin.import_role:
+        name: bridge_app

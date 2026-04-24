@@ -1,0 +1,26 @@
+{# Управляется Ansible. Ручные правки будут перезаписаны. #}
+# Hardened sshd_config — managed by infra/ansible/roles/hardening.
+# Source: docs/runbooks/hetzner-production.md, section 2 + 4.
+
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding no
+PrintMotd no
+
+AllowUsers {{ deploy_user }}
+
+ClientAliveInterval 60
+ClientAliveCountMax 3
+LoginGraceTime 30
+
+# Default subsystem
+Subsystem	sftp	/usr/lib/openssh/sftp-server

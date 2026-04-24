@@ -9,6 +9,12 @@ HANDOFF.local.md
 # Local deployment notes (server IPs, credentials)
 deploy/server.local.md
 
+# Ansible — реальный inventory с IP сервера, lab inventory, локальные бэкапы
+infra/ansible/inventory/production.ini
+infra/ansible/inventory/lab.ini
+infra/ansible/.vault_pass
+backups/
+
 # MAX session (all variants)
 data/.max_session
 data/max_bridge_session

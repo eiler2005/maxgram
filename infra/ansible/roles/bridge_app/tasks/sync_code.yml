@@ -1,0 +1,33 @@
+---
+# Rsync релиз-бандла с локальной машины на сервер.
+# Без --delete на root: чтобы не убить data/, env-файлы, config.local.yaml.
+# С --delete внутри src/ и deploy/ через rsync_opts (зеркало для удалённых файлов в коде).
+
+- name: Resolve absolute local source root
+  ansible.builtin.set_fact:
+    bridge_app_local_source_abs: "{{ local_source_root | realpath }}"
+  delegate_to: localhost
+  run_once: false
+
+- name: Sync app code with rsync
+  ansible.posix.synchronize:
+    src: "{{ bridge_app_local_source_abs }}/{{ item }}"
+    dest: "{{ project_root }}/{{ item }}"
+    delete: "{{ item.endswith('/') }}"
+    recursive: true
+    rsync_opts:
+      - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+      - "--exclude=.pytest_cache"
+      - "--exclude=.ruff_cache"
+      - "--exclude=.mypy_cache"
+      - "--exclude=.DS_Store"
+  loop: "{{ sync_paths }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Ensure data/ directory exists with correct permissions
+  ansible.builtin.file:
+    path: "{{ project_root }}/{{ data_dir }}"
+    state: directory
+    mode: "0700"

@@ -4,6 +4,16 @@ All notable changes to Maxgram are documented here.
 
 ---
 
+## [1.1.7] — 2026-04-24
+
+### Added
+- **Ansible automation для prod-операций** — `infra/ansible/` с пятью playbook'ами (`deploy`, `backup`, `recover`, `bootstrap`, `hardening`), повторяющими ручной runbook без отклонений: rsync релиз-бандла, `docker compose build/up -d` без `down`, polling Docker healthcheck до `healthy`, smoke check по `bridge.db`. `bootstrap`/`hardening` — только для новых VM, текущий prod не трогается. Inventory с реальным IP — в `.gitignore`. Дизайн зафиксирован в `docs/reviews/ansible-handoff.md`.
+
+### Changed
+- Раздел "Запуск через Ansible" добавлен в `docs/runbooks/operations.md`; `infra/ansible/` упомянут в карте файлов `CLAUDE.md`.
+
+---
+
 ## [1.1.6] — 2026-04-19
 
 ### Changed

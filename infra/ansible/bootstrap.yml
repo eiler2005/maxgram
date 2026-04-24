@@ -1,0 +1,31 @@
+---
+# Подготовка свежей Ubuntu 24.04 VM. Запускается ОДИН РАЗ для нового сервера.
+# Никогда не применять к текущему prod — он уже подготовлен по runbook'у.
+#
+# Pre-condition:
+#   - VM создан в Hetzner панели, есть SSH доступ под root (или существующим sudo-юзером)
+#   - в inventory временно прописан ansible_user=root для первого запуска
+#   - переменная deploy_user_pubkey указывает на путь к публичному ключу для авторизации
+#
+# После bootstrap:
+#   - сменить ansible_user на 'deploy' в inventory
+#   - запустить hardening.yml (опционально, рекомендуется)
+#   - вручную скопировать .env / .env.secrets / config.local.yaml / data/ через scp
+#   - запустить deploy.yml
+
+- name: Bootstrap new MAX→Telegram Bridge server
+  hosts: bridge_servers
+  gather_facts: true
+  become: true
+
+  pre_tasks:
+    - name: Validate deploy_user_pubkey was provided
+      ansible.builtin.fail:
+        msg: |
+          Не задана переменная deploy_user_pubkey (путь к публичному SSH-ключу).
+          Запускай: ansible-playbook bootstrap.yml -e deploy_user_pubkey=~/.ssh/id_rsa.pub
+      when: deploy_user_pubkey is not defined
+
+  roles:
+    - role: base
+    - role: docker

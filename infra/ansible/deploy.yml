@@ -1,0 +1,47 @@
+---
+# Регулярный deploy на уже живой prod-сервер.
+# Безопасен: rsync без --delete на root, compose up -d (без down), healthcheck verify.
+# Никогда не создаёт env-файлы — только проверяет их наличие.
+
+- name: Deploy MAX→Telegram Bridge
+  hosts: bridge_servers
+  gather_facts: true
+  become: false
+
+  pre_tasks:
+    - name: Pre-flight — проверить что project_root существует
+      ansible.builtin.stat:
+        path: "{{ project_root }}"
+      register: project_root_stat
+
+    - name: Fail если project_root отсутствует
+      ansible.builtin.fail:
+        msg: |
+          {{ project_root }} не существует на сервере.
+          Это deploy.yml — он не создаёт сервер с нуля. Сначала запусти bootstrap.yml на новом VM,
+          затем вручную скопируй .env / .env.secrets / config.local.yaml / data/.
+      when: not project_root_stat.stat.exists
+
+    - name: Pre-flight — проверить наличие приватных файлов на сервере
+      ansible.builtin.stat:
+        path: "{{ project_root }}/{{ item }}"
+      loop:
+        - "{{ env_file }}"
+        - "{{ env_secrets_file }}"
+        - "{{ env_host_file }}"
+        - "{{ config_local_file }}"
+      register: required_files_stat
+
+    - name: Fail если приватный файл отсутствует
+      ansible.builtin.fail:
+        msg: |
+          На сервере отсутствует {{ item.item }}.
+          Этот файл — secret/local-only и должен быть скопирован вручную (scp).
+          deploy.yml не создаёт такие файлы.
+      when: not item.stat.exists
+      loop: "{{ required_files_stat.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+  roles:
+    - role: bridge_app

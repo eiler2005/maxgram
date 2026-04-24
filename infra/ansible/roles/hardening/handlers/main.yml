@@ -1,0 +1,16 @@
+---
+- name: Validate sshd config
+  ansible.builtin.command:
+    cmd: sshd -t -f /etc/ssh/sshd_config
+  changed_when: false
+  listen: Restart sshd
+
+- name: Restart sshd
+  ansible.builtin.systemd:
+    name: ssh
+    state: restarted
+
+- name: Restart fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: restarted

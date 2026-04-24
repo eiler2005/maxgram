@@ -1,0 +1,12 @@
+---
+- name: Sync code to server
+  ansible.builtin.import_tasks: sync_code.yml
+  tags: [deploy, sync]
+
+- name: Build and start containers
+  ansible.builtin.import_tasks: start.yml
+  tags: [deploy, start]
+
+- name: Verify deployment health
+  ansible.builtin.import_tasks: verify.yml
+  tags: [deploy, verify]

@@ -1,0 +1,12 @@
+---
+# Снять снимок prod state на локальную машину.
+# Запускать перед любым рискованным изменением (новый deploy с миграцией, hardening и т.д.).
+# Архив попадает в backups/ (gitignored).
+
+- name: Backup MAX→Telegram Bridge state to local machine
+  hosts: bridge_servers
+  gather_facts: true
+  become: false
+
+  roles:
+    - role: backup

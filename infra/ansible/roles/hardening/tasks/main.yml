@@ -1,0 +1,80 @@
+---
+# sshd + UFW + fail2ban + unattended-upgrades.
+# ВАЖНО: запускать только на новых VM. На текущем prod уже захардёнено руками.
+#
+# UFW и unattended-upgrades тегируются — в docker-lab их пропускают через --skip-tags.
+
+- name: Deploy hardened sshd_config
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "sshd -t -f %s"
+    backup: true
+  become: true
+  notify: Restart sshd
+  tags: [hardening, sshd]
+
+# UFW — kernel modules не работают в docker, пропускаем в lab через --skip-tags ufw.
+- name: Configure UFW default policies
+  community.general.ufw:
+    state: enabled
+    default: "{{ item.default }}"
+    direction: "{{ item.direction }}"
+  loop:
+    - { default: deny, direction: incoming }
+    - { default: allow, direction: outgoing }
+  become: true
+  tags: [hardening, ufw]
+
+- name: Allow SSH from trusted IP only
+  community.general.ufw:
+    rule: allow
+    port: "22"
+    proto: tcp
+    src: "{{ ssh_allowed_ip }}"
+    comment: "SSH from operator IP"
+  become: true
+  tags: [hardening, ufw]
+
+# fail2ban
+- name: Configure fail2ban sshd jail
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/sshd.local
+    content: |
+      [sshd]
+      enabled = true
+      port    = 22
+      maxretry = 5
+      bantime  = 1h
+      findtime = 10m
+      ignoreip = 127.0.0.1/8 ::1 {{ ssh_allowed_ip }}
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  notify: Restart fail2ban
+  tags: [hardening, fail2ban]
+
+- name: Ensure fail2ban service is started and enabled
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: started
+    enabled: true
+  become: true
+  tags: [hardening, fail2ban]
+
+# unattended-upgrades — dpkg-reconfigure не работает в docker, пропускаем в lab.
+- name: Enable unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  tags: [hardening, unattended]

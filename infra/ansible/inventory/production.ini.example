@@ -1,0 +1,8 @@
+; Скопировать в production.ini и заполнить реальные значения.
+; production.ini — в .gitignore, никогда не коммитим реальный IP.
+
+[bridge_servers]
+prod ansible_host=<SERVER_IP> ansible_user=deploy ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+[bridge_servers:vars]
+ansible_python_interpreter=/usr/bin/python3
