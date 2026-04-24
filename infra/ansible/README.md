@@ -1,6 +1,6 @@
 # Ansible для MAX→Telegram Bridge
 
-Автоматизация runbook'ов, описанных в [docs/runbooks/hetzner-production.md](../../docs/runbooks/hetzner-production.md). Дизайн — в [docs/reviews/ansible-handoff.md](../../docs/reviews/ansible-handoff.md).
+Автоматизация runbook'ов, описанных в [docs/runbooks/hetzner-production.md](../../docs/runbooks/hetzner-production.md).
 
 ## Quickstart
 

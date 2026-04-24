@@ -508,7 +508,21 @@ docker compose -f deploy/docker-compose.yml up -d
 docker compose -f deploy/docker-compose.yml logs -f
 ```
 
-### Hetzner Cloud (текущее production-окружение)
+### Ansible (рекомендуемый способ деплоя и операций)
+
+С версии 1.1.7 регулярный деплой, бэкап и подготовка новых VM кодифицированы как Ansible playbooks в `infra/ansible/`:
+
+```bash
+cd infra/ansible
+ansible-playbook deploy.yml --check --diff   # сначала dry-run
+ansible-playbook deploy.yml                   # затем реально
+ansible-playbook backup.yml                   # снять снимок state на ноут
+```
+
+`bootstrap.yml` + `hardening.yml` запускаются только для новых VM, к текущему prod не применяются.
+Inventory с реальным IP — в `.gitignore`. Quickstart: [infra/ansible/README.md](infra/ansible/README.md).
+
+### Hetzner Cloud (ручной fallback)
 
 ```bash
 ssh -i ~/.ssh/id_rsa deploy@<SERVER_IP>

@@ -38,6 +38,8 @@
 
 ## Как воспроизвести текущее состояние
 
+Регулярные операции (deploy / backup / recover / bootstrap / hardening) теперь идут через Ansible — `cd infra/ansible && ansible-playbook deploy.yml`. Ручные шаги ниже остаются как fallback и для диагностики.
+
 ```bash
 ssh -i ~/.ssh/id_rsa deploy@<SERVER_IP>
 cd /opt/maxtg-bridge
@@ -59,6 +61,7 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 | `config.yaml` | чаты, режимы, параметры |
 | `scripts/smoke_check.py` | быстрый smoke-report по SQLite |
 | `deploy/docker-compose.prod.yml` | production-compose для Hetzner |
+| `infra/ansible/` | playbooks: deploy / backup / recover / bootstrap / hardening |
 | `docs/runbooks/operations.md` | ежедневная эксплуатация |
 | `docs/runbooks/hetzner-production.md` | secure-runbook по серверу |
 | `data/bridge.db` | состояние (не в git) |

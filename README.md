@@ -42,6 +42,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Idempotent message deduplication** — `max_msg_id` is written to SQLite *before* forwarding to Telegram, making the system safe to restart at any point without duplicates
 - **Privacy-first design** — no message text or media is ever stored; SQLite only holds routing metadata (chat bindings, message ID map, delivery log)
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
+- **Ansible-driven ops** — regular deploy, backup, recovery, fresh-VM bootstrap, and hardening are all codified as idempotent playbooks under `infra/ansible/`; the manual runbook is kept only as fallback
 - **Supervisor runtime shell** — PID1 is now a supervisor that keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
 - **Resilient delivery** — Telegram API calls retry with exponential backoff; temporary TG→MAX transport failures retry automatically; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; `/status` gives live health snapshot on demand
 - **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
@@ -107,6 +108,7 @@ Details: [docs/architecture.md](docs/architecture.md)
 | Config | YAML + `python-dotenv` |
 | Runtime | Python 3.13+, `asyncio` |
 | Deployment | Docker Compose / Hetzner Cloud |
+| Ops automation | Ansible (`infra/ansible/`) |
 
 ---
 
@@ -185,6 +187,9 @@ maxgram/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
 │   └── docker-compose.prod.yml
+│
+├── infra/
+│   └── ansible/               ← deploy / backup / recover / bootstrap / hardening
 │
 ├── tests/                     ← pytest regression suite
 └── scripts/smoke_check.py

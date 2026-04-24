@@ -1,5 +1,12 @@
 # Runbook: Hetzner Production
 
+> **С версии 1.1.7 рекомендуемый способ — [Ansible](../../infra/ansible/README.md).**
+> Для регулярного апдейта используй `ansible-playbook deploy.yml`.
+> Для бэкапа — `backup.yml`. Для нового VM — `bootstrap.yml` + `hardening.yml`.
+> Ручные шаги ниже остаются источником правды для того, что Ansible намеренно
+> не автоматизирует (создание VM в панели, копирование секретов, SMS reauth)
+> и как fallback, если ansible недоступен.
+
 ## Цель
 
 Безопасный production-деплой bridge на Hetzner Cloud:
@@ -228,6 +235,9 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 ```
 
 ## 8. Обновления
+
+> **Рекомендованный путь — Ansible:** `cd infra/ansible && ansible-playbook deploy.yml --check --diff && ansible-playbook deploy.yml`.
+> Ручной workflow ниже — fallback на случай, если ansible недоступен.
 
 ```bash
 cd /opt/maxtg-bridge
