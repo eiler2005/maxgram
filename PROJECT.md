@@ -346,7 +346,7 @@ telegram:
 
 max:
   phone: "${MAX_PHONE}"
-  session_filename: "max_bridge_session.db"
+  session_filename: "session.db"
 
 storage:
   db_filename: "bridge.db"
@@ -405,7 +405,7 @@ MAX_PHONE=+79...
 | `message_map` | SQLite | 30 дней |
 | `delivery_log` | SQLite | 7 дней |
 | `chat_bindings` | SQLite | Бессрочно |
-| MAX сессия | `data/max_bridge_session` | До re-auth |
+| MAX сессия | `data/session.db` | До re-auth |
 
 Автоочистка `BridgeCore.run_cleanup()` — каждые 30 минут.
 

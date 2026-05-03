@@ -123,7 +123,7 @@ class MaxAdapter:
     def __init__(self, phone: str, data_dir: str, session_name: str, tmp_dir: str):
         self._phone = phone
         self._data_dir = data_dir
-        self._session_name = session_name.replace(".db", "")  # pymax добавляет расширение сам
+        self._session_name = Path(session_name).name
         self._tmp_dir = Path(tmp_dir)
         self._client = None
         self._handlers: list[MessageHandler] = []
@@ -180,7 +180,11 @@ class MaxAdapter:
         raw_error = str(error).strip() or error.__class__.__name__
         lowered = raw_error.lower()
 
-        if "unsupported file format" in lowered:
+        corrupt_session_markers = (
+            "unsupported file format",
+            "database disk image is malformed",
+        )
+        if any(marker in lowered for marker in corrupt_session_markers):
             return MaxIssue(
                 kind="session_corrupt",
                 summary="MAX session.db повреждён или не читается",
@@ -2147,11 +2151,10 @@ class MaxAdapter:
     async def _make_client(self):
         """Создать свежий SocketMaxClient (без накопленного кеша)."""
         from pymax import SocketMaxClient
-        session_name = Path(self._session_name).stem
         client = SocketMaxClient(
             phone=self._phone,
             work_dir=self._data_dir,
-            session_name=session_name,
+            session_name=self._session_name,
             reconnect=False,              # управляем reconnect сами
             send_fake_telemetry=False,    # отключаем телеметрию — она вызывает SSL ошибки
         )

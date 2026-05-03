@@ -23,7 +23,7 @@ class TelegramConfig:
 @dataclass
 class MaxConfig:
     phone: str
-    session_filename: str = "max_bridge_session.db"
+    session_filename: str = "session.db"
 
 
 @dataclass
@@ -163,7 +163,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     max_raw = raw.get("max", {})
     mx = MaxConfig(
         phone=_resolve_env(max_raw.get("phone", "${MAX_PHONE}")),
-        session_filename=max_raw.get("session_filename", "max_bridge_session.db"),
+            session_filename=max_raw.get("session_filename", "session.db"),
     )
 
     stor_raw = raw.get("storage", {})

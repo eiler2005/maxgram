@@ -21,7 +21,7 @@ cp config.local.yaml.example config.local.yaml
 
 # Авторизоваться в MAX (один раз, интерактивно)
 .venv/bin/python -m src.main
-# Введи SMS-код при запросе, сессия сохранится в data/max_bridge_session
+# Введи SMS-код при запросе, сессия сохранится в data/session.db
 
 # Запустить в фоне
 nohup .venv/bin/python -m src.main >> data/bridge.log 2>&1 &
@@ -113,11 +113,11 @@ fly deploy -c deploy/fly.toml
 ```bash
 # После первого деплоя перенести сессию
 fly ssh console
-cp /tmp/max_bridge_session /app/data/max_bridge_session
+cp /tmp/session.db /app/data/session.db
 
 # Или через sftp
-fly sftp get data/max_bridge_session ./max_bridge_session_backup
-fly sftp put ./max_bridge_session_backup /app/data/max_bridge_session
+fly sftp get data/session.db ./session.db.backup
+fly sftp put ./session.db.backup /app/data/session.db
 ```
 
 ### Мониторинг
@@ -148,7 +148,7 @@ fly deploy -c deploy/fly.toml
 ```
 data/
 ├── bridge.db              # SQLite (состояние bridge)
-├── max_bridge_session     # Сессия MAX (не терять!)
+├── session.db             # Сессия MAX (не терять!)
 └── tmp/                   # Временные медиафайлы (auto-cleanup)
 ```
 

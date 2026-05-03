@@ -739,6 +739,16 @@ def test_classify_runtime_error_marks_corrupt_session_as_reauth(tmp_path):
     assert issue.requires_reauth is True
 
 
+def test_classify_runtime_error_marks_malformed_session_as_reauth(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    issue = adapter._classify_runtime_error(RuntimeError("sqlite3.DatabaseError: database disk image is malformed"))
+
+    assert issue is not None
+    assert issue.kind == "session_corrupt"
+    assert issue.requires_reauth is True
+
+
 @pytest.mark.asyncio
 async def test_emit_runtime_issue_notifies_only_once_per_signature(tmp_path):
     adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))

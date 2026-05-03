@@ -42,7 +42,7 @@
 - `.env.secrets`
 - `.env`
 - `config.local.yaml`
-- `data/max_bridge_session*`
+- `data/session.db*`
 - `data/bridge.db`
 
 Сделай бэкап:
@@ -268,7 +268,7 @@ sudo ufw status numbered
 - `.env.secrets`
 - `.env`
 - `config.local.yaml`
-- `data/max_bridge_session*`
+- `data/session.db*`
 - `data/bridge.db`
 
 При компрометации:

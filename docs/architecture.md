@@ -104,7 +104,7 @@ Telegram Update (reply в топике форум-группы)
 ### MAX Adapter (`src/adapters/max_adapter.py`)
 
 Обёртка над `pymax.SocketMaxClient`. Управляет:
-- Соединением и аутентификацией (сессия в `data/max_bridge_session`)
+- Соединением и аутентификацией (сессия в `data/session.db`)
 - Reconnect-циклом (fresh client на каждый reconnect — обход pymax OOM-бага)
 - Парсингом входящих сообщений → `MaxMessage` dataclass
 - Скачиванием медиавложений в `data/tmp/`

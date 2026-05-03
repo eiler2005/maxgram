@@ -62,7 +62,7 @@ async def run_spike(phone: str):
     client = MaxClient(
         phone=phone,
         work_dir=str(DATA_DIR),
-        session_name="max_bridge_session",
+        session_name="session.db",
         reconnect=True,
     )
 

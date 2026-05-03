@@ -12,7 +12,7 @@ telegram:
 
 max:
   phone: "${MAX_PHONE}"
-  session_filename: "max_bridge_session.db"
+  session_filename: "session.db"
 
 storage:
   db_filename: "bridge.db"
