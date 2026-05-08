@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from ..adapters.max_adapter import MaxAdapter, MaxAttachment, MaxMessage
+from ..adapters.max_adapter import MaxAdapter, MaxAttachment, MaxAttachmentFailure, MaxMessage
 from ..adapters.tg_adapter import TelegramAdapter
 from ..config.loader import AppConfig
 from ..db.repository import Repository, ChatBinding, MessageRecord
@@ -219,23 +219,40 @@ class BridgeCore:
                 direction="inbound",
                 created_at=int(time.time()),
             ))
-            await self._repo.log_delivery(msg.msg_id, msg.chat_id, "inbound", "delivered")
-            if msg.attachments:
+            if msg.attachment_failures:
+                delivery_status = "partial"
+                delivery_error = f"attachment_download_failed:{len(msg.attachment_failures)}"
+                log_level = logging.WARNING
+            else:
+                delivery_status = "delivered"
+                delivery_error = None
+                log_level = logging.INFO
+
+            await self._repo.log_delivery(
+                msg.msg_id,
+                msg.chat_id,
+                "inbound",
+                delivery_status,
+                delivery_error,
+            )
+            if msg.attachments or msg.attachment_failures:
                 self._stats["inbound_media"] += 1
             else:
                 self._stats["inbound_text"] += 1
             log_event(
                 logger,
-                logging.INFO,
+                log_level,
                 "bridge.inbound.forward_finished",
                 flow_id=flow_id,
                 direction="inbound",
                 stage="forward",
-                outcome="delivered",
+                outcome=delivery_status,
+                reason=delivery_error,
                 max_chat_id=msg.chat_id,
                 max_msg_id=msg.msg_id,
                 tg_topic_id=topic_id,
                 tg_msg_id=tg_msg_id,
+                failed_attachment_count=len(msg.attachment_failures),
             )
         else:
             await self._repo.log_delivery(msg.msg_id, msg.chat_id, "inbound", "failed",
@@ -414,6 +431,16 @@ class BridgeCore:
         parts = [part.strip() for part in [primary, secondary] if part and part.strip()]
         return "\n".join(parts)
 
+    def _compose_attachment_failure_text(
+        self,
+        failures: list[MaxAttachmentFailure],
+    ) -> str:
+        lines = []
+        for failure in failures:
+            label = failure.filename or f"{failure.kind} #{failure.index + 1}"
+            lines.append(f"⚠️ Не удалось скачать вложение MAX: {label}")
+        return "\n".join(lines)
+
     def _build_failed_outbound_id(self, topic_id: int, tg_msg_id: Optional[int]) -> str:
         suffix = tg_msg_id if tg_msg_id is not None else int(time.time())
         return f"out_fail:{topic_id}:{suffix}"
@@ -528,6 +555,15 @@ class BridgeCore:
 
         if extra_text:
             text = self._compose_message_text("" if emitted_anything else body_text, extra_text)
+            sent_id = await self._tg.send_text(topic_id, text, flow_id=flow_id)
+            if sent_id:
+                emitted_anything = True
+                if tg_msg_id is None:
+                    tg_msg_id = sent_id
+
+        failure_text = self._compose_attachment_failure_text(msg.attachment_failures)
+        if failure_text:
+            text = self._compose_message_text("" if emitted_anything else body_text, failure_text)
             sent_id = await self._tg.send_text(topic_id, text, flow_id=flow_id)
             if sent_id:
                 emitted_anything = True

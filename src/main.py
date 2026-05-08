@@ -42,13 +42,29 @@ def setup_logging():
     """Логирование: только meta, без PII."""
     level = os.environ.get("LOG_LEVEL", "INFO").upper()
     fmt_mode = os.environ.get("LOG_FORMAT", "mixed").strip().lower() or "mixed"
+    formatter = EventFormatter(fmt_mode=fmt_mode)
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(EventFormatter(fmt_mode=fmt_mode))
+    handler.setFormatter(formatter)
 
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(level)
     root.addHandler(handler)
+
+    if _env_flag("LOG_TO_FILE", default=True):
+        log_file_raw = os.environ.get("LOG_FILE", "").strip()
+        log_file = (
+            Path(log_file_raw)
+            if log_file_raw
+            else Path(os.environ.get("DATA_DIR", "./data")) / "bridge.log"
+        )
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            file_handler.setFormatter(formatter)
+            root.addHandler(file_handler)
+        except Exception as e:
+            print(f"Could not open bridge log file {log_file}: {e}", file=sys.stderr)
 
     library_level = logging.DEBUG if _env_flag("LOG_LIBRARIES_DEBUG", default=False) else logging.WARNING
     logging.getLogger("aiogram").setLevel(library_level)

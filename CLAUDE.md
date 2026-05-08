@@ -53,6 +53,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `client.dialogs` — список DM-диалогов (populated после sync); каждый Dialog имеет `.id` и `.participants: dict[str, int]`
 - `client.get_cached_user(id)` — синхронный кеш пользователей
 - **DM chat_id ≠ всегда ID собеседника**: когда наш аккаунт инициирует DM, MAX-echo может вернуть `chat_id == own_id`. Либо `resolve_user_name(chat_id)` фейлится для нового контакта и код откатывается к `sender_id == own_id`. В обоих случаях имя собеседника нужно искать через `client.dialogs` → `Dialog.participants` (фильтруя `own_id`). Реализовано в `MaxAdapter.get_dm_partner_id()`.
+- Signed OK CDN URL для MAX-видео чувствительны к `User-Agent`: выбирать клиент по `srcAg` (`CHROME`, `CHROME_ANDROID`, Safari/iPhone fallback). При обрыве скачивания использовать `*.part` + `Range`; если CDN не поддержал докачку, перекачивать с нуля.
 - `SocketMaxClient(reconnect=False, send_fake_telemetry=False)` — **обязательно оба флага**
   - `reconnect=True` → OOM (chats/dialogs растут без очистки при каждом reconnect)
   - `send_fake_telemetry=True` (default) → SSL RECORD_OVERFLOW storm
@@ -103,6 +104,7 @@ TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE
 - Telegram Bot API: max 30 msg/sec, файлы до 50 MB
 - Topics в Telegram: названия до 128 символов
 - Бот принимает команды **только от `TG_OWNER_ID`**
+- Если MAX-вложение после всех retry не скачалось, Telegram должен получить текстовый fallback, а `delivery_log.status` — `partial`, не ложный `delivered`
 
 ## Дальнейшее развитие
 

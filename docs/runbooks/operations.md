@@ -101,7 +101,8 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 - в свежем startup-логе есть `Running startup tests` и затем `Startup tests passed: ...`
 - нет непрерывных ошибок `TelegramConflictError`
 - в `message_map` и `delivery_log` появляются свежие записи
-- если видео из MAX внезапно пришло в Telegram как `.html`, сначала проверить `docker logs` на `VIDEO_PLAY`: bridge должен выбирать `MP4_*` URL, а не `EXTERNAL`, и signed CDN URL должен открываться с `User-Agent`, соответствующим `srcAg`
+- видео из MAX уходит как `send_video`; signed CDN URL должен открываться с `User-Agent`, соответствующим `srcAg`
+- если видео/медиа не скачалось полностью, bridge делает до 7 попыток и пробует докачку через `Range`; после окончательного провала в Telegram должен прийти текст `⚠️ Не удалось скачать вложение MAX...`, а в `delivery_log.status` будет `partial`
 
 Куда идут служебные сообщения:
 
@@ -230,6 +231,8 @@ LOG_LEVEL=INFO|DEBUG
 LOG_FORMAT=text|json|mixed
 LOG_PREVIEW_CHARS=120
 LOG_LIBRARIES_DEBUG=0|1
+LOG_TO_FILE=1|0
+LOG_FILE=/custom/path/bridge.log
 ```
 
 Рекомендуемый production-режим:
@@ -238,6 +241,7 @@ LOG_LIBRARIES_DEBUG=0|1
 LOG_LEVEL=INFO
 LOG_FORMAT=mixed
 LOG_LIBRARIES_DEBUG=0
+LOG_TO_FILE=1
 ```
 
 Для детальной диагностики конкретного кейса:
@@ -253,6 +257,7 @@ LOG_PREVIEW_CHARS=120
 - на `INFO` логируются route/outcome/meta без полного текста сообщений
 - на `DEBUG` появляются safe preview текста
 - `LOG_LIBRARIES_DEBUG=1` поднимает `pymax`/`aiogram`, использовать только временно
+- по умолчанию лог пишется и в stdout, и в `${DATA_DIR}/bridge.log` (`./data/bridge.log` локально)
 
 ## Как искать трассу сообщения
 
@@ -279,6 +284,9 @@ rg 'event=tg\.outbound\.(retry|failed|sent)' data/bridge.log
 
 # retry/fail отправки из Telegram в MAX
 rg 'event=max\.outbound\.(retry|failed|sent)' data/bridge.log
+
+# retry/resume/fail скачивания MAX-вложений
+rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback)' data/bridge.log
 
 # последние неуспешные TG -> MAX доставки из SQLite
 sqlite3 -header -column data/bridge.db \
@@ -315,6 +323,37 @@ sqlite3 -header -column data/bridge.db \
 - `download_failed`
 - `ack_timeout`
 
+## Видео и большие вложения MAX
+
+MAX-видео приходят через signed CDN URL. Bridge выбирает `User-Agent` по `srcAg` в URL (`CHROME`, `CHROME_ANDROID`, Safari/iPhone fallback), потому что OK CDN может отвечать `400 Bad Request` на неподходящий клиент.
+
+Загрузка медиа:
+
+- до 7 попыток на файл;
+- файл пишется во временный `*.part`;
+- при обрыве следующая попытка отправляет `Range: bytes=<уже_скачано>-`;
+- если CDN не поддерживает `Range` и отвечает `200`, bridge удаляет `*.part` и качает заново;
+- если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
+- если после всех попыток вложение не скачалось, bridge отправляет в Telegram текстовое предупреждение вместо тихой потери.
+
+Что смотреть в логах:
+
+```bash
+rg 'flow_id=mx:<chat_id>:<msg_id>' data/bridge.log
+rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback)' data/bridge.log
+rg 'event=bridge\.inbound\.forward_finished .*outcome=partial' data/bridge.log
+```
+
+В `delivery_log` для частичной доставки:
+
+```bash
+sqlite3 -header -column data/bridge.db \
+  "SELECT max_msg_id, max_chat_id, status, error, datetime(created_at, 'unixepoch', 'localtime') AS created_local \
+   FROM delivery_log \
+   WHERE direction='inbound' AND status='partial' \
+   ORDER BY created_at DESC LIMIT 20"
+```
+
 ## Базовая живая smoke-проверка на тестовых чатах
 
 Этот сценарий нужен после деплоя или после правок в routing.
@@ -330,6 +369,13 @@ sqlite3 -header -column data/bridge.db \
 1. Отправь в тестовый MAX-чат короткий текст, например: `SMOKE MAX -> TG`.
 2. Убедись, что он появился в соответствующем Telegram topic.
 3. Если это группа, проверь что в Telegram есть префикс отправителя `[Имя]`.
+
+### Проверка 1b: MAX video -> Telegram
+
+1. Отправь короткое видео в тестовый MAX-чат или DM.
+2. Убедись, что в Telegram оно пришло именно видео-сообщением.
+3. В логах проверь `max.attachment.download outcome=downloaded`, затем `tg.outbound.sent media_type=video`.
+4. Если вместо видео пришёл текст `⚠️ Не удалось скачать вложение MAX...`, смотри `max.attachment.download_retry` и `delivery_log.status='partial'`.
 
 ### Проверка 2: Telegram -> MAX
 

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from types import SimpleNamespace
 
@@ -10,6 +11,7 @@ from src.main import (
     _infer_location,
     _mask_ip,
     build_startup_notification,
+    setup_logging,
 )
 
 
@@ -29,6 +31,19 @@ def test_extract_pytest_summary_uses_terminal_summary():
     """.strip()
 
     assert _extract_pytest_summary(output) == "17 passed in 1.49s"
+
+
+def test_setup_logging_writes_to_data_bridge_log(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("LOG_FORMAT", "mixed")
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    monkeypatch.delenv("LOG_FILE", raising=False)
+
+    setup_logging()
+    logging.getLogger("bridge.test").info("file log smoke")
+
+    text = (tmp_path / "bridge.log").read_text(encoding="utf-8")
+    assert "file log smoke" in text
 
 
 @pytest.mark.asyncio

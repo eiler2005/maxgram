@@ -21,7 +21,7 @@ from typing import Callable, Optional, Awaitable
 from urllib.parse import urlparse
 from urllib.parse import parse_qs
 
-from aiohttp import ClientSession
+from aiohttp import ClientResponseError, ClientSession
 
 from ..logging_utils import (
     build_max_flow_id,
@@ -43,6 +43,13 @@ MAX_CDN_CHROME_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/136.0.0.0 Safari/537.36"
 )
+MAX_CDN_ANDROID_CHROME_USER_AGENT = (
+    "Mozilla/5.0 (Linux; Android 14; Mobile) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/136.0.0.0 Mobile Safari/537.36"
+)
+MAX_DOWNLOAD_ATTEMPTS = 7
+MAX_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 
 @dataclass
@@ -55,6 +62,16 @@ class MaxAttachment:
     width: Optional[int]
     height: Optional[int]
     source_type: Optional[str]    # исходный тип вложения в MAX/pymax
+
+
+@dataclass
+class MaxAttachmentFailure:
+    """Метаданные вложения MAX, которое не удалось скачать."""
+    kind: str
+    source_type: Optional[str]
+    filename: Optional[str]
+    index: int
+    reason: str
 
 
 @dataclass
@@ -84,6 +101,7 @@ class MaxMessage:
     is_dm: bool                     # True если это личная переписка
     is_own: bool                    # True если сообщение отправлено нашим аккаунтом
     raw: object                     # оригинальный объект библиотеки
+    attachment_failures: list[MaxAttachmentFailure] = field(default_factory=list)
 
 
 @dataclass
@@ -834,10 +852,37 @@ class MaxAdapter:
             for attachment in attachments
         ]
 
+    def _attachment_failure_log_summary(
+        self,
+        failures: list["MaxAttachmentFailure"],
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "kind": failure.kind,
+                "source_type": failure.source_type,
+                "filename": sanitize_path(failure.filename),
+                "index": failure.index,
+                "reason": failure.reason,
+            }
+            for failure in failures
+        ]
+
+    def _attachment_kind_for_type(self, atype: str) -> str:
+        if atype == "PHOTO":
+            return "photo"
+        if atype == "VIDEO":
+            return "video"
+        if atype == "AUDIO":
+            return "audio"
+        if atype == "FILE":
+            return "document"
+        return atype.lower() or "unknown"
+
     def _should_skip_empty_event(self, message_type: Optional[str], text: Optional[str],
                                  attachments: list["MaxAttachment"],
-                                 rendered_texts: list[str], reaction_info) -> bool:
-        if text or attachments or rendered_texts:
+                                 rendered_texts: list[str], reaction_info,
+                                 attachment_failures: list["MaxAttachmentFailure"] | None = None) -> bool:
+        if text or attachments or rendered_texts or attachment_failures:
             return False
 
         normalized_type = str(message_type or "").upper()
@@ -1361,7 +1406,9 @@ class MaxAdapter:
             if url else None
         )
         normalized = str(src_ag or "").upper()
-        if normalized == "CHROME":
+        if "CHROME" in normalized and "ANDROID" in normalized:
+            user_agent = MAX_CDN_ANDROID_CHROME_USER_AGENT
+        elif "CHROME" in normalized:
             user_agent = MAX_CDN_CHROME_USER_AGENT
         else:
             user_agent = MAX_CDN_USER_AGENT
@@ -1450,21 +1497,140 @@ class MaxAdapter:
             return True
         return False
 
+    def _is_retryable_download_error(self, error: Exception) -> bool:
+        if isinstance(error, ClientResponseError):
+            return error.status not in {401, 403, 404, 410}
+        return True
+
+    async def _write_download_response(self, response, part_path: Path, mode: str) -> int:
+        written = 0
+        with part_path.open(mode) as fh:
+            stream = getattr(getattr(response, "content", None), "iter_chunked", None)
+            if callable(stream):
+                async for chunk in stream(MAX_DOWNLOAD_CHUNK_SIZE):
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    written += len(chunk)
+            else:
+                content = await response.read()
+                fh.write(content)
+                written += len(content)
+        return written
+
+    def _download_retry_delay(self, attempt: int) -> int:
+        return min(2 ** (attempt - 1), 8)
+
     async def _download_from_url(self, url: str, prefix: str,
                                  filename_hint: Optional[str] = None,
                                  default_extension: str = "",
                                  expected_kind: Optional[str] = None,
                                  flow_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
         """Скачать файл по URL, вернуть (local_path, filename)."""
-        try:
-            async with ClientSession(headers=self._download_headers_for_url(url)) as session:
-                async with session.get(url) as response:
-                    response.raise_for_status()
-                    content = await response.read()
-                    content_type = response.headers.get("Content-Type", "").split(";")[0].strip() or None
+        self._tmp_dir.mkdir(parents=True, exist_ok=True)
+        filename = self._build_filename(prefix, filename_hint, url, None, default_extension)
+        local_path = self._tmp_dir / filename
+        part_path = self._tmp_dir / f"{filename}.part"
+        last_error: Exception | None = None
+        content_type: Optional[str] = None
 
-            detected_kind = self._classify_downloaded_content(content_type, content)
-            if not self._is_download_valid(expected_kind, detected_kind):
+        for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
+            resume_from = part_path.stat().st_size if part_path.exists() else 0
+            headers = self._download_headers_for_url(url)
+            if resume_from:
+                headers = {**headers, "Range": f"bytes={resume_from}-"}
+
+            try:
+                async with ClientSession(headers=headers) as session:
+                    async with session.get(url) as response:
+                        if resume_from and getattr(response, "status", None) == 200:
+                            part_path.unlink(missing_ok=True)
+                            resume_from = 0
+                            log_event(
+                                logger,
+                                logging.INFO,
+                                "max.attachment.download_resume",
+                                flow_id=flow_id,
+                                direction="inbound",
+                                stage="download",
+                                outcome="unsupported",
+                                source=sanitize_url(url),
+                                attempt=attempt,
+                            )
+
+                        response.raise_for_status()
+                        content_type = response.headers.get("Content-Type", "").split(";")[0].strip() or None
+                        mode = "ab" if resume_from and getattr(response, "status", None) == 206 else "wb"
+                        bytes_written = await self._write_download_response(response, part_path, mode)
+
+                if bytes_written <= 0 and not part_path.exists():
+                    raise RuntimeError("download returned no content")
+
+                content = part_path.read_bytes()
+                detected_kind = self._classify_downloaded_content(content_type, content)
+                if not self._is_download_valid(expected_kind, detected_kind):
+                    part_path.unlink(missing_ok=True)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.attachment.download",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="download",
+                        outcome="rejected",
+                        reason="download_rejected",
+                        expected_kind=expected_kind,
+                        detected_kind=detected_kind,
+                        content_type=content_type,
+                        source=sanitize_url(url),
+                        attempts=attempt,
+                    )
+                    return None, None
+
+                part_path.replace(local_path)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.attachment.download",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="downloaded",
+                    expected_kind=expected_kind,
+                    detected_kind=detected_kind,
+                    content_type=content_type,
+                    source=sanitize_url(url),
+                    filename=sanitize_path(filename),
+                    size_bytes=local_path.stat().st_size,
+                    attempts=attempt,
+                    resumed=attempt > 1 or bool(resume_from),
+                )
+                return str(local_path), filename
+            except Exception as e:
+                last_error = e
+                retryable = self._is_retryable_download_error(e)
+                if retryable and attempt < MAX_DOWNLOAD_ATTEMPTS:
+                    retry_in_seconds = self._download_retry_delay(attempt)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.attachment.download_retry",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="download",
+                        outcome="retry",
+                        reason="download_failed",
+                        expected_kind=expected_kind,
+                        source=sanitize_url(url),
+                        error=str(e),
+                        attempt=attempt,
+                        max_attempts=MAX_DOWNLOAD_ATTEMPTS,
+                        resume_from_bytes=part_path.stat().st_size if part_path.exists() else 0,
+                        retry_in_seconds=retry_in_seconds,
+                    )
+                    await asyncio.sleep(retry_in_seconds)
+                    continue
+
                 log_event(
                     logger,
                     logging.WARNING,
@@ -1472,48 +1638,20 @@ class MaxAdapter:
                     flow_id=flow_id,
                     direction="inbound",
                     stage="download",
-                    outcome="rejected",
-                    reason="download_rejected",
+                    outcome="failed",
+                    reason="download_failed",
                     expected_kind=expected_kind,
-                    detected_kind=detected_kind,
-                    content_type=content_type,
                     source=sanitize_url(url),
+                    error=str(e),
+                    attempts=attempt,
+                    max_attempts=MAX_DOWNLOAD_ATTEMPTS,
+                    retryable=retryable,
+                    resume_from_bytes=part_path.stat().st_size if part_path.exists() else 0,
                 )
-                return None, None
+                break
 
-            filename = self._build_filename(prefix, filename_hint, url, content_type, default_extension)
-            self._tmp_dir.mkdir(parents=True, exist_ok=True)
-            local_path = self._tmp_dir / filename
-            local_path.write_bytes(content)
-            log_event(
-                logger,
-                logging.INFO,
-                "max.attachment.download",
-                flow_id=flow_id,
-                direction="inbound",
-                stage="download",
-                outcome="downloaded",
-                expected_kind=expected_kind,
-                detected_kind=detected_kind,
-                content_type=content_type,
-                source=sanitize_url(url),
-                filename=sanitize_path(filename),
-                size_bytes=len(content),
-            )
-            return str(local_path), filename
-        except Exception as e:
-            log_event(
-                logger,
-                logging.WARNING,
-                "max.attachment.download",
-                flow_id=flow_id,
-                direction="inbound",
-                stage="download",
-                outcome="failed",
-                reason="download_failed",
-                source=sanitize_url(url),
-                error=str(e),
-            )
+        if last_error is not None:
+            part_path.unlink(missing_ok=True)
         return None, None
 
     async def _download_file_by_id(self, chat_id: str, msg_id: str, file_id: int,
@@ -1652,17 +1790,34 @@ class MaxAdapter:
         if "VIDEO" in atype:
             video_id = getattr(attach, "video_id", None) or getattr(attach, "id", None)
             url = getattr(attach, "url", None)
+            local_path = None
+            filename = None
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"video_{chat_id}_{msg_id}{idx}", filename_hint, ".mp4",
                     expected_kind="video", flow_id=flow_id,
                 )
-            elif video_id:
+                if not local_path and video_id:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.attachment.video_fallback",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="download",
+                        outcome="retry",
+                        reason="direct_url_failed",
+                        max_chat_id=chat_id,
+                        max_msg_id=msg_id,
+                        source=sanitize_url(url),
+                        attachment_index=index,
+                    )
+            if not local_path and video_id:
                 local_path, filename = await self._download_video_by_id(
                     chat_id, msg_id, video_id, f"video_{chat_id}_{msg_id}{idx}", filename_hint,
                     flow_id=flow_id,
                 )
-            else:
+            if not local_path:
                 return None
             if local_path:
                 return MaxAttachment(
@@ -1918,6 +2073,7 @@ class MaxAdapter:
 
             # Вложения (в pymax Message это .attaches)
             attachments: list[MaxAttachment] = []
+            attachment_failures: list[MaxAttachmentFailure] = []
             rendered_texts: list[str] = []
             media_index = 0
             for attach in attach_list:
@@ -1926,6 +2082,7 @@ class MaxAdapter:
                 raw_type = self._attachment_type_name(attach)
                 atype = self._normalize_attachment_type(raw_type)
                 if atype in {"PHOTO", "VIDEO", "AUDIO", "FILE"}:
+                    filename_hint = self._attachment_filename(attach)
                     attachment = await self._download_attachment(
                         media_chat_id,
                         media_msg_id,
@@ -1936,6 +2093,16 @@ class MaxAdapter:
                     media_index += 1
                     if attachment:
                         attachments.append(attachment)
+                    else:
+                        attachment_failures.append(
+                            MaxAttachmentFailure(
+                                kind=self._attachment_kind_for_type(atype),
+                                source_type=raw_type,
+                                filename=filename_hint,
+                                index=media_index - 1,
+                                reason="download_failed",
+                            )
+                        )
                     continue
 
                 if atype == "CONTROL":
@@ -1961,6 +2128,7 @@ class MaxAdapter:
                 attachments,
                 rendered_texts,
                 reaction_info,
+                attachment_failures,
             ):
                 log_event(
                     logger,
@@ -2002,6 +2170,8 @@ class MaxAdapter:
                 max_chat_id=chat_id,
                 max_msg_id=msg_id,
                 attachments=self._attachment_log_summary(attachments),
+                attachment_failures=self._attachment_failure_log_summary(attachment_failures),
+                failed_attachment_count=len(attachment_failures),
                 attachment_types=attachment_types,
                 rendered_count=len(rendered_texts),
                 has_text=bool(text),
@@ -2035,6 +2205,7 @@ class MaxAdapter:
                 is_dm=is_dm,
                 is_own=is_own,
                 raw=message,
+                attachment_failures=attachment_failures,
             )
 
             for handler in self._handlers:

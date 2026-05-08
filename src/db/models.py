@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS delivery_log (
     max_msg_id      TEXT NOT NULL,
     max_chat_id     TEXT NOT NULL,
     direction       TEXT NOT NULL,
-    status          TEXT NOT NULL,   -- pending | delivered | failed
+    status          TEXT NOT NULL,   -- pending | delivered | partial | failed
     error           TEXT,
     attempts        INTEGER NOT NULL DEFAULT 1,
     created_at      INTEGER NOT NULL,

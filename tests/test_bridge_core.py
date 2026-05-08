@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.adapters.max_adapter import MaxAttachment, MaxMessage
+from src.adapters.max_adapter import MaxAttachment, MaxAttachmentFailure, MaxMessage
 from src.bridge.core import BridgeCore
 from src.runtime.health import RuntimeHealthStore, Severity
 
@@ -285,6 +285,57 @@ async def test_forward_to_telegram_uses_rendered_text_without_media(tmp_path):
     assert result == 5
     assert tg_adapter.calls == [
         ("text", "Тестовый Пользователь вышел(а) из чата"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_forward_to_telegram_reports_failed_attachment_download(tmp_path):
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=DummyRepo(),
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    msg = MaxMessage(
+        msg_id="45",
+        chat_id="-70000000000003",
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text=None,
+        attachments=[],
+        attachment_types=["VIDEO"],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+        attachment_failures=[
+            MaxAttachmentFailure(
+                kind="video",
+                source_type="VIDEO",
+                filename=None,
+                index=0,
+                reason="download_failed",
+            )
+        ],
+    )
+
+    result = await bridge._forward_to_telegram(msg, topic_id=99)
+
+    assert result == 5
+    assert tg_adapter.calls == [
+        ("text", "⚠️ Не удалось скачать вложение MAX: video #1"),
     ]
 
 

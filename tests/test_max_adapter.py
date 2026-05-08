@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.adapters.max_adapter import (
+    MAX_CDN_ANDROID_CHROME_USER_AGENT,
     MAX_CDN_CHROME_USER_AGENT,
     MAX_CDN_USER_AGENT,
     MaxAttachment,
@@ -819,6 +820,16 @@ def test_download_headers_for_url_uses_chrome_user_agent_for_chrome_signed_url(t
     assert headers == {"User-Agent": MAX_CDN_CHROME_USER_AGENT}
 
 
+def test_download_headers_for_url_uses_android_chrome_user_agent(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    headers = adapter._download_headers_for_url(
+        "https://maxvd217.okcdn.ru/?expires=1&srcAg=CHROME_ANDROID&id=13644091493083"
+    )
+
+    assert headers == {"User-Agent": MAX_CDN_ANDROID_CHROME_USER_AGENT}
+
+
 def test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url(tmp_path):
     adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
@@ -925,6 +936,73 @@ async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeyp
         "headers": {"User-Agent": MAX_CDN_USER_AGENT},
         "url": "https://cdn.example.com/video.mp4",
     }
+
+
+@pytest.mark.asyncio
+async def test_download_from_url_resumes_partial_file_after_connection_break(tmp_path, monkeypatch):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    captured_headers = []
+
+    class BrokenStream:
+        async def iter_chunked(self, _size):
+            yield b"video-"
+            raise ConnectionResetError("socket closed")
+
+    class GoodStream:
+        async def iter_chunked(self, _size):
+            yield b"bytes"
+
+    class FakeResponse:
+        def __init__(self, status, content):
+            self.status = status
+            self.content = content
+            self.headers = {"Content-Type": "video/mp4"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+    class FakeSession:
+        calls = 0
+
+        def __init__(self, *args, **kwargs):
+            captured_headers.append(kwargs.get("headers"))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, _url):
+            FakeSession.calls += 1
+            if FakeSession.calls == 1:
+                return FakeResponse(200, BrokenStream())
+            return FakeResponse(206, GoodStream())
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("src.adapters.max_adapter.ClientSession", FakeSession)
+    monkeypatch.setattr("src.adapters.max_adapter.asyncio.sleep", no_sleep)
+
+    local_path, filename = await adapter._download_from_url(
+        "https://cdn.example.com/video.mp4",
+        "video_test",
+        "clip.mp4",
+        ".mp4",
+        expected_kind="video",
+    )
+
+    assert filename == "clip.mp4"
+    assert local_path is not None
+    assert (tmp_path / "tmp" / "clip.mp4").read_bytes() == b"video-bytes"
+    assert captured_headers[1]["Range"] == "bytes=6-"
 
 
 @pytest.mark.asyncio
