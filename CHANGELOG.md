@@ -4,6 +4,14 @@ All notable changes to Maxgram are documented here.
 
 ---
 
+## Unreleased
+
+### Changed
+- **MAX video CDN User-Agent matching** — signed MAX/OK CDN downloads now distinguish `CHROME_IPHONE` from desktop Chrome and use an iOS Chrome `User-Agent`, preventing `400 Bad Request` failures when MAX issues iPhone Chrome video URLs.
+- Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
+
+---
+
 ## [1.1.7] — 2026-04-24
 
 ### Added

@@ -101,7 +101,7 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 - в свежем startup-логе есть `Running startup tests` и затем `Startup tests passed: ...`
 - нет непрерывных ошибок `TelegramConflictError`
 - в `message_map` и `delivery_log` появляются свежие записи
-- видео из MAX уходит как `send_video`; signed CDN URL должен открываться с `User-Agent`, соответствующим `srcAg`
+- видео из MAX уходит как `send_video`; signed CDN URL должен открываться с `User-Agent`, соответствующим `srcAg` (`CHROME`, `CHROME_ANDROID`, `CHROME_IPHONE`, Safari/iPhone fallback)
 - если видео/медиа не скачалось полностью, bridge делает до 7 попыток и пробует докачку через `Range`; после окончательного провала в Telegram должен прийти текст `⚠️ Не удалось скачать вложение MAX...`, а в `delivery_log.status` будет `partial`
 
 Куда идут служебные сообщения:
@@ -325,7 +325,7 @@ sqlite3 -header -column data/bridge.db \
 
 ## Видео и большие вложения MAX
 
-MAX-видео приходят через signed CDN URL. Bridge выбирает `User-Agent` по `srcAg` в URL (`CHROME`, `CHROME_ANDROID`, Safari/iPhone fallback), потому что OK CDN может отвечать `400 Bad Request` на неподходящий клиент.
+MAX-видео приходят через signed CDN URL. Bridge выбирает `User-Agent` по `srcAg` в URL (`CHROME`, `CHROME_ANDROID`, `CHROME_IPHONE`, Safari/iPhone fallback), потому что OK CDN может отвечать `400 Bad Request` на неподходящий клиент.
 
 Загрузка медиа:
 
@@ -343,6 +343,8 @@ rg 'flow_id=mx:<chat_id>:<msg_id>' data/bridge.log
 rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback)' data/bridge.log
 rg 'event=bridge\.inbound\.forward_finished .*outcome=partial' data/bridge.log
 ```
+
+Для CDN download-ошибок смотри поля `src_ag`, `ua_family`, `http_status` и `download_source`. Signed query-параметры URL в логах не должны появляться.
 
 В `delivery_log` для частичной доставки:
 

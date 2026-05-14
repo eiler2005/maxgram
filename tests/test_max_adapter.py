@@ -2,11 +2,13 @@ import asyncio
 import logging
 from types import SimpleNamespace
 
+from aiohttp import ClientResponseError
 import pytest
 
 from src.adapters.max_adapter import (
     MAX_CDN_ANDROID_CHROME_USER_AGENT,
     MAX_CDN_CHROME_USER_AGENT,
+    MAX_CDN_IOS_CHROME_USER_AGENT,
     MAX_CDN_USER_AGENT,
     MaxAttachment,
     MaxAdapter,
@@ -830,6 +832,16 @@ def test_download_headers_for_url_uses_android_chrome_user_agent(tmp_path):
     assert headers == {"User-Agent": MAX_CDN_ANDROID_CHROME_USER_AGENT}
 
 
+def test_download_headers_for_url_uses_ios_chrome_user_agent(tmp_path):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    headers = adapter._download_headers_for_url(
+        "https://maxvd587.okcdn.ru/?expires=1&srcAg=CHROME_IPHONE&id=13644091493083"
+    )
+
+    assert headers == {"User-Agent": MAX_CDN_IOS_CHROME_USER_AGENT}
+
+
 def test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url(tmp_path):
     adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
@@ -858,12 +870,21 @@ async def test_download_video_by_id_uses_raw_video_play_payload(tmp_path):
 
     captured = {}
 
-    async def fake_download(url: str, prefix: str, filename_hint=None, default_extension="", expected_kind=None, flow_id=None):
+    async def fake_download(
+        url: str,
+        prefix: str,
+        filename_hint=None,
+        default_extension="",
+        expected_kind=None,
+        flow_id=None,
+        download_source=None,
+    ):
         captured["url"] = url
         captured["prefix"] = prefix
         captured["filename_hint"] = filename_hint
         captured["default_extension"] = default_extension
         captured["expected_kind"] = expected_kind
+        captured["download_source"] = download_source
         return ("/tmp/video.mp4", "video.mp4")
 
     adapter._download_from_url = fake_download
@@ -883,6 +904,7 @@ async def test_download_video_by_id_uses_raw_video_play_payload(tmp_path):
         "filename_hint": "clip.mp4",
         "default_extension": ".mp4",
         "expected_kind": "video",
+        "download_source": "video_play",
     }
 
 
@@ -936,6 +958,72 @@ async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeyp
         "headers": {"User-Agent": MAX_CDN_USER_AGENT},
         "url": "https://cdn.example.com/video.mp4",
     }
+
+
+@pytest.mark.asyncio
+async def test_download_from_url_logs_src_ag_and_sanitized_http_error(tmp_path, monkeypatch, caplog):
+    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    signed_url = (
+        "https://maxvd587.okcdn.ru/?expires=1778779666&srcAg=CHROME_IPHONE"
+        "&sig=secret&id=13644091493083"
+    )
+
+    class FakeResponse:
+        status = 400
+        headers = {"Content-Type": "text/plain"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            raise ClientResponseError(None, (), status=400, message="Bad Request")
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, _url):
+            return FakeResponse()
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("src.adapters.max_adapter.ClientSession", FakeSession)
+    monkeypatch.setattr("src.adapters.max_adapter.asyncio.sleep", no_sleep)
+
+    with caplog.at_level(logging.WARNING, logger="src.adapters.max_adapter"):
+        local_path, filename = await adapter._download_from_url(
+            signed_url,
+            "video_test",
+            "clip.mp4",
+            ".mp4",
+            expected_kind="video",
+            download_source="video_play",
+        )
+
+    assert local_path is None
+    assert filename is None
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    final_event = next(
+        event
+        for event in events
+        if event.get("event") == "max.attachment.download" and event.get("outcome") == "failed"
+    )
+    assert final_event["src_ag"] == "CHROME_IPHONE"
+    assert final_event["ua_family"] == "chrome_ios"
+    assert final_event["http_status"] == 400
+    assert final_event["download_source"] == "video_play"
+    assert final_event["error"] == "HTTP 400 Bad Request"
+    assert "sig=secret" not in final_event["error"]
 
 
 @pytest.mark.asyncio

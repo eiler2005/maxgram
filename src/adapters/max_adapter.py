@@ -43,6 +43,11 @@ MAX_CDN_CHROME_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/136.0.0.0 Safari/537.36"
 )
+MAX_CDN_IOS_CHROME_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/136.0.0.0 "
+    "Mobile/15E148 Safari/604.1"
+)
 MAX_CDN_ANDROID_CHROME_USER_AGENT = (
     "Mozilla/5.0 (Linux; Android 14; Mobile) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -1400,7 +1405,7 @@ class MaxAdapter:
         candidates.sort(key=lambda item: item[0], reverse=True)
         return candidates[0][1]
 
-    def _download_headers_for_url(self, url: str) -> dict[str, str]:
+    def _download_client_profile_for_url(self, url: str) -> tuple[dict[str, str], Optional[str], str]:
         src_ag = (
             parse_qs(urlparse(url).query).get("srcAg", [None])[0]
             if url else None
@@ -1408,11 +1413,21 @@ class MaxAdapter:
         normalized = str(src_ag or "").upper()
         if "CHROME" in normalized and "ANDROID" in normalized:
             user_agent = MAX_CDN_ANDROID_CHROME_USER_AGENT
+            ua_family = "chrome_android"
+        elif "CHROME" in normalized and ("IPHONE" in normalized or "IOS" in normalized):
+            user_agent = MAX_CDN_IOS_CHROME_USER_AGENT
+            ua_family = "chrome_ios"
         elif "CHROME" in normalized:
             user_agent = MAX_CDN_CHROME_USER_AGENT
+            ua_family = "chrome_desktop"
         else:
             user_agent = MAX_CDN_USER_AGENT
-        return {"User-Agent": user_agent}
+            ua_family = "safari_mobile"
+        return {"User-Agent": user_agent}, src_ag, ua_family
+
+    def _download_headers_for_url(self, url: str) -> dict[str, str]:
+        headers, _src_ag, _ua_family = self._download_client_profile_for_url(url)
+        return headers
 
     def _detect_magic_type(self, content: bytes) -> str:
         if not content:
@@ -1502,6 +1517,17 @@ class MaxAdapter:
             return error.status not in {401, 403, 404, 410}
         return True
 
+    def _download_error_for_log(self, error: Exception) -> str:
+        if isinstance(error, ClientResponseError):
+            message = str(error.message or "").strip()
+            return f"HTTP {error.status}" + (f" {message}" if message else "")
+        return str(error)
+
+    def _download_error_status(self, error: Exception) -> Optional[int]:
+        if isinstance(error, ClientResponseError):
+            return error.status
+        return None
+
     async def _write_download_response(self, response, part_path: Path, mode: str) -> int:
         written = 0
         with part_path.open(mode) as fh:
@@ -1525,7 +1551,8 @@ class MaxAdapter:
                                  filename_hint: Optional[str] = None,
                                  default_extension: str = "",
                                  expected_kind: Optional[str] = None,
-                                 flow_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+                                 flow_id: Optional[str] = None,
+                                 download_source: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
         """Скачать файл по URL, вернуть (local_path, filename)."""
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
         filename = self._build_filename(prefix, filename_hint, url, None, default_extension)
@@ -1536,13 +1563,14 @@ class MaxAdapter:
 
         for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
             resume_from = part_path.stat().st_size if part_path.exists() else 0
-            headers = self._download_headers_for_url(url)
+            headers, src_ag, ua_family = self._download_client_profile_for_url(url)
             if resume_from:
                 headers = {**headers, "Range": f"bytes={resume_from}-"}
 
             try:
                 async with ClientSession(headers=headers) as session:
                     async with session.get(url) as response:
+                        http_status = getattr(response, "status", None)
                         if resume_from and getattr(response, "status", None) == 200:
                             part_path.unlink(missing_ok=True)
                             resume_from = 0
@@ -1555,6 +1583,10 @@ class MaxAdapter:
                                 stage="download",
                                 outcome="unsupported",
                                 source=sanitize_url(url),
+                                download_source=download_source,
+                                src_ag=src_ag,
+                                ua_family=ua_family,
+                                http_status=http_status,
                                 attempt=attempt,
                             )
 
@@ -1583,6 +1615,10 @@ class MaxAdapter:
                         detected_kind=detected_kind,
                         content_type=content_type,
                         source=sanitize_url(url),
+                        download_source=download_source,
+                        src_ag=src_ag,
+                        ua_family=ua_family,
+                        http_status=http_status,
                         attempts=attempt,
                     )
                     return None, None
@@ -1600,6 +1636,10 @@ class MaxAdapter:
                     detected_kind=detected_kind,
                     content_type=content_type,
                     source=sanitize_url(url),
+                    download_source=download_source,
+                    src_ag=src_ag,
+                    ua_family=ua_family,
+                    http_status=http_status,
                     filename=sanitize_path(filename),
                     size_bytes=local_path.stat().st_size,
                     attempts=attempt,
@@ -1622,7 +1662,11 @@ class MaxAdapter:
                         reason="download_failed",
                         expected_kind=expected_kind,
                         source=sanitize_url(url),
-                        error=str(e),
+                        download_source=download_source,
+                        src_ag=src_ag,
+                        ua_family=ua_family,
+                        http_status=self._download_error_status(e),
+                        error=self._download_error_for_log(e),
                         attempt=attempt,
                         max_attempts=MAX_DOWNLOAD_ATTEMPTS,
                         resume_from_bytes=part_path.stat().st_size if part_path.exists() else 0,
@@ -1642,7 +1686,11 @@ class MaxAdapter:
                     reason="download_failed",
                     expected_kind=expected_kind,
                     source=sanitize_url(url),
-                    error=str(e),
+                    download_source=download_source,
+                    src_ag=src_ag,
+                    ua_family=ua_family,
+                    http_status=self._download_error_status(e),
+                    error=self._download_error_for_log(e),
                     attempts=attempt,
                     max_attempts=MAX_DOWNLOAD_ATTEMPTS,
                     retryable=retryable,
@@ -1678,6 +1726,7 @@ class MaxAdapter:
                 default_extension,
                 expected_kind=expected_kind,
                 flow_id=flow_id,
+                download_source="file_download",
             )
         except Exception as e:
             log_event(
@@ -1734,6 +1783,7 @@ class MaxAdapter:
                 ".mp4",
                 expected_kind="video",
                 flow_id=flow_id,
+                download_source="video_play",
             )
         except Exception as e:
             log_event(
@@ -1765,7 +1815,7 @@ class MaxAdapter:
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"photo_{chat_id}_{msg_id}{idx}", filename_hint, ".jpg",
-                    expected_kind="photo", flow_id=flow_id,
+                    expected_kind="photo", flow_id=flow_id, download_source="direct_url",
                 )
             else:
                 file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
@@ -1795,7 +1845,7 @@ class MaxAdapter:
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"video_{chat_id}_{msg_id}{idx}", filename_hint, ".mp4",
-                    expected_kind="video", flow_id=flow_id,
+                    expected_kind="video", flow_id=flow_id, download_source="direct_url",
                 )
                 if not local_path and video_id:
                     log_event(
@@ -1836,7 +1886,7 @@ class MaxAdapter:
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg",
-                    expected_kind="audio", flow_id=flow_id,
+                    expected_kind="audio", flow_id=flow_id, download_source="direct_url",
                 )
             else:
                 file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)

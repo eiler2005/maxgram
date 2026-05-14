@@ -193,7 +193,7 @@ Fallback rename:
 ### Медиа
 
 - **Фото:** скачивается во временный файл, отправляется через `send_photo`, удаляется
-- **Видео:** bridge запрашивает `VIDEO_PLAY`, предпочитает реальные `MP4_*` URL вместо `EXTERNAL` HTML-плеера, подбирает `User-Agent` по `srcAg`, затем отправляет через `send_video`
+- **Видео:** bridge запрашивает `VIDEO_PLAY`, предпочитает реальные `MP4_*` URL вместо `EXTERNAL` HTML-плеера, подбирает `User-Agent` по `srcAg` (`CHROME`, `CHROME_ANDROID`, `CHROME_IPHONE`, Safari/iPhone fallback), затем отправляет через `send_video`
 - **Аудио:** `AUDIO` отправляется через `send_audio`, `VOICE` — через `send_voice` (native voice bubble)
 - **Документы:** скачиваются через `get_file_by_id(...)`, отправляются через `send_document`
 - **Post-validation:** после скачивания проверяются `Content-Type` и magic bytes; HTML/text fallback отклоняется для ожидаемого медиа
