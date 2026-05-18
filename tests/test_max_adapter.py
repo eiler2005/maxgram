@@ -276,6 +276,125 @@ async def test_handle_raw_receive_unwraps_channel_wrapper_and_skips_pymax_duplic
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_receive_forwards_regular_audio_before_pymax_can_drop_it(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(chats=[SimpleNamespace(id=28093080, title=None)])
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    raw_event = {
+        "opcode": 128,
+        "payload": {
+            "chatId": 28093080,
+            "message": {
+                "id": 103,
+                "time": 1,
+                "sender": 7001,
+                "text": "",
+                "type": "USER",
+                "attaches": [
+                    {
+                        "_type": "AUDIO",
+                        "audioId": 42,
+                        "url": "https://audio.example.test/voice.ogg",
+                        "duration": 13,
+                        "wave": "abc",
+                        "transcriptionStatus": "NONE",
+                        "token": "secret-token",
+                    }
+                ],
+            },
+        },
+    }
+
+    await adapter._handle_raw_receive(raw_event)
+    await adapter._handle_raw_message(
+        SimpleNamespace(
+            id=103,
+            chat_id=28093080,
+            sender=7001,
+            text="",
+            type="USER",
+            status=None,
+            attaches=[],
+            link=None,
+        )
+    )
+
+    assert len(received) == 1
+    assert received[0].msg_id == "103"
+    assert received[0].chat_id == "28093080"
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 13, None, None, "AUDIO")
+    ]
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/voice.ogg",
+            "audio_28093080_103",
+            None,
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_receive_logs_safe_empty_message_diagnostic(tmp_path, caplog):
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    raw_event = {
+        "opcode": 128,
+        "payload": {
+            "chatId": 28093080,
+            "message": {
+                "id": 104,
+                "sender": 7001,
+                "text": "",
+                "type": "USER",
+                "attaches": [],
+                "token": "secret-token",
+            },
+        },
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_receive(raw_event)
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "event_fields", {}).get("event") == "max.raw.empty_message"
+    )
+    fields = record.event_fields
+    assert fields["max_chat_id"] == "28093080"
+    assert fields["max_msg_id"] == "104"
+    assert fields["message_type"] == "USER"
+    assert "message" in fields["payload_fields"]
+    assert "token" not in fields["message_fields"]
+    assert "text" not in fields["message_fields"]
+    assert "secret-token" not in str(fields)
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_message_renders_unknown_message_details(tmp_path):
     adapter = MaxAdapter(
         phone="+7",

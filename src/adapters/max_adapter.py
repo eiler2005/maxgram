@@ -567,14 +567,39 @@ class MaxAdapter:
             normalized["type"] = normalized["_type"]
         if "chat_id" in normalized and "chatId" not in normalized:
             normalized["chatId"] = normalized["chat_id"]
+        if "chatId" in normalized and "chat_id" not in normalized:
+            normalized["chat_id"] = normalized["chatId"]
+        if "messageId" in normalized and "id" not in normalized:
+            normalized["id"] = normalized["messageId"]
+        if "attachments" in normalized and "attaches" not in normalized:
+            normalized["attaches"] = normalized["attachments"]
         for source, target in {
             "baseUrl": "base_url",
             "fileId": "file_id",
             "videoId": "video_id",
+            "audioId": "audio_id",
         }.items():
             if source in normalized and target not in normalized:
                 normalized[target] = normalized[source]
         return normalized
+
+    def _message_dict_has_content(self, message: dict) -> bool:
+        text = self._payload_value(message, "text")
+        attaches = self._payload_value(message, "attaches", "attachments") or []
+        return bool((text or "").strip() or attaches)
+
+    def _raw_attachment_types_from_message_dict(self, message: dict) -> list[str]:
+        attaches = self._payload_value(message, "attaches", "attachments") or []
+        if not isinstance(attaches, list):
+            attaches = [attaches]
+        types: list[str] = []
+        for attach in attaches:
+            if not isinstance(attach, dict):
+                continue
+            raw_type = self._payload_value(attach, "type", "_type")
+            if raw_type:
+                types.append(str(raw_type).upper())
+        return types
 
     def _find_nested_message_dict(self, wrapper: dict) -> tuple[Optional[dict], Optional[str]]:
         for key in (
@@ -701,6 +726,69 @@ class MaxAdapter:
             _from_raw_unwrapped=True,
         )
 
+    def _build_raw_regular_message(self, payload: dict):
+        if not isinstance(payload, dict):
+            return None
+
+        outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
+        message = self._payload_value(payload, "message")
+        if not isinstance(message, dict):
+            return None
+
+        message = self._normalize_message_dict(message)
+        message_type = str(self._payload_value(message, "type") or "").upper()
+        if message_type in {"CHANNEL", "FORWARD", "FORWARDED"}:
+            return None
+        if not self._message_dict_has_content(message):
+            return None
+
+        chat_id = (
+            self._payload_value(message, "chatId", "chat_id")
+            or outer_chat_id
+        )
+        message_obj = self._message_object_from_dict(
+            message,
+            str(chat_id) if chat_id is not None else None,
+        )
+        setattr(message_obj, "_from_raw_unwrapped", True)
+        return message_obj
+
+    def _log_raw_empty_message(self, payload: dict):
+        if not isinstance(payload, dict):
+            return
+
+        outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
+        message = self._payload_value(payload, "message")
+        if not isinstance(message, dict):
+            return
+
+        message = self._normalize_message_dict(message)
+        if self._message_dict_has_content(message):
+            return
+
+        message_type = str(self._payload_value(message, "type") or "").upper()
+        if message_type not in {"", "TEXT", "USER"}:
+            return
+
+        msg_id = self._payload_value(message, "id", "messageId", "message_id")
+        flow_id = build_max_flow_id(str(outer_chat_id or ""), str(msg_id or ""))
+        log_event(
+            logger,
+            logging.INFO,
+            "max.raw.empty_message",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="received",
+            outcome="diagnostic",
+            reason="raw_message_without_content",
+            max_chat_id=str(outer_chat_id) if outer_chat_id is not None else None,
+            max_msg_id=str(msg_id) if msg_id is not None else None,
+            message_type=message_type or None,
+            payload_fields=self._safe_attachment_field_names(SimpleNamespace(**payload)),
+            message_fields=self._safe_attachment_field_names(SimpleNamespace(**message)),
+            raw_attachment_types=self._raw_attachment_types_from_message_dict(message),
+        )
+
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""
         try:
@@ -713,8 +801,20 @@ class MaxAdapter:
         if not isinstance(data, dict) or data.get("opcode") != notif_message_opcode:
             return
 
-        unwrapped = self._build_unwrapped_channel_message(data.get("payload") or {})
+        payload = data.get("payload") or {}
+        unwrapped = self._build_unwrapped_channel_message(payload)
         if unwrapped is None:
+            regular = self._build_raw_regular_message(payload)
+            if regular is None:
+                self._log_raw_empty_message(payload)
+                return
+
+            chat_id = str(getattr(regular, "chat_id", "") or "")
+            msg_id = str(getattr(regular, "id", "") or "")
+            if chat_id and msg_id:
+                self._mark_raw_unwrapped_message(chat_id, msg_id)
+
+            await self._handle_raw_message(regular)
             return
 
         chat_id = str(getattr(unwrapped, "chat_id", "") or "")
