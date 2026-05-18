@@ -27,6 +27,7 @@ local_source_root: "{{ playbook_dir }}/../.."
 # Что синхронизировать на сервер. Минимальный релиз-бандл.
 sync_paths:
   - src/
+  - tests/
   - deploy/
   - scripts/
   - config.yaml
@@ -35,7 +36,7 @@ sync_paths:
   - pytest.ini
 
 # Что никогда не должно попасть на сервер через rsync.
-# (data/, env'ы, config.local.yaml, .git, .venv, docs, tests, локальные logs)
+# (data/, env'ы, config.local.yaml, .git, .venv, docs, локальные logs)
 sync_excludes:
   - .git/
   - .venv/
@@ -52,7 +53,6 @@ sync_excludes:
   - config.local.yaml
   - config.local.*
   - docs/
-  - tests/
   - backups/
   - "*.log"
   - .DS_Store
