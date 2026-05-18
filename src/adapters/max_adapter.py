@@ -629,12 +629,36 @@ class MaxAdapter:
                 types.append(str(raw_type).upper())
         return types
 
-    def _raw_payload_message_identity(self, payload: dict) -> tuple[str, str] | None:
+    def _payload_message_dict(self, payload: dict) -> tuple[Optional[dict], object]:
         if not isinstance(payload, dict):
-            return None
+            return None, None
+
         outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
         message = self._payload_value(payload, "message")
-        if not isinstance(message, dict):
+        if isinstance(message, dict):
+            return self._normalize_message_dict(message), outer_chat_id
+
+        # Some MAX DM voice notifications arrive as a message-shaped payload
+        # directly, not as {"chatId": ..., "message": {...}}. pymax then misses
+        # aliases like "attachments" and emits an empty typed USER event.
+        message_shaped_keys = (
+            "id",
+            "messageId",
+            "message_id",
+            "text",
+            "attaches",
+            "attachments",
+            "type",
+            "_type",
+        )
+        if any(self._payload_value(payload, key) is not None for key in message_shaped_keys):
+            return self._normalize_message_dict(payload), outer_chat_id
+
+        return None, outer_chat_id
+
+    def _raw_payload_message_identity(self, payload: dict) -> tuple[str, str] | None:
+        message, outer_chat_id = self._payload_message_dict(payload)
+        if not message:
             return None
         chat_id = self._payload_value(message, "chatId", "chat_id") or outer_chat_id
         msg_id = self._payload_value(message, "id", "messageId", "message_id")
@@ -768,15 +792,10 @@ class MaxAdapter:
         )
 
     def _build_raw_regular_message(self, payload: dict):
-        if not isinstance(payload, dict):
+        message, outer_chat_id = self._payload_message_dict(payload)
+        if not message:
             return None
 
-        outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
-        message = self._payload_value(payload, "message")
-        if not isinstance(message, dict):
-            return None
-
-        message = self._normalize_message_dict(message)
         message_type = str(self._payload_value(message, "type") or "").upper()
         if message_type in {"CHANNEL", "FORWARD", "FORWARDED"}:
             return None
@@ -795,15 +814,10 @@ class MaxAdapter:
         return message_obj
 
     def _log_raw_empty_message(self, payload: dict):
-        if not isinstance(payload, dict):
+        message, outer_chat_id = self._payload_message_dict(payload)
+        if not message:
             return
 
-        outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
-        message = self._payload_value(payload, "message")
-        if not isinstance(message, dict):
-            return
-
-        message = self._normalize_message_dict(message)
         if self._message_dict_has_content(message):
             return
 

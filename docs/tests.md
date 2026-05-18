@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 ```
 
-Всего: **97 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **99 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -33,7 +33,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (44 теста)
+## test_max_adapter.py — парсинг сырых сообщений MAX (46 тестов)
 
 ### Системные события (CONTROL)
 
@@ -57,8 +57,10 @@ PYTHONPATH=. .venv/bin/pytest -q
 | Тест | Что проверяет |
 |------|--------------|
 | `test_handle_raw_receive_forwards_regular_audio_before_pymax_can_drop_it` | Raw `AUDIO` voice payload из MAX DM нормализуется и скачивается по `url` до того, как pymax может отдать пустой `USER` event. |
+| `test_handle_raw_receive_forwards_top_level_audio_payload` | Raw notification, где `payload` сам является сообщением, а медиа лежит в `attachments`, нормализуется и доставляется как `AUDIO`. |
 | `test_typed_empty_message_recovers_audio_from_recent_history` | Если typed pymax message пустой, adapter пробует добрать ровно этот свежий `msg_id` из recent history и пересылает найденный `AUDIO`. |
 | `test_handle_raw_receive_logs_safe_empty_message_diagnostic` | Raw empty-event diagnostic логирует только тип, id и безопасные имена полей, без URL/token/text. |
+| `test_handle_raw_receive_logs_top_level_empty_message_diagnostic` | Top-level raw empty payload логируется безопасно, без URL/token/text. |
 | `test_download_audio_attachment_uses_direct_url_and_preserves_duration` | `AUDIO` скачивается по прямому `url`; `duration` сохраняется в `MaxAttachment`. |
 | `test_download_audio_attachment_falls_back_to_audio_id` | Если `url` нет, `audio_id` используется через существующий download-by-id путь. |
 | `test_download_audio_attachment_logs_safe_diagnostic_without_reference` | Voice-вложение без `url/audio_id/id` даёт безопасный diagnostic без раскрытия token/text. |
