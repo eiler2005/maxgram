@@ -100,6 +100,7 @@ class DummyTelegram:
         self.calls = []
         self.commands = {}
         self.arg_commands = {}
+        self.fail_voice = False
 
     def on_reply(self, handler):
         self.handler = handler
@@ -128,6 +129,8 @@ class DummyTelegram:
 
     async def send_voice(self, topic_id, path, caption="", duration=None, flow_id=None):
         self.calls.append(("voice", caption, duration))
+        if self.fail_voice:
+            return None
         return 6
 
     async def send_text(self, topic_id, text, reply_to_msg_id=None, flow_id=None):
@@ -243,6 +246,146 @@ async def test_forward_to_telegram_sends_voice_note_for_voice_source(tmp_path):
     assert result == 6
     assert tg_adapter.calls == [
         ("voice", "[Тестовый Пользователь]", 3),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_forward_to_telegram_sends_audio_source_as_voice_in_dm(tmp_path):
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                forward_voice=True,
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=DummyRepo(),
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    voice_path = Path(tmp_path) / "voice.ogg"
+    voice_path.write_bytes(b"OggSvoice")
+
+    msg = MaxMessage(
+        msg_id="45",
+        chat_id="28093080",
+        chat_title="Вик Мултык",
+        sender_id="10",
+        sender_name="Вик Мултык",
+        text="",
+        attachments=[MaxAttachment("audio", str(voice_path), "voice.ogg", 13, None, None, "AUDIO")],
+        attachment_types=["AUDIO"],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=True,
+        is_own=False,
+        raw=None,
+    )
+
+    result = await bridge._forward_to_telegram(msg, topic_id=99)
+
+    assert result == 6
+    assert tg_adapter.calls == [
+        ("voice", "", 13),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_forward_to_telegram_falls_back_to_audio_when_voice_send_fails(tmp_path):
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    tg_adapter.fail_voice = True
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                forward_voice=True,
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=DummyRepo(),
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    voice_path = Path(tmp_path) / "voice.ogg"
+    voice_path.write_bytes(b"OggSvoice")
+
+    msg = MaxMessage(
+        msg_id="46",
+        chat_id="-70000000000003",
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text="",
+        attachments=[MaxAttachment("audio", str(voice_path), "voice.ogg", 5, None, None, "AUDIO")],
+        attachment_types=["AUDIO"],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    result = await bridge._forward_to_telegram(msg, topic_id=99)
+
+    assert result == 4
+    assert tg_adapter.calls == [
+        ("voice", "[Тестовый Пользователь]", 5),
+        ("audio", "[Тестовый Пользователь]", "voice.ogg", 5),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_forward_to_telegram_respects_disabled_voice_forwarding(tmp_path):
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                forward_voice=False,
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=DummyRepo(),
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    voice_path = Path(tmp_path) / "voice.ogg"
+    voice_path.write_bytes(b"OggSvoice")
+
+    msg = MaxMessage(
+        msg_id="47",
+        chat_id="28093080",
+        chat_title="Вик Мултык",
+        sender_id="10",
+        sender_name="Вик Мултык",
+        text="",
+        attachments=[MaxAttachment("audio", str(voice_path), "voice.ogg", 13, None, None, "AUDIO")],
+        attachment_types=["AUDIO"],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=True,
+        is_own=False,
+        raw=None,
+    )
+
+    result = await bridge._forward_to_telegram(msg, topic_id=99)
+
+    assert result == 5
+    assert tg_adapter.calls == [
+        ("text", "[unsupported: AUDIO]"),
     ]
 
 

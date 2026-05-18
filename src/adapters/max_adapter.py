@@ -1304,6 +1304,22 @@ class MaxAdapter:
         name = getattr(attach, "filename", None) or getattr(attach, "name", None)
         return self._fix_filename_encoding(name) if name else None
 
+    def _safe_attachment_field_names(self, attach) -> list[str]:
+        blocked = ("url", "token", "text", "raw")
+        try:
+            names = vars(attach).keys()
+        except TypeError:
+            names = (
+                name
+                for name in dir(attach)
+                if not name.startswith("_") and not callable(getattr(attach, name, None))
+            )
+        return sorted(
+            name
+            for name in names
+            if not any(marker in name.lower() for marker in blocked)
+        )
+
     @staticmethod
     def _fix_filename_encoding(name: str) -> str:
         """Fix cp1251-as-latin-1 mojibake in filenames from MAX.
@@ -1883,19 +1899,56 @@ class MaxAdapter:
 
         if "AUDIO" in atype or "VOICE" in atype:
             url = getattr(attach, "url", None)
+            audio_id = getattr(attach, "audio_id", None) or getattr(attach, "audioId", None)
+            file_id = (
+                getattr(attach, "file_id", None)
+                or getattr(attach, "id", None)
+                or audio_id
+            )
+            local_path = None
+            filename = None
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg",
                     expected_kind="audio", flow_id=flow_id, download_source="direct_url",
                 )
-            else:
-                file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
-                if not file_id:
-                    return None
+                if not local_path and file_id:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.attachment.audio_fallback",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="download",
+                        outcome="retry",
+                        reason="direct_url_failed",
+                        max_chat_id=chat_id,
+                        max_msg_id=msg_id,
+                        attachment_index=index,
+                    )
+            if not local_path and file_id:
                 local_path, filename = await self._download_file_by_id(
                     chat_id, msg_id, file_id, f"audio_{chat_id}_{msg_id}{idx}",
                     filename_hint, ".ogg", expected_kind="audio", flow_id=flow_id,
                 )
+            if not local_path and not file_id:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "max.attachment.voice_reference_missing",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="failed",
+                    reason="voice_reference_missing",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    source_type=raw_type,
+                    attachment_class=attach.__class__.__name__,
+                    attachment_fields=self._safe_attachment_field_names(attach),
+                    attachment_index=index,
+                )
+                return None
             if local_path:
                 return MaxAttachment(
                     kind="audio",

@@ -36,7 +36,7 @@ bridge:
 content:
   forward_photos: true
   forward_documents: true
-  forward_voice: false
+  forward_voice: true
   forward_stickers: false
   placeholder_unsupported: "[Неподдерживаемый тип: {type}]"
   placeholder_file_too_large: "[Файл слишком большой: {filename}]"

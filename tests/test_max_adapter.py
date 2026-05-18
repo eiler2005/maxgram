@@ -79,6 +79,46 @@ class CapturingDownloadAdapter(DummyDownloadAdapter):
         )
 
 
+class CapturingAttachmentDownloadAdapter(MaxAdapter):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.url_downloads = []
+        self.file_downloads = []
+        self.url_result = (None, None)
+        self.file_result = (None, None)
+
+    async def _download_from_url(
+        self,
+        url: str,
+        prefix: str,
+        filename_hint=None,
+        default_extension: str = "",
+        expected_kind=None,
+        flow_id=None,
+        download_source=None,
+    ):
+        self.url_downloads.append(
+            (url, prefix, filename_hint, default_extension, expected_kind, download_source)
+        )
+        return self.url_result
+
+    async def _download_file_by_id(
+        self,
+        chat_id: str,
+        msg_id: str,
+        file_id: int,
+        prefix: str,
+        filename_hint=None,
+        default_extension: str = "",
+        expected_kind=None,
+        flow_id=None,
+    ):
+        self.file_downloads.append(
+            (chat_id, msg_id, file_id, prefix, filename_hint, default_extension, expected_kind)
+        )
+        return self.file_result
+
+
 @pytest.mark.asyncio
 async def test_handle_raw_message_renders_control_leave(tmp_path):
     adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
@@ -453,6 +493,107 @@ async def test_handle_raw_message_normalizes_alias_attachment_types(tmp_path, ra
     assert len(received) == 1
     assert received[0].attachment_types == [expected]
     assert len(received[0].attachments) == 1
+
+
+@pytest.mark.asyncio
+async def test_download_audio_attachment_uses_direct_url_and_preserves_duration(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    attachment = await adapter._download_attachment(
+        "28093080",
+        "116562825769007612",
+        SimpleNamespace(
+            type="AUDIO",
+            audio_id=42,
+            url="https://audio.example.test/voice.ogg",
+            duration=13,
+            wave="abc",
+        ),
+    )
+
+    assert attachment == MaxAttachment("audio", local_path, "voice.ogg", 13, None, None, "AUDIO")
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/voice.ogg",
+            "audio_28093080_116562825769007612",
+            None,
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+    assert adapter.file_downloads == []
+
+
+@pytest.mark.asyncio
+async def test_download_audio_attachment_falls_back_to_audio_id(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.file_result = (local_path, "voice.ogg")
+
+    attachment = await adapter._download_attachment(
+        "28093080",
+        "116562825769007612",
+        SimpleNamespace(type="AUDIO", audio_id=42, duration=13, wave="abc"),
+    )
+
+    assert attachment == MaxAttachment("audio", local_path, "voice.ogg", 13, None, None, "AUDIO")
+    assert adapter.url_downloads == []
+    assert adapter.file_downloads == [
+        (
+            "28093080",
+            "116562825769007612",
+            42,
+            "audio_28093080_116562825769007612",
+            None,
+            ".ogg",
+            "audio",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_download_audio_attachment_logs_safe_diagnostic_without_reference(tmp_path, caplog):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    caplog.set_level(logging.WARNING)
+
+    attachment = await adapter._download_attachment(
+        "28093080",
+        "116562825769007612",
+        SimpleNamespace(type="AUDIO", duration=13, token="secret-token", url=None, text="secret"),
+    )
+
+    assert attachment is None
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "event_fields", {}).get("event") == "max.attachment.voice_reference_missing"
+    )
+    fields = record.event_fields
+    assert fields["attachment_class"] == "SimpleNamespace"
+    assert "duration" in fields["attachment_fields"]
+    assert "token" not in fields["attachment_fields"]
+    assert "url" not in fields["attachment_fields"]
+    assert "text" not in fields["attachment_fields"]
+    assert "secret-token" not in str(fields)
+    assert "secret" not in str(fields)
 
 
 @pytest.mark.asyncio

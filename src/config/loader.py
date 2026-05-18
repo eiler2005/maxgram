@@ -56,7 +56,7 @@ class HealthConfig:
 class ContentConfig:
     forward_photos: bool = True
     forward_documents: bool = True
-    forward_voice: bool = False
+    forward_voice: bool = True
     forward_stickers: bool = False
     placeholder_unsupported: str = "[Неподдерживаемый тип: {type}]"
     placeholder_file_too_large: str = "[Файл слишком большой: {filename}]"
@@ -197,7 +197,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     ct = ContentConfig(
         forward_photos=ct_raw.get("forward_photos", True),
         forward_documents=ct_raw.get("forward_documents", True),
-        forward_voice=ct_raw.get("forward_voice", False),
+        forward_voice=ct_raw.get("forward_voice", True),
         forward_stickers=ct_raw.get("forward_stickers", False),
         placeholder_unsupported=ct_raw.get("placeholder_unsupported", "[Неподдерживаемый тип: {type}]"),
         placeholder_file_too_large=ct_raw.get("placeholder_file_too_large", "[Файл слишком большой: {filename}]"),

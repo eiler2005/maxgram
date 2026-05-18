@@ -362,7 +362,7 @@ bridge:
 content:
   forward_photos: true
   forward_documents: true
-  forward_voice: false
+  forward_voice: true
   placeholder_unsupported: "[Неподдерживаемый тип: {type}]"
 
 chats: []

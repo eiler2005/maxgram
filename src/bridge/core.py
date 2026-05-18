@@ -490,11 +490,56 @@ class BridgeCore:
 
         if attachment.kind == "audio":
             source_type = str(attachment.source_type or "").upper()
-            if "VOICE" in source_type:
-                return await self._tg.send_voice(
+            if "VOICE" in source_type or "AUDIO" in source_type:
+                if not getattr(self._cfg.content, "forward_voice", True):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "bridge.inbound.media_skipped",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="forward",
+                        outcome="skipped",
+                        reason="forward_voice_disabled",
+                        media_type="voice",
+                        source_type=source_type,
+                    )
+                    placeholder = self._cfg.content.placeholder_unsupported.format(
+                        type=attachment.source_type or "voice"
+                    )
+                    return await self._tg.send_text(
+                        topic_id,
+                        self._compose_message_text(caption, placeholder),
+                        flow_id=flow_id,
+                    )
+
+                sent_id = await self._tg.send_voice(
                     topic_id,
                     attachment.local_path,
                     caption,
+                    duration=attachment.duration,
+                    flow_id=flow_id,
+                )
+                if sent_id:
+                    return sent_id
+
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "bridge.inbound.voice_fallback",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="forward",
+                    outcome="retry",
+                    reason="send_voice_failed",
+                    media_type="voice",
+                    source_type=source_type,
+                )
+                return await self._tg.send_audio(
+                    topic_id,
+                    attachment.local_path,
+                    caption,
+                    attachment.filename or "",
                     duration=attachment.duration,
                     flow_id=flow_id,
                 )

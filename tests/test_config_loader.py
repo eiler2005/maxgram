@@ -59,6 +59,7 @@ chats:
     assert cfg.health.reminder_interval_hours == 4
     assert cfg.health.heartbeat_interval_seconds == 30
     assert cfg.health.worker_restart_backoff_seconds == 5
+    assert cfg.content.forward_voice is True
     assert cfg.bridge.default_mode == "readonly"
     assert len(cfg.chats) == 1
     assert cfg.chats[0].max_chat_id == "-70000000000001"
