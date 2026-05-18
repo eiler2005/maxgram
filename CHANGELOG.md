@@ -6,9 +6,16 @@ All notable changes to Maxgram are documented here.
 
 ## Unreleased
 
+### Fixed
+- **MAX→TG voice delivery for pymax-empty DM events** — raw MAX notifications are now intercepted on the pymax message-notification path as well as `on_raw_receive`, so `AUDIO` voice payloads can be forwarded before upstream parsing drops them.
+- **Live empty-event recovery** — when pymax still emits a fresh empty `USER` event, the bridge tries a narrow recent-history lookup for that exact `msg_id` and forwards the recovered voice attachment if present. Diagnostic logs include only safe class/field names.
+
 ### Changed
 - **MAX video CDN User-Agent matching** — signed MAX/OK CDN downloads now distinguish `CHROME_IPHONE` from desktop Chrome and use an iOS Chrome `User-Agent`, preventing `400 Bad Request` failures when MAX issues iPhone Chrome video URLs.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
+
+### Tests
+- Added coverage for the raw message interceptor, duplicate suppression, and recent-history recovery of typed-empty MAX voice events.
 
 ---
 

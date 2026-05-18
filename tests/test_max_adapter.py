@@ -353,6 +353,180 @@ async def test_handle_raw_receive_forwards_regular_audio_before_pymax_can_drop_i
 
 
 @pytest.mark.asyncio
+async def test_raw_message_interceptor_catches_audio_and_suppresses_duplicate(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    class NotificationClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Вита")})
+            self._on_raw_receive_handlers = []
+            self.original_calls = 0
+
+        async def _handle_message_notifications(self, data):
+            self.original_calls += 1
+            await adapter._handle_raw_message(
+                SimpleNamespace(
+                    id=105,
+                    chat_id=28093080,
+                    sender=7001,
+                    text="",
+                    type="USER",
+                    status=None,
+                    attaches=[],
+                    link=None,
+                )
+            )
+
+    client = NotificationClient()
+    adapter._client = client
+    adapter._install_raw_message_interceptor(client)
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    raw_event = {
+        "opcode": 128,
+        "payload": {
+            "chatId": 28093080,
+            "message": {
+                "id": 105,
+                "time": 1,
+                "sender": 7001,
+                "text": "",
+                "type": "USER",
+                "attaches": [
+                    {
+                        "_type": "AUDIO",
+                        "audioId": 42,
+                        "url": "https://audio.example.test/voice.ogg",
+                        "duration": 9,
+                        "wave": "abc",
+                        "transcriptionStatus": "NONE",
+                        "token": "secret-token",
+                    }
+                ],
+            },
+        },
+    }
+
+    await adapter._handle_raw_receive(raw_event)
+    await client._handle_message_notifications(raw_event)
+
+    assert client.original_calls == 1
+    assert len(received) == 1
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 9, None, None, "AUDIO")
+    ]
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/voice.ogg",
+            "audio_28093080_105",
+            None,
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_typed_empty_message_recovers_audio_from_recent_history(tmp_path, caplog):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    recovered_message = SimpleNamespace(
+        id=106,
+        chat_id=28093080,
+        sender=7001,
+        text="",
+        type="USER",
+        status=None,
+        attaches=[
+            SimpleNamespace(
+                type="AUDIO",
+                audio_id=84,
+                url="https://audio.example.test/recovered.ogg",
+                duration=12,
+                wave="abc",
+                token="secret-token",
+            )
+        ],
+        link=None,
+    )
+
+    class HistoryClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Вита")})
+            self.history_calls = []
+
+        async def fetch_history(self, chat_id, from_time=None, forward=0, backward=200):
+            self.history_calls.append((chat_id, from_time, forward, backward))
+            return [recovered_message]
+
+    client = HistoryClient()
+    adapter._client = client
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_message(
+            SimpleNamespace(
+                id=106,
+                chat_id=28093080,
+                sender=7001,
+                text="",
+                type="USER",
+                status=None,
+                attaches=[],
+                link=None,
+            )
+        )
+
+    assert len(received) == 1
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 12, None, None, "AUDIO")
+    ]
+    assert client.history_calls
+    assert client.history_calls[0][0] == 28093080
+    assert client.history_calls[0][2:] == (0, 10)
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    assert any(
+        event.get("event") == "max.inbound.empty_recovery"
+        and event.get("outcome") == "recovered"
+        and event.get("attachment_types") == ["AUDIO"]
+        for event in events
+    )
+    assert not any(
+        event.get("event") == "max.inbound.skipped"
+        and event.get("max_msg_id") == "106"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_receive_logs_safe_empty_message_diagnostic(tmp_path, caplog):
     adapter = MaxAdapter(
         phone="+7",
@@ -766,6 +940,11 @@ async def test_handle_raw_message_logs_received_and_skip_reason(tmp_path, caplog
 
     events = [getattr(record, "event_fields", {}) for record in caplog.records]
     assert any(event.get("event") == "max.inbound.received" for event in events)
+    empty_event = next(
+        event for event in events if event.get("event") == "max.inbound.empty_message"
+    )
+    assert empty_event["message_class"] == "SimpleNamespace"
+    assert "text" not in empty_event["message_fields"]
     assert any(
         event.get("event") == "max.inbound.skipped" and event.get("reason") == "empty_event"
         for event in events

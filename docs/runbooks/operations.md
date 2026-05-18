@@ -286,7 +286,10 @@ rg 'event=tg\.outbound\.(retry|failed|sent)' data/bridge.log
 rg 'event=max\.outbound\.(retry|failed|sent)' data/bridge.log
 
 # retry/resume/fail скачивания MAX-вложений
-rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback)' data/bridge.log
+rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback|audio_fallback|voice_reference_missing)' data/bridge.log
+
+# voice diagnostics/recovery for pymax-empty events
+rg 'event=max\.(raw|inbound)\.(empty_message|empty_recovery|handler_registered|interceptor_installed)' data/bridge.log
 
 # последние неуспешные TG -> MAX доставки из SQLite
 sqlite3 -header -column data/bridge.db \
@@ -340,7 +343,7 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 
 ```bash
 rg 'flow_id=mx:<chat_id>:<msg_id>' data/bridge.log
-rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback)' data/bridge.log
+rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback|audio_fallback|voice_reference_missing)' data/bridge.log
 rg 'event=bridge\.inbound\.forward_finished .*outcome=partial' data/bridge.log
 ```
 
@@ -378,6 +381,13 @@ sqlite3 -header -column data/bridge.db \
 2. Убедись, что в Telegram оно пришло именно видео-сообщением.
 3. В логах проверь `max.attachment.download outcome=downloaded`, затем `tg.outbound.sent media_type=video`.
 4. Если вместо видео пришёл текст `⚠️ Не удалось скачать вложение MAX...`, смотри `max.attachment.download_retry` и `delivery_log.status='partial'`.
+
+### Проверка 1c: MAX voice -> Telegram
+
+1. Отправь короткое голосовое в тестовый MAX DM.
+2. Убедись, что в Telegram topic пришёл native voice bubble.
+3. В логах проверь `attachment_types=["AUDIO"]` или `["VOICE"]`, затем `tg.outbound.sent media_type=voice`.
+4. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения.
 
 ### Проверка 2: Telegram -> MAX
 

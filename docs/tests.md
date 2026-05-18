@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 ```
 
-Всего: **80 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **97 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -33,7 +33,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (28 тестов)
+## test_max_adapter.py — парсинг сырых сообщений MAX (44 теста)
 
 ### Системные события (CONTROL)
 
@@ -49,7 +49,19 @@ PYTHONPATH=. .venv/bin/pytest -q
 |------|--------------|
 | `test_handle_raw_message_unwraps_forward_link_content` | `CHANNEL`/forward с `link.message` разворачивается до исходного текста и вложений; media download использует исходные `chat_id/message_id`. |
 | `test_handle_raw_receive_unwraps_channel_wrapper_and_skips_pymax_duplicate` | Raw `CHANNEL`-обёртка перехватывается до pymax-parser, реальный nested message отправляется дальше, последующий wrapper-дубликат подавляется. |
+| `test_raw_message_interceptor_catches_audio_and_suppresses_duplicate` | Внутренний pymax notification handler дополнительно прогоняет raw payload через bridge до typed parsing; последующий пустой typed-дубликат подавляется. |
 | `test_handle_raw_message_renders_unknown_message_details` | Для неизвестного `CHANNEL` без доступного nested content формируется подробный `[Неизвестное сообщение MAX]` с `type`, `link_*` и списком полей. |
+
+### Голосовые MAX-вложения
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_handle_raw_receive_forwards_regular_audio_before_pymax_can_drop_it` | Raw `AUDIO` voice payload из MAX DM нормализуется и скачивается по `url` до того, как pymax может отдать пустой `USER` event. |
+| `test_typed_empty_message_recovers_audio_from_recent_history` | Если typed pymax message пустой, adapter пробует добрать ровно этот свежий `msg_id` из recent history и пересылает найденный `AUDIO`. |
+| `test_handle_raw_receive_logs_safe_empty_message_diagnostic` | Raw empty-event diagnostic логирует только тип, id и безопасные имена полей, без URL/token/text. |
+| `test_download_audio_attachment_uses_direct_url_and_preserves_duration` | `AUDIO` скачивается по прямому `url`; `duration` сохраняется в `MaxAttachment`. |
+| `test_download_audio_attachment_falls_back_to_audio_id` | Если `url` нет, `audio_id` используется через существующий download-by-id путь. |
+| `test_download_audio_attachment_logs_safe_diagnostic_without_reference` | Voice-вложение без `url/audio_id/id` даёт безопасный diagnostic без раскрытия token/text. |
 
 ### Медиавложения без файла
 
@@ -97,7 +109,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (19 тестов)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (27 тестов)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -151,13 +163,14 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_main.py — точка входа (5 тестов)
+## test_main.py — точка входа (6 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_mask_ip_hides_third_octet` | `_mask_ip("203.0.113.217")` → `"203.0.*.217"` (третий октет заменяется `*`). |
 | `test_infer_location_from_hetzner_hostname` | `_infer_location("ubuntu-4gb-hel1-6")` → `"Helsinki"` (из маппинга токенов имён датацентров). |
 | `test_extract_pytest_summary_uses_terminal_summary` | Из stdout `pytest` извлекается итоговая строка вида `"17 passed in 1.49s"` для последующего включения в startup-уведомление. |
+| `test_setup_logging_writes_to_data_bridge_log` | `setup_logging()` создаёт `${DATA_DIR}/bridge.log` и пишет туда структурированные runtime-логи. |
 | `test_build_startup_notification_includes_runtime_details` | Стартовое уведомление содержит `"Maxgram запущен и подключён к MAX"`, `runtime: Docker`, hostname, `location: Helsinki`, masked IP. Использует `monkeypatch` для `socket.gethostname`, `Path.exists`, `_detect_primary_ipv4`. |
 | `test_build_startup_notification_includes_startup_test_status` | В startup-уведомление добавляется строка вида `"Тесты запуска: ✅ 17 passed in 1.49s"`, если production self-check завершился успешно. |
 
@@ -172,6 +185,17 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_tg_retry_logs_retry_and_success` | `_tg_retry` делает повторную попытку при `TelegramRetryAfter` и логирует событие retry; после успеха возвращает корректный результат. |
 | `test_send_system_notification_fans_out_to_dm_and_ops_topic` | Системное уведомление уходит и в owner DM, и в ops topic, если `ops_topic_id` задан. |
 | `test_send_system_notification_queues_failed_target_and_flushes_outbox` | Неотправленный ops-alert попадает в `alert_outbox.jsonl`, а после восстановления Telegram досылается из outbox. |
+
+---
+
+## test_logging_utils.py — structured logging privacy (4 теста)
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_sanitize_preview_masks_digits_and_newlines` | Preview sanitization маскирует длинные цифровые последовательности и убирает переносы строк. |
+| `test_sanitize_url_strips_query_parameters` | URL sanitizer оставляет origin/path, но удаляет query-параметры с token/signature. |
+| `test_event_formatter_mixed_renders_key_val_fields` | Mixed formatter пишет event и key-value поля в читаемом формате. |
+| `test_event_formatter_json_renders_valid_json_line` | JSON formatter выдаёт валидную JSON-строку со структурированными полями события. |
 
 ---
 

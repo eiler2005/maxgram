@@ -163,6 +163,7 @@ class MaxAdapter:
         self._last_issue: Optional[MaxIssue] = None
         self._last_issue_notification_signature: Optional[str] = None
         self._last_connected_at: Optional[int] = None
+        self._raw_processed_message_ids: dict[tuple[str, str], float] = {}
 
     def on_message(self, handler: MessageHandler):
         self._handlers.append(handler)
@@ -536,6 +537,11 @@ class MaxAdapter:
             for key, expires_at in self._raw_unwrapped_message_ids.items()
             if expires_at > now
         }
+        self._raw_processed_message_ids = {
+            key: expires_at
+            for key, expires_at in self._raw_processed_message_ids.items()
+            if expires_at > now
+        }
 
     def _mark_raw_unwrapped_message(self, chat_id: str, msg_id: str):
         self._cleanup_raw_unwrapped_state()
@@ -549,6 +555,16 @@ class MaxAdapter:
             self._raw_unwrapped_message_ids.pop((str(chat_id), str(msg_id)), None)
             is not None
         )
+
+    def _mark_raw_processed_message(self, chat_id: str, msg_id: str):
+        self._cleanup_raw_unwrapped_state()
+        self._raw_processed_message_ids[(str(chat_id), str(msg_id))] = (
+            time.monotonic() + 30
+        )
+
+    def _is_raw_processed_message(self, chat_id: str, msg_id: str) -> bool:
+        self._cleanup_raw_unwrapped_state()
+        return (str(chat_id), str(msg_id)) in self._raw_processed_message_ids
 
     def _payload_value(self, data: dict, *keys: str):
         normalized = {
@@ -588,6 +604,18 @@ class MaxAdapter:
         attaches = self._payload_value(message, "attaches", "attachments") or []
         return bool((text or "").strip() or attaches)
 
+    def _message_object_has_content(self, message) -> bool:
+        text = getattr(message, "text", None)
+        if isinstance(text, str) and text.strip():
+            return True
+        if text and not isinstance(text, str):
+            return True
+
+        attaches = getattr(message, "attaches", None) or []
+        if isinstance(attaches, list):
+            return any(attach is not None for attach in attaches)
+        return attaches is not None
+
     def _raw_attachment_types_from_message_dict(self, message: dict) -> list[str]:
         attaches = self._payload_value(message, "attaches", "attachments") or []
         if not isinstance(attaches, list):
@@ -600,6 +628,19 @@ class MaxAdapter:
             if raw_type:
                 types.append(str(raw_type).upper())
         return types
+
+    def _raw_payload_message_identity(self, payload: dict) -> tuple[str, str] | None:
+        if not isinstance(payload, dict):
+            return None
+        outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
+        message = self._payload_value(payload, "message")
+        if not isinstance(message, dict):
+            return None
+        chat_id = self._payload_value(message, "chatId", "chat_id") or outer_chat_id
+        msg_id = self._payload_value(message, "id", "messageId", "message_id")
+        if chat_id is None or msg_id is None:
+            return None
+        return str(chat_id), str(msg_id)
 
     def _find_nested_message_dict(self, wrapper: dict) -> tuple[Optional[dict], Optional[str]]:
         for key in (
@@ -789,6 +830,138 @@ class MaxAdapter:
             raw_attachment_types=self._raw_attachment_types_from_message_dict(message),
         )
 
+    def _log_typed_empty_message(
+        self,
+        *,
+        flow_id: str,
+        message,
+        content_message,
+        chat_id: str,
+        msg_id: str,
+        message_type: Optional[str],
+        reaction_info,
+    ):
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.empty_message",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="normalize",
+            outcome="diagnostic",
+            reason="typed_message_without_content",
+            max_chat_id=chat_id,
+            max_msg_id=msg_id,
+            message_type=message_type,
+            has_reaction_info=bool(reaction_info),
+            message_class=message.__class__.__name__,
+            content_class=content_message.__class__.__name__,
+            message_fields=self._safe_attachment_field_names(message),
+            content_fields=self._safe_attachment_field_names(content_message),
+        )
+
+    async def _recover_empty_message_from_recent_history(
+        self,
+        *,
+        chat_id: str,
+        raw_msg_id: str,
+        flow_id: str,
+    ):
+        if not self._client:
+            return None
+        if getattr(self._client, "fetch_history", None) is None:
+            return None
+        try:
+            chat_id_int = int(chat_id)
+            raw_msg_id_str = str(raw_msg_id)
+        except (TypeError, ValueError):
+            return None
+
+        try:
+            messages = await self._client.fetch_history(
+                chat_id_int,
+                from_time=int(time.time() * 1000) + 60_000,
+                forward=0,
+                backward=10,
+            )
+        except Exception as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.inbound.empty_recovery",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="recover",
+                outcome="failed",
+                reason="recent_history_failed",
+                max_chat_id=chat_id,
+                max_msg_id=raw_msg_id_str,
+                error=str(e),
+            )
+            return None
+
+        for candidate in messages or []:
+            candidate_id = getattr(candidate, "id", None)
+            if str(candidate_id) != raw_msg_id_str:
+                continue
+            if not self._message_object_has_content(candidate):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.inbound.empty_recovery",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="recover",
+                    outcome="skipped",
+                    reason="recent_history_match_without_content",
+                    max_chat_id=chat_id,
+                    max_msg_id=raw_msg_id_str,
+                    message_class=candidate.__class__.__name__,
+                    message_fields=self._safe_attachment_field_names(candidate),
+                )
+                return None
+
+            setattr(candidate, "_from_empty_recovery", True)
+            candidate_chat_id = getattr(candidate, "chat_id", None)
+            if candidate_chat_id is None:
+                setattr(candidate, "chat_id", chat_id_int)
+            attaches = getattr(candidate, "attaches", None) or []
+            attach_list = attaches if isinstance(attaches, list) else [attaches]
+            attachment_types = [
+                self._normalize_attachment_type(self._attachment_type_name(attach))
+                for attach in attach_list
+                if attach is not None and self._attachment_type_name(attach)
+            ]
+            log_event(
+                logger,
+                logging.INFO,
+                "max.inbound.empty_recovery",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="recover",
+                outcome="recovered",
+                reason="recent_history_match",
+                max_chat_id=chat_id,
+                max_msg_id=raw_msg_id_str,
+                attachment_types=attachment_types,
+                has_text=bool((getattr(candidate, "text", None) or "").strip()),
+            )
+            return candidate
+
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.empty_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="recover",
+            outcome="miss",
+            reason="recent_history_message_not_found",
+            max_chat_id=chat_id,
+            max_msg_id=raw_msg_id_str,
+        )
+        return None
+
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""
         try:
@@ -802,6 +975,12 @@ class MaxAdapter:
             return
 
         payload = data.get("payload") or {}
+        identity = self._raw_payload_message_identity(payload)
+        if identity and self._is_raw_processed_message(*identity):
+            return
+        if identity:
+            self._mark_raw_processed_message(*identity)
+
         unwrapped = self._build_unwrapped_channel_message(payload)
         if unwrapped is None:
             regular = self._build_raw_regular_message(payload)
@@ -823,6 +1002,40 @@ class MaxAdapter:
             self._mark_raw_unwrapped_message(chat_id, msg_id)
 
         await self._handle_raw_message(unwrapped)
+
+    def _install_raw_message_interceptor(self, client):
+        if getattr(client, "_maxtg_raw_interceptor_installed", False):
+            return client
+
+        original = getattr(client, "_handle_message_notifications", None)
+        if original is None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.raw.interceptor_missing",
+                stage="startup",
+                outcome="skipped",
+                reason="client_has_no_message_notification_handler",
+            )
+            return client
+
+        async def _handle_message_notifications_with_raw(data: dict):
+            await self._handle_raw_receive(data)
+            return await original(data)
+
+        _handle_message_notifications_with_raw._maxtg_wrapped = True  # type: ignore[attr-defined]
+        client._handle_message_notifications = _handle_message_notifications_with_raw
+        client._maxtg_raw_interceptor_installed = True
+        handler_count = len(getattr(client, "_on_raw_receive_handlers", []) or [])
+        log_event(
+            logger,
+            logging.INFO,
+            "max.raw.interceptor_installed",
+            stage="startup",
+            outcome="installed",
+            raw_handler_count=handler_count,
+        )
+        return client
 
     def _get_extra_value(self, extra: dict, *keys: str):
         normalized = {
@@ -2333,6 +2546,27 @@ class MaxAdapter:
                 reaction_info,
                 attachment_failures,
             ):
+                self._log_typed_empty_message(
+                    flow_id=flow_id,
+                    message=message,
+                    content_message=content_message,
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                    message_type=message_type,
+                    reaction_info=reaction_info,
+                )
+                if (
+                    not reaction_info
+                    and not getattr(message, "_from_empty_recovery", False)
+                ):
+                    recovered = await self._recover_empty_message_from_recent_history(
+                        chat_id=chat_id,
+                        raw_msg_id=raw_msg_id,
+                        flow_id=flow_id,
+                    )
+                    if recovered is not None:
+                        await self._handle_raw_message(recovered)
+                        return
                 log_event(
                     logger,
                     logging.INFO,
@@ -2534,6 +2768,7 @@ class MaxAdapter:
         )
         self._wrap_client_stage(client, "_sync")
         self._wrap_client_stage(client, "_login")
+        client = self._install_raw_message_interceptor(client)
         return self._install_failfast_interactive_ping(client)
 
     async def start(self):
@@ -2611,6 +2846,14 @@ class MaxAdapter:
                 self._client.on_start(_on_start)
                 if hasattr(self._client, "on_raw_receive"):
                     self._client.on_raw_receive(self._handle_raw_receive)
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "max.raw.handler_registered",
+                        stage="startup" if first_connect else "runtime",
+                        outcome="registered",
+                        raw_handler_count=len(getattr(self._client, "_on_raw_receive_handlers", []) or []),
+                    )
                 self._client.on_message()(self._handle_raw_message)
                 self._client.on_message_edit()(self._handle_raw_message)
                 self._client.on_message_delete()(self._handle_raw_message)
