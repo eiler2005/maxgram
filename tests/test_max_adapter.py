@@ -31,6 +31,7 @@ class LookupClient:
     def __init__(self, *, users=None, chats=None):
         self._users = users or {}
         self.chats = chats or []
+        self.contacts = []
         self.me = SimpleNamespace(id=161361072)
 
     def get_cached_user(self, user_id: int):
@@ -990,6 +991,56 @@ async def test_download_audio_attachment_logs_safe_diagnostic_without_reference(
     assert "text" not in fields["attachment_fields"]
     assert "secret-token" not in str(fields)
     assert "secret" not in str(fields)
+
+
+@pytest.mark.asyncio
+async def test_resolve_user_name_uses_contacts_cache_before_live_lookup(tmp_path):
+    class ContactClient(LookupClient):
+        def __init__(self):
+            super().__init__()
+            self.contacts = [SimpleNamespace(id=99577134, names=[SimpleNamespace(first_name="Елена", last_name="", name="Елена")])]
+            self.live_calls = 0
+
+        async def get_users(self, user_ids: list[int]):
+            self.live_calls += 1
+            return []
+
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    client = ContactClient()
+    adapter._client = client
+
+    assert await adapter.resolve_user_name("99577134") == "Елена"
+    assert client.live_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_resolve_user_name_live_lookup_has_short_timeout(tmp_path, monkeypatch):
+    class SlowClient(LookupClient):
+        async def get_users(self, user_ids: list[int]):
+            await asyncio.sleep(10)
+            return []
+
+    async def fake_wait_for(coro, timeout):
+        assert timeout == 5
+        coro.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr("src.adapters.max_adapter.asyncio.wait_for", fake_wait_for)
+
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = SlowClient()
+
+    assert await adapter.resolve_user_name("99577134") is None
 
 
 @pytest.mark.asyncio

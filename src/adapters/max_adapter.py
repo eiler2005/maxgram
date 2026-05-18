@@ -1464,10 +1464,14 @@ class MaxAdapter:
         """
         if not self._client:
             return None
+        try:
+            user_id_int = int(user_id)
+        except (TypeError, ValueError):
+            return None
 
         # 1. Из кеша (синхронно, всегда доступно после sync)
         try:
-            cached = self._client.get_cached_user(int(user_id))
+            cached = self._client.get_cached_user(user_id_int)
             if cached:
                 name = self._extract_user_name(cached)
                 if name:
@@ -1476,13 +1480,35 @@ class MaxAdapter:
         except Exception as e:
             logger.debug("get_cached_user failed user_id=%s: %s", user_id, e)
 
+        for source_name, users in (
+            ("contacts", getattr(self._client, "contacts", []) or []),
+            ("users_cache", (getattr(self._client, "_users", {}) or {}).values()),
+        ):
+            try:
+                for user in users:
+                    if str(getattr(user, "id", "") or "") != str(user_id_int):
+                        continue
+                    name = self._extract_user_name(user)
+                    if name:
+                        logger.debug(
+                            "resolve_user_name (%s) user_id=%s → %r",
+                            source_name,
+                            user_id,
+                            name,
+                        )
+                        return name
+            except Exception as e:
+                logger.debug("resolve_user_name %s lookup failed user_id=%s: %s", source_name, user_id, e)
+
         # 2. Live-запрос (требует активного сокета)
         try:
-            users = await self._client.get_users([int(user_id)])
+            users = await asyncio.wait_for(self._client.get_users([user_id_int]), timeout=5)
             if users:
                 name = self._extract_user_name(users[0])
                 logger.debug("resolve_user_name (live) user_id=%s → %r", user_id, name)
                 return name or None
+        except asyncio.TimeoutError:
+            logger.warning("resolve_user_name timed out user_id=%s", user_id)
         except Exception as e:
             logger.warning("resolve_user_name failed user_id=%s: %s", user_id, e)
         return None

@@ -395,6 +395,8 @@ class BridgeCore:
         #    own_id НИКОГДА не попадает в кандидаты — он не может быть собеседником.
         if msg.is_dm:
             own_id = self._max.get_own_id()
+            if msg.sender_name and msg.sender_id and msg.sender_id != own_id:
+                return msg.sender_name
 
             # a) Из кеша dialogs — самый надёжный источник
             dm_partner_id = self._max.get_dm_partner_id(msg.chat_id)
@@ -402,7 +404,8 @@ class BridgeCore:
             # b) chat_id как кандидат — только если не наш ID
             chat_id_candidate = msg.chat_id if msg.chat_id != own_id else None
 
-            # c) sender_id — только если отличается от уже имеющихся кандидатов и не наш
+            # c) sender_id — для входящих DM обычно надёжнее chat_id:
+            #    chat_id может быть id диалога, а sender_id — реальный user id.
             sender_candidate = (
                 msg.sender_id
                 if (
@@ -416,8 +419,8 @@ class BridgeCore:
 
             candidates = list(dict.fromkeys(filter(None, [
                 dm_partner_id,
-                chat_id_candidate,
                 sender_candidate,
+                chat_id_candidate,
             ])))
             for uid in candidates:
                 name = await self._max.resolve_user_name(uid)

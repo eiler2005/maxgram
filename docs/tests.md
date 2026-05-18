@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 ```
 
-Всего: **99 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **103 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -33,7 +33,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (46 тестов)
+## test_max_adapter.py — парсинг сырых сообщений MAX (48 тестов)
 
 ### Системные события (CONTROL)
 
@@ -91,6 +91,13 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_send_message_retries_retryable_transport_error_and_succeeds` | Временная ошибка транспорта (`Socket is not connected`) вызывает retry; следующая успешная попытка возвращает `msg_id`, а в логах появляется `max.outbound.retry`. |
 | `test_send_message_exposes_final_error_after_retries` | После исчерпания retry `send_message()` возвращает `None`, а адаптер сохраняет последнюю ошибку и реальное число попыток для последующей записи в `delivery_log`. |
 
+### Резолв имён пользователей
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_resolve_user_name_uses_contacts_cache_before_live_lookup` | Имя пользователя берётся из локального `contacts` cache без live `CONTACT_INFO`. |
+| `test_resolve_user_name_live_lookup_has_short_timeout` | Live lookup имени имеет короткий timeout и не блокирует routing надолго при socket timeout. |
+
 ### Устойчивость reconnect и video CDN
 
 | Тест | Что проверяет |
@@ -111,7 +118,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (27 тестов)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (29 тестов)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -128,6 +135,8 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_on_tg_reply_logs_failed_delivery_with_max_error` | Если TG→MAX отправка окончательно не удалась, bridge пишет `failed` в `delivery_log` с последней ошибкой MAX и числом попыток. |
 | `test_on_tg_reply_logs_too_large_outbound_failure` | Явно отклонённый oversized TG→MAX файл тоже фиксируется в `delivery_log`, а не только показывается в Telegram topic. |
 | `test_get_or_create_topic_resolves_group_title_via_live_max_lookup` | Если `chat_title=None`, `_get_or_create_topic` делает live запрос `resolve_chat_title` и создаёт топик с правильным именем. |
+| `test_get_or_create_topic_prefers_dm_sender_name_for_title` | Для входящего DM topic создаётся по `sender_name`, если он уже есть в сообщении. |
+| `test_get_or_create_topic_uses_dm_sender_id_before_chat_id` | Для нового входящего DM `sender_id` пробуется раньше `chat_id`, потому что `chat_id` может быть id диалога. |
 
 ### Статус и чаты
 

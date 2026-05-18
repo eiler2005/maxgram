@@ -7,6 +7,7 @@ All notable changes to Maxgram are documented here.
 ## Unreleased
 
 ### Fixed
+- **New DM topic names** — incoming DM topics now prefer the sender name / sender id over the chat id when resolving titles, so dialog ids are less likely to appear as `Чат <id>` for new users.
 - **MAX→TG voice delivery for pymax-empty DM events** — raw MAX notifications are now intercepted on the pymax message-notification path as well as `on_raw_receive`, so `AUDIO` voice payloads can be forwarded before upstream parsing drops them.
 - **Live empty-event recovery** — when pymax still emits a fresh empty `USER` event, the bridge tries a narrow recent-history lookup for that exact `msg_id` and forwards the recovered voice attachment if present. Diagnostic logs include only safe class/field names.
 - **Top-level MAX voice payloads** — raw notifications where `payload` itself is the message and media is stored under `attachments` are now normalized before pymax can drop the attachment list.
@@ -16,7 +17,7 @@ All notable changes to Maxgram are documented here.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
 
 ### Tests
-- Added coverage for the raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
+- Added coverage for DM title resolution order, cached contact name lookup, raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
 
 ---
 

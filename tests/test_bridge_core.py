@@ -603,6 +603,105 @@ async def test_get_or_create_topic_resolves_group_title_via_live_max_lookup():
 
 
 @pytest.mark.asyncio
+async def test_get_or_create_topic_prefers_dm_sender_name_for_title():
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=DummyConfig(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    msg = MaxMessage(
+        msg_id="42",
+        chat_id="208748958",
+        chat_title=None,
+        sender_id="99577134",
+        sender_name="Елена",
+        text="ок",
+        attachments=[],
+        attachment_types=[],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=True,
+        is_own=False,
+        raw=None,
+    )
+
+    topic_id = await bridge._get_or_create_topic(msg, flow_id="mx:208748958:42")
+
+    assert topic_id == 101
+    assert tg_adapter.calls == [
+        ("create_topic", "Елена", "mx:208748958:42"),
+    ]
+    assert repo.binding_by_chat["208748958"].title == "Елена"
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_topic_uses_dm_sender_id_before_chat_id():
+    class SenderAwareMax(DummyMax):
+        def __init__(self):
+            super().__init__()
+            self.resolved_user_ids = []
+
+        async def resolve_user_name(self, user_id: str):
+            self.resolved_user_ids.append(user_id)
+            if user_id == "99577134":
+                return "Елена"
+            return None
+
+    repo = DummyRepo()
+    max_adapter = SenderAwareMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=DummyConfig(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    msg = MaxMessage(
+        msg_id="42",
+        chat_id="208748958",
+        chat_title=None,
+        sender_id="99577134",
+        sender_name=None,
+        text="ок",
+        attachments=[],
+        attachment_types=[],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=True,
+        is_own=False,
+        raw=None,
+    )
+
+    topic_id = await bridge._get_or_create_topic(msg, flow_id="mx:208748958:42")
+
+    assert topic_id == 101
+    assert max_adapter.resolved_user_ids == ["99577134"]
+    assert tg_adapter.calls == [
+        ("create_topic", "Елена", "mx:208748958:42"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_build_chats_message_lists_topics_with_activity():
     repo = DummyRepo()
     repo.bindings = [
