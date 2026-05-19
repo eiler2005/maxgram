@@ -887,6 +887,101 @@ async def test_typed_empty_message_uses_raw_history_after_fetch_socket_error(
 
 
 @pytest.mark.asyncio
+async def test_typed_empty_message_waits_for_delayed_raw_history_cache(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+    monkeypatch.setattr("src.adapters.max_adapter.MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS", 1)
+    monkeypatch.setattr("src.adapters.max_adapter.MAX_EMPTY_RECOVERY_CACHE_POLL_SECONDS", 0.01)
+
+    class EmptyHistoryClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Вита")})
+
+        async def fetch_history(self, chat_id, from_time=None, forward=0, backward=200):
+            return []
+
+    adapter._client = EmptyHistoryClient()
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_message(
+            SimpleNamespace(
+                id=112,
+                chat_id=195509792,
+                sender=7001,
+                text="",
+                type="USER",
+                status=None,
+                attaches=[],
+                link=None,
+            )
+        )
+
+        assert received == []
+        assert adapter._pending_empty_recovery_tasks
+
+        await adapter._handle_raw_receive(
+            {
+                "opcode": 49,
+                "payload": {
+                    "messages": [
+                        {
+                            "cid": 195509792,
+                            "id": 112,
+                            "sender": 7001,
+                            "type": "USER",
+                            "attaches": [
+                                {
+                                    "_type": "AUDIO",
+                                    "audioId": 86,
+                                    "url": "https://audio.example.test/delayed.ogg",
+                                    "duration": 7,
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+        )
+        await asyncio.sleep(0.05)
+
+    assert len(received) == 1
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 7, None, None, "AUDIO")
+    ]
+    assert not adapter._pending_empty_recovery_tasks
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    assert any(
+        event.get("event") == "max.inbound.empty_recovery"
+        and event.get("outcome") == "queued"
+        and event.get("reason") == "raw_history_cache_wait"
+        for event in events
+    )
+    assert any(
+        event.get("event") == "max.inbound.empty_recovery"
+        and event.get("outcome") == "recovered"
+        and event.get("reason") == "raw_history_cache_delayed_match"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_receive_logs_safe_empty_message_diagnostic(tmp_path, caplog):
     adapter = MaxAdapter(
         phone="+7",

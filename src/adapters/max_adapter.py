@@ -57,6 +57,8 @@ MAX_DOWNLOAD_ATTEMPTS = 7
 MAX_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 MAX_RAW_HISTORY_CACHE_TTL_SECONDS = 180
 MAX_RAW_HISTORY_CACHE_SIZE = 256
+MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS = 180
+MAX_EMPTY_RECOVERY_CACHE_POLL_SECONDS = 1.0
 
 
 @dataclass
@@ -175,6 +177,7 @@ class MaxAdapter:
         self._last_connected_at: Optional[int] = None
         self._raw_processed_message_ids: dict[tuple[str, str], float] = {}
         self._raw_history_messages: dict[tuple[str, str], tuple[float, object]] = {}
+        self._pending_empty_recovery_tasks: dict[tuple[str, str], asyncio.Task] = {}
 
     def on_message(self, handler: MessageHandler):
         self._handlers.append(handler)
@@ -1271,6 +1274,128 @@ class MaxAdapter:
             max_msg_id=raw_msg_id_str,
         )
         return None
+
+    def _schedule_empty_recovery_cache_wait(
+        self,
+        *,
+        chat_id: str,
+        raw_msg_id: str,
+        msg_id: str,
+        message_type: Optional[str],
+        flow_id: str,
+    ) -> bool:
+        key = (str(chat_id), str(raw_msg_id))
+        existing = self._pending_empty_recovery_tasks.get(key)
+        if existing is not None and not existing.done():
+            return True
+
+        task = asyncio.create_task(
+            self._recover_empty_message_from_raw_history_cache_later(
+                chat_id=str(chat_id),
+                raw_msg_id=str(raw_msg_id),
+                msg_id=str(msg_id),
+                message_type=message_type,
+                flow_id=flow_id,
+            )
+        )
+        self._pending_empty_recovery_tasks[key] = task
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.empty_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="recover",
+            outcome="queued",
+            reason="raw_history_cache_wait",
+            max_chat_id=chat_id,
+            max_msg_id=msg_id,
+            wait_seconds=MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS,
+        )
+        return True
+
+    async def _recover_empty_message_from_raw_history_cache_later(
+        self,
+        *,
+        chat_id: str,
+        raw_msg_id: str,
+        msg_id: str,
+        message_type: Optional[str],
+        flow_id: str,
+    ):
+        key = (str(chat_id), str(raw_msg_id))
+        deadline = time.monotonic() + MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS
+        try:
+            chat_id_int = int(chat_id)
+            raw_msg_id_str = str(raw_msg_id)
+        except (TypeError, ValueError):
+            self._pending_empty_recovery_tasks.pop(key, None)
+            return
+
+        try:
+            while time.monotonic() < deadline:
+                cached = self._get_cached_raw_history_message(chat_id, raw_msg_id_str)
+                if cached is not None:
+                    recovered = self._prepare_empty_recovery_candidate(
+                        cached,
+                        chat_id=chat_id,
+                        chat_id_int=chat_id_int,
+                        raw_msg_id_str=raw_msg_id_str,
+                        flow_id=flow_id,
+                        reason="raw_history_cache_delayed_match",
+                    )
+                    if recovered is not None:
+                        await self._handle_raw_message(recovered)
+                        return
+
+                await asyncio.sleep(MAX_EMPTY_RECOVERY_CACHE_POLL_SECONDS)
+
+            log_event(
+                logger,
+                logging.INFO,
+                "max.inbound.empty_recovery",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="recover",
+                outcome="miss",
+                reason="raw_history_cache_wait_timeout",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                waited_seconds=MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS,
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "max.inbound.skipped",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="normalize",
+                outcome="skipped",
+                reason="empty_event",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                message_type=message_type,
+                has_reaction_info=False,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "max.inbound.empty_recovery",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="recover",
+                outcome="failed",
+                reason="raw_history_cache_wait_failed",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                error=str(e),
+            )
+        finally:
+            if self._pending_empty_recovery_tasks.get(key) is asyncio.current_task():
+                self._pending_empty_recovery_tasks.pop(key, None)
 
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""
@@ -2938,6 +3063,14 @@ class MaxAdapter:
                 )
                 if recovered is not None:
                     await self._handle_raw_message(recovered)
+                    return
+                if self._schedule_empty_recovery_cache_wait(
+                    chat_id=chat_id,
+                    raw_msg_id=raw_msg_id,
+                    msg_id=msg_id,
+                    message_type=message_type,
+                    flow_id=flow_id,
+                ):
                     return
                 log_event(
                     logger,
