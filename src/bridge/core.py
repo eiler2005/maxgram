@@ -1260,12 +1260,15 @@ class BridgeCore:
 
         media_stats = await self._repo.count_pending_media()
         pending_media = int(media_stats.get("pending_count") or 0)
+        media_retry_line = f"  ⏳ Медиа retry: {pending_media}"
         if pending_media:
             oldest = media_stats.get("oldest_created_at")
-            age_text = ""
             if oldest:
-                age_text = f", старейшее {self._format_duration_compact(int(time.time()) - int(oldest))}"
-            lines.append(f"  ⏳ Медиа в retry: {pending_media}{age_text}")
+                media_retry_line += (
+                    f", старейшее "
+                    f"{self._format_duration_compact(int(time.time()) - int(oldest))}"
+                )
+        lines.append(media_retry_line)
 
         if chat_activity:
             lines += ["", "💬 Активные чаты"]
