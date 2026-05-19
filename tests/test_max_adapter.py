@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from types import SimpleNamespace
 
 from aiohttp import ClientResponseError
@@ -979,6 +980,124 @@ async def test_typed_empty_message_waits_for_delayed_raw_history_cache(
         and event.get("reason") == "raw_history_cache_delayed_match"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_pending_empty_recovery_worker_delivers_late_audio(tmp_path, caplog):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    recovered_message = SimpleNamespace(
+        id=113,
+        chat_id=195509792,
+        sender=7001,
+        text="",
+        type="USER",
+        status=None,
+        attaches=[
+            SimpleNamespace(
+                type="AUDIO",
+                audio_id=87,
+                url="https://audio.example.test/late.ogg",
+                duration=6,
+            )
+        ],
+        link=None,
+    )
+
+    class LateHistoryClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Вита")})
+
+        async def fetch_history(self, chat_id, from_time=None, forward=0, backward=200):
+            return [recovered_message]
+
+    adapter._client = LateHistoryClient()
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+    adapter._remember_pending_empty_recovery(
+        chat_id="195509792",
+        raw_msg_id="113",
+        msg_id="113",
+        message_type="USER",
+        flow_id="mx:195509792:113",
+    )
+    job = dict(adapter._pending_empty_recoveries["195509792:113"])
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._attempt_pending_empty_recovery(job)
+
+    assert len(received) == 1
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 6, None, None, "AUDIO")
+    ]
+    assert adapter._pending_empty_recoveries == {}
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    assert any(
+        event.get("event") == "max.inbound.empty_recovery"
+        and event.get("outcome") == "retry"
+        and event.get("reason") == "durable_history_retry"
+        for event in events
+    )
+    assert any(
+        event.get("event") == "max.inbound.empty_recovery"
+        and event.get("outcome") == "completed"
+        and event.get("reason") in {"durable_history_recovered", "content_arrived"}
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_empty_recovery_worker_reschedules_empty_history(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    class EmptyHistoryClient(LookupClient):
+        async def fetch_history(self, chat_id, from_time=None, forward=0, backward=200):
+            return [
+                SimpleNamespace(
+                    id=114,
+                    chat_id=195509792,
+                    sender=7001,
+                    text="",
+                    type="USER",
+                    status=None,
+                    attaches=[],
+                    link=None,
+                )
+            ]
+
+    adapter._client = EmptyHistoryClient()
+    adapter._remember_pending_empty_recovery(
+        chat_id="195509792",
+        raw_msg_id="114",
+        msg_id="114",
+        message_type="USER",
+        flow_id="mx:195509792:114",
+    )
+    job = dict(adapter._pending_empty_recoveries["195509792:114"])
+
+    await adapter._attempt_pending_empty_recovery(job)
+
+    pending = adapter._pending_empty_recoveries["195509792:114"]
+    assert pending["attempts"] == 1
+    assert pending["last_error"] == "history_message_not_found_or_empty"
+    assert pending["next_attempt_at"] > int(time.time())
 
 
 @pytest.mark.asyncio

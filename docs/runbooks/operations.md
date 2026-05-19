@@ -402,7 +402,8 @@ sqlite3 -header -column data/bridge.db \
 3. В логах проверь `attachment_types=["AUDIO"]` или `["VOICE"]`, затем `tg.outbound.sent media_type=voice`.
 4. Если MAX сначала отдаёт пустой typed `USER`, bridge делает recent-history recovery. Успешный raw-history путь виден как `max.raw.auxiliary_event opcode_name=CHAT_HISTORY`, затем `max.inbound.empty_recovery outcome=recovered reason=raw_history_cache_match` или `raw_history_cache_after_fetch_error`.
 5. Если raw `CHAT_HISTORY` задержался, bridge до 180 секунд держит in-memory wait job: сначала `max.inbound.empty_recovery outcome=queued reason=raw_history_cache_wait`, затем при успехе `reason=raw_history_cache_delayed_match`.
-6. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения.
+6. Если MAX/history всё ещё отдаёт пустой message без `attaches`, bridge кладёт meta-only retry в `data/pending_empty_recoveries.json` и перечитывает history без лимита по времени. Ищи `reason=durable_history_retry`, `retry_scheduled`, затем при успехе `durable_history_recovered`.
+7. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения. Для новых неизвестных форм полезны безопасные поля `element_count`, `element_types`, `element_fields`, `options_fields`.
 
 ### Проверка 2: Telegram -> MAX
 

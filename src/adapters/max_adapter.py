@@ -11,6 +11,7 @@ MAX Adapter — подключение к MAX через SocketMaxClient (pymax)
 """
 
 import asyncio
+import json
 import logging
 import mimetypes
 import time
@@ -59,6 +60,10 @@ MAX_RAW_HISTORY_CACHE_TTL_SECONDS = 180
 MAX_RAW_HISTORY_CACHE_SIZE = 256
 MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS = 180
 MAX_EMPTY_RECOVERY_CACHE_POLL_SECONDS = 1.0
+MAX_EMPTY_RECOVERY_RETRY_POLL_SECONDS = 30
+MAX_EMPTY_RECOVERY_RETRY_BASE_SECONDS = 60
+MAX_EMPTY_RECOVERY_RETRY_MAX_SECONDS = 6 * 60 * 60
+MAX_EMPTY_RECOVERY_STATE_FILE = "pending_empty_recoveries.json"
 
 
 @dataclass
@@ -178,6 +183,9 @@ class MaxAdapter:
         self._raw_processed_message_ids: dict[tuple[str, str], float] = {}
         self._raw_history_messages: dict[tuple[str, str], tuple[float, object]] = {}
         self._pending_empty_recovery_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._pending_empty_recoveries: dict[str, dict[str, object]] = {}
+        self._pending_empty_recovery_worker: Optional[asyncio.Task] = None
+        self._load_pending_empty_recoveries()
 
     def on_message(self, handler: MessageHandler):
         self._handlers.append(handler)
@@ -492,6 +500,68 @@ class MaxAdapter:
         if isinstance(attaches, list):
             return len(attaches)
         return 1
+
+    def _safe_message_structure_summary(self, value) -> dict[str, object]:
+        if value is None:
+            return {}
+
+        def field(source, *names: str):
+            if isinstance(source, dict):
+                return self._payload_value(source, *names)
+            for name in names:
+                if hasattr(source, name):
+                    return getattr(source, name, None)
+            return None
+
+        summary: dict[str, object] = {}
+        elements = field(value, "elements") or []
+        if isinstance(elements, list):
+            summary["element_count"] = len(elements)
+            element_types: list[str] = []
+            element_classes: list[str] = []
+            element_fields: set[str] = set()
+            for element in elements[:10]:
+                if element is None:
+                    continue
+                element_classes.append(element.__class__.__name__)
+                element_type = field(element, "type")
+                if element_type is not None:
+                    element_types.append(str(getattr(element_type, "value", element_type)))
+                element_fields.update(self._object_field_names(element))
+            if element_types:
+                summary["element_types"] = sorted(dict.fromkeys(element_types))
+            if element_classes:
+                summary["element_classes"] = sorted(dict.fromkeys(element_classes))
+            if element_fields:
+                summary["element_fields"] = sorted(element_fields)
+        elif elements is not None:
+            summary["element_count"] = 1
+            summary["element_class"] = elements.__class__.__name__
+            element_type = field(elements, "type")
+            if element_type is not None:
+                summary["element_types"] = [str(getattr(element_type, "value", element_type))]
+            element_fields = self._object_field_names(elements)
+            if element_fields:
+                summary["element_fields"] = element_fields
+
+        options = field(value, "options")
+        if isinstance(options, dict):
+            summary["options_class"] = options.__class__.__name__
+            summary["options_fields"] = self._safe_field_paths(options, max_depth=1)
+        elif isinstance(options, list):
+            summary["options_class"] = options.__class__.__name__
+            summary["options_count"] = len(options)
+            option_classes = [
+                option.__class__.__name__
+                for option in options[:10]
+                if option is not None
+            ]
+            if option_classes:
+                summary["option_classes"] = sorted(dict.fromkeys(option_classes))
+        elif options is not None:
+            summary["options_class"] = options.__class__.__name__
+
+        return summary
 
     def _render_unknown_message_details(
         self,
@@ -888,6 +958,7 @@ class MaxAdapter:
                 max_msg_id=raw_msg_id_str,
                 message_class=candidate.__class__.__name__,
                 message_fields=self._safe_attachment_field_names(candidate),
+                **self._safe_message_structure_summary(candidate),
             )
             return None
 
@@ -1169,6 +1240,7 @@ class MaxAdapter:
             content_class=content_message.__class__.__name__,
             message_fields=self._safe_attachment_field_names(message),
             content_fields=self._safe_attachment_field_names(content_message),
+            **self._safe_message_structure_summary(content_message),
         )
 
     async def _recover_empty_message_from_recent_history(
@@ -1275,6 +1347,277 @@ class MaxAdapter:
         )
         return None
 
+    def _pending_empty_recovery_path(self) -> Path:
+        return Path(self._data_dir) / MAX_EMPTY_RECOVERY_STATE_FILE
+
+    def _pending_empty_recovery_key(self, chat_id: str, raw_msg_id: str) -> str:
+        return f"{chat_id}:{raw_msg_id}"
+
+    def _load_pending_empty_recoveries(self):
+        path = self._pending_empty_recovery_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.inbound.empty_recovery_state",
+                stage="startup",
+                outcome="failed",
+                reason="load_failed",
+                error=str(e),
+            )
+            return
+        if not isinstance(data, list):
+            return
+        pending: dict[str, dict[str, object]] = {}
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            chat_id = item.get("chat_id")
+            raw_msg_id = item.get("raw_msg_id")
+            if chat_id is None or raw_msg_id is None:
+                continue
+            job = {
+                "chat_id": str(chat_id),
+                "raw_msg_id": str(raw_msg_id),
+                "msg_id": str(item.get("msg_id") or raw_msg_id),
+                "message_type": (
+                    str(item["message_type"])
+                    if item.get("message_type") is not None
+                    else None
+                ),
+                "attempts": int(item.get("attempts") or 0),
+                "created_at": int(item.get("created_at") or time.time()),
+                "updated_at": int(item.get("updated_at") or time.time()),
+                "next_attempt_at": int(item.get("next_attempt_at") or time.time()),
+                "last_error": (
+                    str(item["last_error"])
+                    if item.get("last_error") is not None
+                    else None
+                ),
+            }
+            pending[self._pending_empty_recovery_key(str(chat_id), str(raw_msg_id))] = job
+        self._pending_empty_recoveries = pending
+
+    def _save_pending_empty_recoveries(self):
+        path = self._pending_empty_recovery_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            data = sorted(
+                self._pending_empty_recoveries.values(),
+                key=lambda item: (
+                    int(item.get("next_attempt_at") or 0),
+                    str(item.get("chat_id") or ""),
+                    str(item.get("raw_msg_id") or ""),
+                ),
+            )
+            tmp_path.write_text(
+                json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2),
+                encoding="utf-8",
+            )
+            tmp_path.replace(path)
+        except Exception as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.inbound.empty_recovery_state",
+                stage="runtime",
+                outcome="failed",
+                reason="save_failed",
+                error=str(e),
+            )
+
+    def _empty_recovery_retry_delay(self, attempts: int) -> int:
+        exponent = max(0, min(12, attempts - 1))
+        return min(
+            MAX_EMPTY_RECOVERY_RETRY_BASE_SECONDS * (2 ** exponent),
+            MAX_EMPTY_RECOVERY_RETRY_MAX_SECONDS,
+        )
+
+    def _remember_pending_empty_recovery(
+        self,
+        *,
+        chat_id: str,
+        raw_msg_id: str,
+        msg_id: str,
+        message_type: Optional[str],
+        flow_id: str,
+    ):
+        key = self._pending_empty_recovery_key(chat_id, raw_msg_id)
+        now = int(time.time())
+        existing = self._pending_empty_recoveries.get(key)
+        if existing is None:
+            self._pending_empty_recoveries[key] = {
+                "chat_id": str(chat_id),
+                "raw_msg_id": str(raw_msg_id),
+                "msg_id": str(msg_id),
+                "message_type": message_type,
+                "attempts": 0,
+                "created_at": now,
+                "updated_at": now,
+                "next_attempt_at": now + MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS,
+                "last_error": None,
+            }
+            self._save_pending_empty_recoveries()
+            log_event(
+                logger,
+                logging.INFO,
+                "max.inbound.empty_recovery",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="recover",
+                outcome="queued",
+                reason="durable_history_retry",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                retry_in_seconds=MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS,
+            )
+            return
+
+        existing["updated_at"] = now
+        existing["message_type"] = message_type
+        existing["msg_id"] = str(msg_id)
+        self._save_pending_empty_recoveries()
+
+    def _forget_pending_empty_recovery(
+        self,
+        chat_id: str,
+        raw_msg_id: str,
+        *,
+        flow_id: Optional[str] = None,
+        reason: str = "recovered",
+    ):
+        key = self._pending_empty_recovery_key(str(chat_id), str(raw_msg_id))
+        if self._pending_empty_recoveries.pop(key, None) is None:
+            return
+        self._save_pending_empty_recoveries()
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.empty_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="recover",
+            outcome="completed",
+            reason=reason,
+            max_chat_id=chat_id,
+            max_msg_id=raw_msg_id,
+        )
+
+    def _start_pending_empty_recovery_worker(self):
+        task = self._pending_empty_recovery_worker
+        if task is not None and not task.done():
+            return
+        self._pending_empty_recovery_worker = asyncio.create_task(
+            self._run_pending_empty_recoveries()
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.empty_recovery_worker_started",
+            stage="startup",
+            outcome="started",
+            poll_interval_seconds=MAX_EMPTY_RECOVERY_RETRY_POLL_SECONDS,
+            pending_count=len(self._pending_empty_recoveries),
+        )
+
+    async def _run_pending_empty_recoveries(self):
+        while True:
+            try:
+                now = int(time.time())
+                due_jobs = [
+                    dict(job)
+                    for job in self._pending_empty_recoveries.values()
+                    if int(job.get("next_attempt_at") or 0) <= now
+                ]
+                for job in due_jobs:
+                    await self._attempt_pending_empty_recovery(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "max.inbound.empty_recovery_worker_failed",
+                    stage="recover",
+                    outcome="failed",
+                    error=str(e),
+                )
+            await asyncio.sleep(MAX_EMPTY_RECOVERY_RETRY_POLL_SECONDS)
+
+    async def _attempt_pending_empty_recovery(self, job: dict[str, object]):
+        chat_id = str(job.get("chat_id") or "")
+        raw_msg_id = str(job.get("raw_msg_id") or "")
+        msg_id = str(job.get("msg_id") or raw_msg_id)
+        if not chat_id or not raw_msg_id:
+            return
+        flow_id = build_max_flow_id(chat_id, msg_id)
+        key = self._pending_empty_recovery_key(chat_id, raw_msg_id)
+        current = self._pending_empty_recoveries.get(key)
+        if current is None:
+            return
+
+        attempts = int(current.get("attempts") or 0) + 1
+        current["attempts"] = attempts
+        current["updated_at"] = int(time.time())
+        self._save_pending_empty_recoveries()
+
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.empty_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="recover",
+            outcome="retry",
+            reason="durable_history_retry",
+            max_chat_id=chat_id,
+            max_msg_id=msg_id,
+            attempt=attempts,
+        )
+
+        recovered = await self._recover_empty_message_from_recent_history(
+            chat_id=chat_id,
+            raw_msg_id=raw_msg_id,
+            flow_id=flow_id,
+        )
+        if recovered is not None:
+            self._forget_pending_empty_recovery(
+                chat_id,
+                raw_msg_id,
+                flow_id=flow_id,
+                reason="durable_history_recovered",
+            )
+            await self._handle_raw_message(recovered)
+            return
+
+        delay = self._empty_recovery_retry_delay(attempts)
+        current = self._pending_empty_recoveries.get(key)
+        if current is None:
+            return
+        current["updated_at"] = int(time.time())
+        current["next_attempt_at"] = int(time.time()) + delay
+        current["last_error"] = "history_message_not_found_or_empty"
+        self._save_pending_empty_recoveries()
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.empty_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="recover",
+            outcome="retry_scheduled",
+            reason="durable_history_retry",
+            max_chat_id=chat_id,
+            max_msg_id=msg_id,
+            attempt=attempts,
+            retry_in_seconds=delay,
+        )
+
     def _schedule_empty_recovery_cache_wait(
         self,
         *,
@@ -1289,6 +1632,13 @@ class MaxAdapter:
         if existing is not None and not existing.done():
             return True
 
+        self._remember_pending_empty_recovery(
+            chat_id=chat_id,
+            raw_msg_id=raw_msg_id,
+            msg_id=msg_id,
+            message_type=message_type,
+            flow_id=flow_id,
+        )
         task = asyncio.create_task(
             self._recover_empty_message_from_raw_history_cache_later(
                 chat_id=str(chat_id),
@@ -1345,6 +1695,12 @@ class MaxAdapter:
                         reason="raw_history_cache_delayed_match",
                     )
                     if recovered is not None:
+                        self._forget_pending_empty_recovery(
+                            chat_id,
+                            raw_msg_id,
+                            flow_id=flow_id,
+                            reason="raw_history_cache_delayed_match",
+                        )
                         await self._handle_raw_message(recovered)
                         return
 
@@ -3088,6 +3444,14 @@ class MaxAdapter:
                 )
                 return
 
+            if text or has_raw_attachments:
+                self._forget_pending_empty_recovery(
+                    chat_id,
+                    raw_msg_id,
+                    flow_id=flow_id,
+                    reason="content_arrived",
+                )
+
             # Имя отправителя: кеш + live fallback (важно для групповых чатов).
             # Для пустых событий recovery уже выполнен выше, чтобы не тратить
             # активный MAX socket на CONTACT_INFO перед CHAT_HISTORY.
@@ -3432,6 +3796,8 @@ class MaxAdapter:
                             outcome="warning",
                             error=str(e),
                         )
+
+                    self._start_pending_empty_recovery_worker()
 
                     if first_connect:
                         first_connect = False

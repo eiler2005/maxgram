@@ -62,6 +62,8 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_typed_empty_message_recovers_audio_from_raw_history_cache` | Raw `CHAT_HISTORY` с `messages[].cid/id/attaches[]` кешируется на короткое время, и последующий пустой typed `USER` восстанавливается как `AUDIO` без логирования URL/token/text. |
 | `test_typed_empty_message_uses_raw_history_after_fetch_socket_error` | Если `fetch_history` падает с `Send and wait failed (socket)`, но raw `CHAT_HISTORY` уже пришёл, adapter восстанавливает голосовое из cache вместо `empty_event`. |
 | `test_typed_empty_message_waits_for_delayed_raw_history_cache` | Если raw `CHAT_HISTORY` приходит позже immediate recovery, adapter держит короткую in-memory wait job и досылает найденное `AUDIO`. |
+| `test_pending_empty_recovery_worker_delivers_late_audio` | Durable empty-message retry перечитывает history по `chat_id/msg_id`, доставляет поздно появившееся `AUDIO` и очищает meta-only job. |
+| `test_pending_empty_recovery_worker_reschedules_empty_history` | Если history всё ещё возвращает пустой message, durable retry увеличивает attempts и планирует следующую попытку без terminal cutoff. |
 | `test_handle_raw_receive_logs_safe_empty_message_diagnostic` | Raw empty-event diagnostic логирует только тип, id и безопасные имена полей, без URL/token/text. |
 | `test_handle_raw_receive_logs_top_level_empty_message_diagnostic` | Top-level raw empty payload логируется безопасно, без URL/token/text. |
 | `test_download_audio_attachment_uses_direct_url_and_preserves_duration` | `AUDIO` скачивается по прямому `url`; `duration` сохраняется в `MaxAttachment`. |
