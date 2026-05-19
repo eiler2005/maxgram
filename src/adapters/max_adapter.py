@@ -577,6 +577,65 @@ class MaxAdapter:
                 return normalized[candidate]
         return None
 
+    def _raw_opcode_name(self, opcode) -> Optional[str]:
+        opcode_value = getattr(opcode, "value", opcode)
+        try:
+            from pymax.static.enum import Opcode
+
+            return Opcode(opcode_value).name
+        except Exception:
+            return str(getattr(opcode, "name", "") or "") or None
+
+    def _is_safe_field_name(self, name: object) -> bool:
+        lowered = str(name).lower()
+        blocked = ("url", "token", "text", "raw")
+        return not any(marker in lowered for marker in blocked)
+
+    def _safe_field_paths(self, value, *, max_depth: int = 2, max_items: int = 80) -> list[str]:
+        paths: list[str] = []
+        seen: set[int] = set()
+
+        def iter_items(node):
+            if isinstance(node, dict):
+                return node.items()
+            raw_fields = getattr(node, "__dict__", None)
+            if isinstance(raw_fields, dict):
+                return raw_fields.items()
+            return ()
+
+        def walk(node, prefix: str, depth: int):
+            if node is None or depth > max_depth or len(paths) >= max_items:
+                return
+            if isinstance(node, (str, bytes, int, float, bool)):
+                return
+            if isinstance(node, (dict, list, tuple, set)) or hasattr(node, "__dict__"):
+                node_id = id(node)
+                if node_id in seen:
+                    return
+                seen.add(node_id)
+
+            if isinstance(node, (list, tuple, set)):
+                if prefix:
+                    list_path = f"{prefix}[]"
+                    if list_path not in paths:
+                        paths.append(list_path)
+                for item in list(node)[:5]:
+                    walk(item, f"{prefix}[]" if prefix else "[]", depth + 1)
+                return
+
+            for key, child in iter_items(node):
+                name = str(key)
+                if name.startswith("_") or not self._is_safe_field_name(name):
+                    continue
+                path = f"{prefix}.{name}" if prefix else name
+                paths.append(path)
+                if len(paths) >= max_items:
+                    return
+                walk(child, path, depth + 1)
+
+        walk(value, "", 0)
+        return sorted(dict.fromkeys(paths))
+
     def _normalize_message_dict(self, data: dict) -> dict:
         normalized = dict(data)
         if "_type" in normalized and "type" not in normalized:
@@ -844,6 +903,88 @@ class MaxAdapter:
             raw_attachment_types=self._raw_attachment_types_from_message_dict(message),
         )
 
+    def _raw_payload_identity_hints(self, payload: dict) -> tuple[object, object]:
+        message, outer_chat_id = self._payload_message_dict(payload)
+        if message:
+            chat_id = (
+                self._payload_value(message, "chatId", "chat_id")
+                or outer_chat_id
+            )
+            msg_id = self._payload_value(message, "id", "messageId", "message_id", "msgId")
+            return chat_id, msg_id
+
+        chat_id = self._payload_value(payload, "chatId", "chat_id")
+        msg_id = self._payload_value(payload, "messageId", "message_id", "msgId", "id")
+        return chat_id, msg_id
+
+    def _log_raw_unhandled_message_payload(self, payload: dict):
+        if not isinstance(payload, dict):
+            return
+
+        chat_id, msg_id = self._raw_payload_identity_hints(payload)
+        flow_id = build_max_flow_id(str(chat_id or ""), str(msg_id or ""))
+        log_event(
+            logger,
+            logging.INFO,
+            "max.raw.unhandled_message_payload",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="received",
+            outcome="diagnostic",
+            reason="message_payload_shape_unknown",
+            max_chat_id=str(chat_id) if chat_id is not None else None,
+            max_msg_id=str(msg_id) if msg_id is not None else None,
+            payload_class=payload.__class__.__name__,
+            payload_fields=self._safe_attachment_field_names(SimpleNamespace(**payload)),
+            payload_shape=self._safe_field_paths(payload),
+        )
+
+    def _log_raw_auxiliary_event(self, data: dict):
+        if not isinstance(data, dict):
+            return
+
+        payload = data.get("payload") or {}
+        if not isinstance(payload, dict):
+            return
+
+        raw_opcode = data.get("opcode")
+        opcode_value = getattr(raw_opcode, "value", raw_opcode)
+        opcode_name = self._raw_opcode_name(raw_opcode)
+        payload_shape = self._safe_field_paths(payload)
+        interesting_opcode_names = {
+            "NOTIF_ATTACH",
+            "NOTIF_MSG_DELAYED",
+            "NOTIF_DRAFT",
+            "NOTIF_DRAFT_DISCARD",
+        }
+        interesting_field_markers = ("attach", "audio", "voice")
+        has_interesting_shape = any(
+            any(marker in field.lower() for marker in interesting_field_markers)
+            for field in payload_shape
+        )
+        if opcode_name not in interesting_opcode_names and not has_interesting_shape:
+            return
+
+        chat_id, msg_id = self._raw_payload_identity_hints(payload)
+        flow_id = build_max_flow_id(str(chat_id or ""), str(msg_id or ""))
+        log_event(
+            logger,
+            logging.INFO,
+            "max.raw.auxiliary_event",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="received",
+            outcome="diagnostic",
+            reason="non_message_notification",
+            opcode=opcode_value,
+            opcode_name=opcode_name,
+            max_chat_id=str(chat_id) if chat_id is not None else None,
+            max_msg_id=str(msg_id) if msg_id is not None else None,
+            payload_class=payload.__class__.__name__,
+            payload_fields=self._safe_attachment_field_names(SimpleNamespace(**payload)),
+            payload_shape=payload_shape,
+        )
+
     def _log_typed_empty_message(
         self,
         *,
@@ -985,7 +1126,12 @@ class MaxAdapter:
         except Exception:
             notif_message_opcode = 128
 
-        if not isinstance(data, dict) or data.get("opcode") != notif_message_opcode:
+        raw_opcode = data.get("opcode") if isinstance(data, dict) else None
+        opcode_value = getattr(raw_opcode, "value", raw_opcode)
+        if not isinstance(data, dict):
+            return
+        if opcode_value != notif_message_opcode:
+            self._log_raw_auxiliary_event(data)
             return
 
         payload = data.get("payload") or {}
@@ -999,7 +1145,11 @@ class MaxAdapter:
         if unwrapped is None:
             regular = self._build_raw_regular_message(payload)
             if regular is None:
-                self._log_raw_empty_message(payload)
+                message, _outer_chat_id = self._payload_message_dict(payload)
+                if message:
+                    self._log_raw_empty_message(payload)
+                else:
+                    self._log_raw_unhandled_message_payload(payload)
                 return
 
             chat_id = str(getattr(regular, "chat_id", "") or "")
@@ -1658,7 +1808,6 @@ class MaxAdapter:
         return self._fix_filename_encoding(name) if name else None
 
     def _safe_attachment_field_names(self, attach) -> list[str]:
-        blocked = ("url", "token", "text", "raw")
         try:
             names = vars(attach).keys()
         except TypeError:
@@ -1670,7 +1819,7 @@ class MaxAdapter:
         return sorted(
             name
             for name in names
-            if not any(marker in name.lower() for marker in blocked)
+            if self._is_safe_field_name(name)
         )
 
     @staticmethod
@@ -2488,11 +2637,6 @@ class MaxAdapter:
                 except Exception:
                     pass
 
-            # Имя отправителя: кеш + live fallback (важно для групповых чатов)
-            sender_name = None
-            if sender_id:
-                sender_name = await self.resolve_user_name(sender_id)
-
             attaches = getattr(content_message, "attaches", None) or []
             attach_list = attaches if isinstance(attaches, list) else [attaches]
             raw_attachment_types = [
@@ -2523,6 +2667,56 @@ class MaxAdapter:
                 attachment_types=attachment_types,
                 has_text=bool(text),
             )
+
+            has_raw_attachments = any(attach is not None for attach in attach_list)
+            recoverable_empty_type = str(message_type or "").upper() in {"", "TEXT", "USER"}
+            if (
+                not text
+                and not has_raw_attachments
+                and not reaction_info
+                and not status
+                and recoverable_empty_type
+                and not getattr(message, "_from_empty_recovery", False)
+            ):
+                self._log_typed_empty_message(
+                    flow_id=flow_id,
+                    message=message,
+                    content_message=content_message,
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                    message_type=message_type,
+                    reaction_info=reaction_info,
+                )
+                recovered = await self._recover_empty_message_from_recent_history(
+                    chat_id=chat_id,
+                    raw_msg_id=raw_msg_id,
+                    flow_id=flow_id,
+                )
+                if recovered is not None:
+                    await self._handle_raw_message(recovered)
+                    return
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.inbound.skipped",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="normalize",
+                    outcome="skipped",
+                    reason="empty_event",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    message_type=message_type,
+                    has_reaction_info=bool(reaction_info),
+                )
+                return
+
+            # Имя отправителя: кеш + live fallback (важно для групповых чатов).
+            # Для пустых событий recovery уже выполнен выше, чтобы не тратить
+            # активный MAX socket на CONTACT_INFO перед CHAT_HISTORY.
+            sender_name = None
+            if sender_id:
+                sender_name = await self.resolve_user_name(sender_id)
 
             # own_id сохраняем в msg для фильтрации в BridgeCore
             # (не фильтруем здесь — bridge решает сам)

@@ -631,6 +631,77 @@ async def test_typed_empty_message_recovers_audio_from_recent_history(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_typed_empty_message_checks_history_before_live_name_lookup(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    recovered_message = SimpleNamespace(
+        id=109,
+        chat_id=28093080,
+        sender=7001,
+        text="",
+        type="USER",
+        status=None,
+        attaches=[
+            SimpleNamespace(
+                type="AUDIO",
+                audio_id=84,
+                url="https://audio.example.test/recovered.ogg",
+                duration=12,
+            )
+        ],
+        link=None,
+    )
+
+    class HistoryBeforeNameClient(LookupClient):
+        def __init__(self):
+            super().__init__()
+            self.call_order = []
+
+        async def get_users(self, user_ids: list[int]):
+            self.call_order.append("get_users")
+            return []
+
+        async def fetch_history(self, chat_id, from_time=None, forward=0, backward=200):
+            self.call_order.append("fetch_history")
+            return [recovered_message]
+
+    client = HistoryBeforeNameClient()
+    adapter._client = client
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    await adapter._handle_raw_message(
+        SimpleNamespace(
+            id=109,
+            chat_id=28093080,
+            sender=7001,
+            text="",
+            type="USER",
+            status=None,
+            attaches=[],
+            link=None,
+        )
+    )
+
+    assert len(received) == 1
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 12, None, None, "AUDIO")
+    ]
+    assert client.call_order[0] == "fetch_history"
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_receive_logs_safe_empty_message_diagnostic(tmp_path, caplog):
     adapter = MaxAdapter(
         phone="+7",
@@ -670,6 +741,87 @@ async def test_handle_raw_receive_logs_safe_empty_message_diagnostic(tmp_path, c
     assert "token" not in fields["message_fields"]
     assert "text" not in fields["message_fields"]
     assert "secret-token" not in str(fields)
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_receive_logs_safe_auxiliary_attachment_event(tmp_path, caplog):
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    raw_event = {
+        "opcode": 136,
+        "payload": {
+            "chatId": 28093080,
+            "messageId": 110,
+            "attach": {
+                "type": "AUDIO",
+                "audioId": 42,
+                "url": "https://audio.example.test/secret.ogg",
+                "token": "secret-token",
+                "text": "secret text",
+            },
+        },
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_receive(raw_event)
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "event_fields", {}).get("event") == "max.raw.auxiliary_event"
+    )
+    fields = record.event_fields
+    assert fields["opcode_name"] == "NOTIF_ATTACH"
+    assert fields["max_chat_id"] == "28093080"
+    assert fields["max_msg_id"] == "110"
+    assert "attach.audioId" in fields["payload_shape"]
+    assert "url" not in str(fields)
+    assert "secret-token" not in str(fields)
+    assert "secret text" not in str(fields)
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_receive_logs_unknown_message_payload_shape_safely(tmp_path, caplog):
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    raw_event = {
+        "opcode": 128,
+        "payload": {
+            "chatId": 28093080,
+            "event": {
+                "kind": "voice",
+                "url": "https://audio.example.test/secret.ogg",
+                "token": "secret-token",
+                "text": "secret text",
+            },
+        },
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_receive(raw_event)
+
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "event_fields", {}).get("event")
+        == "max.raw.unhandled_message_payload"
+    )
+    fields = record.event_fields
+    assert fields["max_chat_id"] == "28093080"
+    assert "event.kind" in fields["payload_shape"]
+    assert "url" not in str(fields)
+    assert "secret-token" not in str(fields)
+    assert "secret text" not in str(fields)
 
 
 @pytest.mark.asyncio
