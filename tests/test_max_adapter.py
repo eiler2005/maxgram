@@ -702,6 +702,191 @@ async def test_typed_empty_message_checks_history_before_live_name_lookup(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_typed_empty_message_recovers_audio_from_raw_history_cache(tmp_path, caplog):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+    adapter._client = LookupClient(users={7001: make_user("Вита")})
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    raw_history_event = {
+        "opcode": 49,
+        "payload": {
+            "messages": [
+                {
+                    "cid": 195509792,
+                    "id": 110,
+                    "sender": 7001,
+                    "text": "",
+                    "type": "USER",
+                    "attaches": [
+                        {
+                            "_type": "AUDIO",
+                            "audioId": 84,
+                            "url": "https://audio.example.test/secret.ogg",
+                            "duration": 12,
+                            "wave": "abc",
+                            "token": "secret-token",
+                            "text": "secret text",
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_receive(raw_history_event)
+        await adapter._handle_raw_message(
+            SimpleNamespace(
+                id=110,
+                chat_id=195509792,
+                sender=7001,
+                text="",
+                type="USER",
+                status=None,
+                attaches=[],
+                link=None,
+            )
+        )
+
+    assert len(received) == 1
+    assert received[0].chat_id == "195509792"
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 12, None, None, "AUDIO")
+    ]
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/secret.ogg",
+            "audio_195509792_110",
+            None,
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    assert any(
+        event.get("event") == "max.inbound.empty_recovery"
+        and event.get("outcome") == "recovered"
+        and event.get("reason") == "raw_history_cache_match"
+        and event.get("attachment_types") == ["AUDIO"]
+        for event in events
+    )
+    assert "secret-token" not in caplog.text
+    assert "secret text" not in caplog.text
+    assert "https://audio.example.test/secret.ogg" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_typed_empty_message_uses_raw_history_after_fetch_socket_error(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr("src.adapters.max_adapter.asyncio.sleep", no_sleep)
+
+    raw_history_event = {
+        "opcode": 49,
+        "payload": {
+            "messages": [
+                {
+                    "cid": 195509792,
+                    "id": 111,
+                    "sender": 7001,
+                    "type": "USER",
+                    "attaches": [
+                        {
+                            "_type": "AUDIO",
+                            "audioId": 85,
+                            "url": "https://audio.example.test/recovered.ogg",
+                            "duration": 9,
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+
+    class SocketHistoryClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Вита")})
+            self.history_calls = 0
+
+        async def fetch_history(self, chat_id, from_time=None, forward=0, backward=200):
+            self.history_calls += 1
+            await adapter._handle_raw_receive(raw_history_event)
+            raise RuntimeError("Send and wait failed (socket)")
+
+    client = SocketHistoryClient()
+    adapter._client = client
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_message(
+            SimpleNamespace(
+                id=111,
+                chat_id=195509792,
+                sender=7001,
+                text="",
+                type="USER",
+                status=None,
+                attaches=[],
+                link=None,
+            )
+        )
+
+    assert client.history_calls == 1
+    assert len(received) == 1
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 9, None, None, "AUDIO")
+    ]
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    assert any(
+        event.get("event") == "max.inbound.empty_recovery"
+        and event.get("outcome") == "recovered"
+        and event.get("reason") == "raw_history_cache_after_fetch_error"
+        for event in events
+    )
+    assert not any(
+        event.get("event") == "max.inbound.empty_recovery"
+        and event.get("outcome") == "failed"
+        and event.get("reason") == "recent_history_failed"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_receive_logs_safe_empty_message_diagnostic(tmp_path, caplog):
     adapter = MaxAdapter(
         phone="+7",

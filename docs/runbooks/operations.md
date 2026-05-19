@@ -289,7 +289,7 @@ rg 'event=max\.outbound\.(retry|failed|sent)' data/bridge.log
 rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback|audio_fallback|voice_reference_missing)' data/bridge.log
 
 # voice diagnostics/recovery for pymax-empty events
-rg 'event=max\.(raw|inbound)\.(empty_message|empty_recovery|handler_registered|interceptor_installed)' data/bridge.log
+rg 'event=max\.(raw|inbound)\.(empty_message|empty_recovery|auxiliary_event|handler_registered|interceptor_installed)' data/bridge.log
 
 # последние неуспешные TG -> MAX доставки из SQLite
 sqlite3 -header -column data/bridge.db \
@@ -400,7 +400,8 @@ sqlite3 -header -column data/bridge.db \
 1. Отправь короткое голосовое в тестовый MAX DM.
 2. Убедись, что в Telegram topic пришёл native voice bubble.
 3. В логах проверь `attachment_types=["AUDIO"]` или `["VOICE"]`, затем `tg.outbound.sent media_type=voice`.
-4. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения.
+4. Если MAX сначала отдаёт пустой typed `USER`, bridge делает recent-history recovery. Успешный raw-history путь виден как `max.raw.auxiliary_event opcode_name=CHAT_HISTORY`, затем `max.inbound.empty_recovery outcome=recovered reason=raw_history_cache_match` или `raw_history_cache_after_fetch_error`.
+5. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения.
 
 ### Проверка 2: Telegram -> MAX
 

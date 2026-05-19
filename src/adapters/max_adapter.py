@@ -55,6 +55,8 @@ MAX_CDN_ANDROID_CHROME_USER_AGENT = (
 )
 MAX_DOWNLOAD_ATTEMPTS = 7
 MAX_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+MAX_RAW_HISTORY_CACHE_TTL_SECONDS = 180
+MAX_RAW_HISTORY_CACHE_SIZE = 256
 
 
 @dataclass
@@ -172,6 +174,7 @@ class MaxAdapter:
         self._last_issue_notification_signature: Optional[str] = None
         self._last_connected_at: Optional[int] = None
         self._raw_processed_message_ids: dict[tuple[str, str], float] = {}
+        self._raw_history_messages: dict[tuple[str, str], tuple[float, object]] = {}
 
     def on_message(self, handler: MessageHandler):
         self._handlers.append(handler)
@@ -550,6 +553,11 @@ class MaxAdapter:
             for key, expires_at in self._raw_processed_message_ids.items()
             if expires_at > now
         }
+        self._raw_history_messages = {
+            key: value
+            for key, value in self._raw_history_messages.items()
+            if value[0] > now
+        }
 
     def _mark_raw_unwrapped_message(self, chat_id: str, msg_id: str):
         self._cleanup_raw_unwrapped_state()
@@ -648,12 +656,18 @@ class MaxAdapter:
         normalized = dict(data)
         if "_type" in normalized and "type" not in normalized:
             normalized["type"] = normalized["_type"]
+        if "cid" in normalized and "chatId" not in normalized:
+            normalized["chatId"] = normalized["cid"]
         if "chat_id" in normalized and "chatId" not in normalized:
             normalized["chatId"] = normalized["chat_id"]
         if "chatId" in normalized and "chat_id" not in normalized:
             normalized["chat_id"] = normalized["chatId"]
+        if "message_id" in normalized and "id" not in normalized:
+            normalized["id"] = normalized["message_id"]
         if "messageId" in normalized and "id" not in normalized:
             normalized["id"] = normalized["messageId"]
+        if "msgId" in normalized and "id" not in normalized:
+            normalized["id"] = normalized["msgId"]
         if "attachments" in normalized and "attaches" not in normalized:
             normalized["attaches"] = normalized["attachments"]
         for source, target in {
@@ -700,7 +714,7 @@ class MaxAdapter:
         if not isinstance(payload, dict):
             return None, None
 
-        outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
+        outer_chat_id = self._payload_value(payload, "chatId", "chat_id", "cid")
         message = self._payload_value(payload, "message")
         if isinstance(message, dict):
             return self._normalize_message_dict(message), outer_chat_id
@@ -727,8 +741,8 @@ class MaxAdapter:
         message, outer_chat_id = self._payload_message_dict(payload)
         if not message:
             return None
-        chat_id = self._payload_value(message, "chatId", "chat_id") or outer_chat_id
-        msg_id = self._payload_value(message, "id", "messageId", "message_id")
+        chat_id = self._payload_value(message, "chatId", "chat_id", "cid") or outer_chat_id
+        msg_id = self._payload_value(message, "id", "messageId", "message_id", "msgId")
         if chat_id is None or msg_id is None:
             return None
         return str(chat_id), str(msg_id)
@@ -786,6 +800,120 @@ class MaxAdapter:
                 link=None,
                 reactionInfo=message.get("reactionInfo"),
             )
+
+    def _cache_raw_history_payload(self, payload: dict) -> int:
+        """Cache raw CHAT_HISTORY messages briefly for empty pymax events."""
+        if not isinstance(payload, dict):
+            return 0
+
+        raw_messages = self._payload_value(payload, "messages")
+        if not isinstance(raw_messages, list):
+            return 0
+
+        self._cleanup_raw_unwrapped_state()
+        outer_chat_id = self._payload_value(payload, "chatId", "chat_id", "cid")
+        cached = 0
+        now = time.monotonic()
+
+        for raw_message in raw_messages:
+            if not isinstance(raw_message, dict):
+                continue
+            message = self._normalize_message_dict(raw_message)
+            if not self._message_dict_has_content(message):
+                continue
+
+            chat_id = (
+                self._payload_value(message, "chatId", "chat_id", "cid")
+                or outer_chat_id
+            )
+            msg_id = self._payload_value(message, "id", "messageId", "message_id", "msgId")
+            if chat_id is None or msg_id is None:
+                continue
+
+            message_obj = self._message_object_from_dict(message, str(chat_id))
+            self._raw_history_messages[(str(chat_id), str(msg_id))] = (
+                now + MAX_RAW_HISTORY_CACHE_TTL_SECONDS,
+                message_obj,
+            )
+            cached += 1
+
+        if len(self._raw_history_messages) > MAX_RAW_HISTORY_CACHE_SIZE:
+            newest = sorted(
+                self._raw_history_messages.items(),
+                key=lambda item: item[1][0],
+                reverse=True,
+            )[:MAX_RAW_HISTORY_CACHE_SIZE]
+            self._raw_history_messages = dict(newest)
+
+        return cached
+
+    def _get_cached_raw_history_message(self, chat_id: str, msg_id: str):
+        self._cleanup_raw_unwrapped_state()
+        cached = self._raw_history_messages.get((str(chat_id), str(msg_id)))
+        if cached is None:
+            return None
+        _expires_at, message = cached
+        return message
+
+    def _prepare_empty_recovery_candidate(
+        self,
+        candidate,
+        *,
+        chat_id: str,
+        chat_id_int: int,
+        raw_msg_id_str: str,
+        flow_id: str,
+        reason: str,
+    ):
+        if isinstance(candidate, dict):
+            candidate = self._message_object_from_dict(
+                self._normalize_message_dict(candidate),
+                chat_id,
+            )
+
+        if not self._message_object_has_content(candidate):
+            log_event(
+                logger,
+                logging.INFO,
+                "max.inbound.empty_recovery",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="recover",
+                outcome="skipped",
+                reason=f"{reason}_without_content",
+                max_chat_id=chat_id,
+                max_msg_id=raw_msg_id_str,
+                message_class=candidate.__class__.__name__,
+                message_fields=self._safe_attachment_field_names(candidate),
+            )
+            return None
+
+        setattr(candidate, "_from_empty_recovery", True)
+        candidate_chat_id = getattr(candidate, "chat_id", None)
+        if candidate_chat_id is None:
+            setattr(candidate, "chat_id", chat_id_int)
+        attaches = getattr(candidate, "attaches", None) or []
+        attach_list = attaches if isinstance(attaches, list) else [attaches]
+        attachment_types = [
+            self._normalize_attachment_type(self._attachment_type_name(attach))
+            for attach in attach_list
+            if attach is not None and self._attachment_type_name(attach)
+        ]
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.empty_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="recover",
+            outcome="recovered",
+            reason=reason,
+            max_chat_id=chat_id,
+            max_msg_id=raw_msg_id_str,
+            attachment_types=attachment_types,
+            has_text=bool((getattr(candidate, "text", None) or "").strip()),
+        )
+        return candidate
 
     def _build_unwrapped_channel_message(self, payload: dict):
         if not isinstance(payload, dict):
@@ -915,13 +1043,30 @@ class MaxAdapter:
         message, outer_chat_id = self._payload_message_dict(payload)
         if message:
             chat_id = (
-                self._payload_value(message, "chatId", "chat_id")
+                self._payload_value(message, "chatId", "chat_id", "cid")
                 or outer_chat_id
             )
             msg_id = self._payload_value(message, "id", "messageId", "message_id", "msgId")
             return chat_id, msg_id
 
-        chat_id = self._payload_value(payload, "chatId", "chat_id")
+        messages = self._payload_value(payload, "messages")
+        if isinstance(messages, list):
+            for raw_message in messages:
+                if not isinstance(raw_message, dict):
+                    continue
+                message = self._normalize_message_dict(raw_message)
+                chat_id = self._payload_value(message, "chatId", "chat_id", "cid")
+                msg_id = self._payload_value(
+                    message,
+                    "id",
+                    "messageId",
+                    "message_id",
+                    "msgId",
+                )
+                if chat_id is not None or msg_id is not None:
+                    return chat_id, msg_id
+
+        chat_id = self._payload_value(payload, "chatId", "chat_id", "cid")
         msg_id = self._payload_value(payload, "messageId", "message_id", "msgId", "id")
         return chat_id, msg_id
 
@@ -1030,14 +1175,28 @@ class MaxAdapter:
         raw_msg_id: str,
         flow_id: str,
     ):
-        if not self._client:
-            return None
-        if getattr(self._client, "fetch_history", None) is None:
-            return None
         try:
             chat_id_int = int(chat_id)
             raw_msg_id_str = str(raw_msg_id)
         except (TypeError, ValueError):
+            return None
+
+        cached = self._get_cached_raw_history_message(chat_id, raw_msg_id_str)
+        if cached is not None:
+            recovered = self._prepare_empty_recovery_candidate(
+                cached,
+                chat_id=chat_id,
+                chat_id_int=chat_id_int,
+                raw_msg_id_str=raw_msg_id_str,
+                flow_id=flow_id,
+                reason="raw_history_cache_match",
+            )
+            if recovered is not None:
+                return recovered
+
+        if not self._client:
+            return None
+        if getattr(self._client, "fetch_history", None) is None:
             return None
 
         try:
@@ -1048,6 +1207,20 @@ class MaxAdapter:
                 backward=10,
             )
         except Exception as e:
+            await asyncio.sleep(0.2)
+            cached = self._get_cached_raw_history_message(chat_id, raw_msg_id_str)
+            if cached is not None:
+                recovered = self._prepare_empty_recovery_candidate(
+                    cached,
+                    chat_id=chat_id,
+                    chat_id_int=chat_id_int,
+                    raw_msg_id_str=raw_msg_id_str,
+                    flow_id=flow_id,
+                    reason="raw_history_cache_after_fetch_error",
+                )
+                if recovered is not None:
+                    return recovered
+
             log_event(
                 logger,
                 logging.WARNING,
@@ -1064,52 +1237,26 @@ class MaxAdapter:
             return None
 
         for candidate in messages or []:
-            candidate_id = getattr(candidate, "id", None)
+            if isinstance(candidate, dict):
+                candidate_id = self._payload_value(
+                    candidate,
+                    "id",
+                    "messageId",
+                    "message_id",
+                    "msgId",
+                )
+            else:
+                candidate_id = getattr(candidate, "id", None)
             if str(candidate_id) != raw_msg_id_str:
                 continue
-            if not self._message_object_has_content(candidate):
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "max.inbound.empty_recovery",
-                    flow_id=flow_id,
-                    direction="inbound",
-                    stage="recover",
-                    outcome="skipped",
-                    reason="recent_history_match_without_content",
-                    max_chat_id=chat_id,
-                    max_msg_id=raw_msg_id_str,
-                    message_class=candidate.__class__.__name__,
-                    message_fields=self._safe_attachment_field_names(candidate),
-                )
-                return None
-
-            setattr(candidate, "_from_empty_recovery", True)
-            candidate_chat_id = getattr(candidate, "chat_id", None)
-            if candidate_chat_id is None:
-                setattr(candidate, "chat_id", chat_id_int)
-            attaches = getattr(candidate, "attaches", None) or []
-            attach_list = attaches if isinstance(attaches, list) else [attaches]
-            attachment_types = [
-                self._normalize_attachment_type(self._attachment_type_name(attach))
-                for attach in attach_list
-                if attach is not None and self._attachment_type_name(attach)
-            ]
-            log_event(
-                logger,
-                logging.INFO,
-                "max.inbound.empty_recovery",
+            return self._prepare_empty_recovery_candidate(
+                candidate,
+                chat_id=chat_id,
+                chat_id_int=chat_id_int,
+                raw_msg_id_str=raw_msg_id_str,
                 flow_id=flow_id,
-                direction="inbound",
-                stage="recover",
-                outcome="recovered",
                 reason="recent_history_match",
-                max_chat_id=chat_id,
-                max_msg_id=raw_msg_id_str,
-                attachment_types=attachment_types,
-                has_text=bool((getattr(candidate, "text", None) or "").strip()),
             )
-            return candidate
 
         log_event(
             logger,
@@ -1131,14 +1278,18 @@ class MaxAdapter:
             from pymax.static.enum import Opcode
 
             notif_message_opcode = Opcode.NOTIF_MESSAGE.value
+            chat_history_opcode = Opcode.CHAT_HISTORY.value
         except Exception:
             notif_message_opcode = 128
+            chat_history_opcode = 49
 
         raw_opcode = data.get("opcode") if isinstance(data, dict) else None
         opcode_value = getattr(raw_opcode, "value", raw_opcode)
         if not isinstance(data, dict):
             return
         if opcode_value != notif_message_opcode:
+            if opcode_value == chat_history_opcode:
+                self._cache_raw_history_payload(data.get("payload") or {})
             self._log_raw_auxiliary_event(data)
             return
 
