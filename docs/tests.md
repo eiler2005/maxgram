@@ -111,6 +111,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_download_headers_for_url_uses_ios_chrome_user_agent` | Для signed MAX CDN URL с `srcAg=CHROME_IPHONE` downloader ставит iOS Chrome `User-Agent`. |
 | `test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url` | Для signed MAX CDN URL без `CHROME` downloader использует mobile Safari `User-Agent`. |
 | `test_download_video_by_id_uses_raw_video_play_payload` | `_download_video_by_id()` читает сырой payload `VIDEO_PLAY` и скачивает найденный media URL напрямую, не полагаясь на хрупкий upstream parser. |
+| `test_handle_raw_message_marks_failed_video_retryable_by_video_id` | Если MAX `VIDEO` не скачался, но есть `video_id`, failure становится retryable и хранит только стабильную meta-ссылку без URL/token. |
 | `test_download_from_url_uses_mobile_safari_user_agent` | Базовый downloader создаёт `tmp_dir`, делает HTTP GET с ожидаемым `User-Agent` и сохраняет файл с корректным именем. |
 | `test_download_from_url_logs_src_ag_and_sanitized_http_error` | При CDN HTTP-ошибке downloader пишет `src_ag`, `ua_family`, `http_status`, `download_source`, но не раскрывает signed query URL в `error`. |
 | `test_download_from_url_rejects_html_for_expected_video` | Post-validation блокирует `text/html`/HTML-body для ожидаемого `video`, чтобы player fallback не уходил в Telegram как файл/медиа. |
@@ -118,7 +119,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (29 тестов)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (34 теста)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -134,6 +135,11 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_on_tg_reply_logs_forward_completion` | После успешной доставки TG→MAX в логах присутствует событие `bridge.outbound.forward_finished` с `outcome=delivered`. |
 | `test_on_tg_reply_logs_failed_delivery_with_max_error` | Если TG→MAX отправка окончательно не удалась, bridge пишет `failed` в `delivery_log` с последней ошибкой MAX и числом попыток. |
 | `test_on_tg_reply_logs_too_large_outbound_failure` | Явно отклонённый oversized TG→MAX файл тоже фиксируется в `delivery_log`, а не только показывается в Telegram topic. |
+| `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает queued-placeholder и создаёт `pending_media_downloads` job. |
+| `test_pending_media_worker_delivers_video_and_maps_reply` | Retry worker скачивает отложенное видео, отправляет `send_video`, закрывает job и сохраняет reply mapping на исходный MAX message. |
+| `test_pending_media_worker_reschedules_download_failure` | Временный сбой скачивания переводит job в `retry` с увеличенным attempts и будущим `next_attempt_at`. |
+| `test_pending_media_worker_marks_missing_reference_terminal` | Job без стабильного `video_id` становится terminal failure, а не крутится бесконечно. |
+| `test_on_tg_reply_to_delayed_video_uses_original_max_message` | Reply на позднее досланное видео резолвится в исходный MAX `max_msg_id`. |
 | `test_get_or_create_topic_resolves_group_title_via_live_max_lookup` | Если `chat_title=None`, `_get_or_create_topic` делает live запрос `resolve_chat_title` и создаёт топик с правильным именем. |
 | `test_get_or_create_topic_prefers_dm_sender_name_for_title` | Для входящего DM topic создаётся по `sender_name`, если он уже есть в сообщении. |
 | `test_get_or_create_topic_uses_dm_sender_id_before_chat_id` | Для нового входящего DM `sender_id` пробуется раньше `chat_id`, потому что `chat_id` может быть id диалога. |

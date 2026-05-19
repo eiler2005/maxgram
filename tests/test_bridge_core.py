@@ -7,6 +7,7 @@ import pytest
 
 from src.adapters.max_adapter import MaxAttachment, MaxAttachmentFailure, MaxMessage
 from src.bridge.core import BridgeCore
+from src.db.repository import PendingMediaDownload
 from src.runtime.health import RuntimeHealthStore, Severity
 
 
@@ -18,6 +19,9 @@ class DummyRepo:
         self.saved_users: dict[str, str] = {}   # user_id → name
         self._find_user_result: str | None = None
         self.delivery_logs = []
+        self.pending_media = []
+        self.reply_mappings = {}
+        self.pending_stats = {"pending_count": 0, "oldest_created_at": None}
 
     async def get_binding_by_topic(self, tg_topic_id: int):
         return SimpleNamespace(max_chat_id="-70000000000003", tg_topic_id=tg_topic_id, mode="active")
@@ -26,7 +30,7 @@ class DummyRepo:
         return self.binding_by_chat.get(max_chat_id)
 
     async def get_max_msg_id_by_tg(self, tg_msg_id: int):
-        return "mx-reply-1"
+        return self.reply_mappings.get(tg_msg_id, "mx-reply-1")
 
     async def save_message(self, record):
         self.saved_record = record
@@ -42,6 +46,57 @@ class DummyRepo:
     async def log_delivery(self, *args, **kwargs):
         self.delivery_logs.append((args, kwargs))
         self.logged = (args, kwargs)
+
+    async def enqueue_pending_media(self, job):
+        job.id = len(self.pending_media) + 1
+        self.pending_media.append(job)
+        return job.id
+
+    async def get_due_pending_media(self, *, now=None, limit=5):
+        return [
+            job for job in self.pending_media
+            if job.status in {"pending", "retry", "leased"}
+        ][:limit]
+
+    async def lease_pending_media(self, job_id: int, *, lease_until: int, now=None):
+        for job in self.pending_media:
+            if job.id == job_id:
+                job.status = "leased"
+                job.lease_until = lease_until
+                return True
+        return False
+
+    async def mark_pending_media_retry(self, job_id: int, *, error: str, next_attempt_at: int, now=None):
+        for job in self.pending_media:
+            if job.id == job_id:
+                job.status = "retry"
+                job.attempts += 1
+                job.last_error = error
+                job.next_attempt_at = next_attempt_at
+                job.lease_until = None
+
+    async def mark_pending_media_delivered(self, job_id: int, *, tg_msg_id: int, now=None):
+        for job in self.pending_media:
+            if job.id == job_id:
+                job.status = "delivered"
+                job.attempts += 1
+                job.delivered_tg_msg_id = tg_msg_id
+                job.lease_until = None
+
+    async def mark_pending_media_failed(self, job_id: int, *, error: str, now=None):
+        for job in self.pending_media:
+            if job.id == job_id:
+                job.status = "failed"
+                job.attempts += 1
+                job.last_error = error
+                job.lease_until = None
+
+    async def save_tg_reply_mapping(self, tg_msg_id: int, max_chat_id: str, max_msg_id: str,
+                                    tg_topic_id: int | None, *, source: str, commit: bool = True):
+        self.reply_mappings[tg_msg_id] = max_msg_id
+
+    async def count_pending_media(self):
+        return self.pending_stats
 
     async def list_bindings(self):
         return self.bindings
@@ -64,6 +119,8 @@ class DummyMax:
         self._find_user_result: str | None = None
         self._last_outbound_error: str | None = None
         self._last_outbound_attempts: int = 0
+        self.video_reference_result = None
+        self.video_reference_calls = []
 
     def on_message(self, handler):
         self.handler = handler
@@ -87,6 +144,10 @@ class DummyMax:
                            media_path=None, media_type=None, flow_id=None):
         self.sent = (chat_id, text, reply_to_msg_id, flow_id)
         return "mx-out-1"
+
+    async def download_video_reference(self, **kwargs):
+        self.video_reference_calls.append(kwargs)
+        return self.video_reference_result
 
     def get_last_outbound_error(self) -> str | None:
         return self._last_outbound_error
@@ -480,6 +541,253 @@ async def test_forward_to_telegram_reports_failed_attachment_download(tmp_path):
     assert tg_adapter.calls == [
         ("text", "⚠️ Не удалось скачать вложение MAX: video #1"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_on_max_message_enqueues_retryable_video_failure(tmp_path):
+    repo = DummyRepo()
+    repo.binding_by_chat["-70000000000003"] = SimpleNamespace(
+        max_chat_id="-70000000000003",
+        tg_topic_id=99,
+        title="Тестовая группа",
+        mode="active",
+    )
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    photo_path = Path(tmp_path) / "photo.jpg"
+    photo_path.write_bytes(b"\xff\xd8\xff")
+    msg = MaxMessage(
+        msg_id="mx-video-1",
+        chat_id="-70000000000003",
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text="",
+        attachments=[MaxAttachment("photo", str(photo_path), "photo.jpg", None, 10, 10, "PHOTO")],
+        attachment_types=["PHOTO", "VIDEO"],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+        attachment_failures=[
+            MaxAttachmentFailure(
+                kind="video",
+                source_type="VIDEO",
+                filename=None,
+                index=4,
+                reason="download_failed",
+                retryable=True,
+                media_chat_id="-70000000000003",
+                media_msg_id="mx-video-1",
+                reference_kind="video_id",
+                reference_id="555",
+                duration=10,
+                width=640,
+                height=360,
+            )
+        ],
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == [
+        ("photo", "[Тестовый Пользователь]"),
+        ("text", "⏳ Видео MAX #5 докачивается и будет дослано позже"),
+    ]
+    assert len(repo.pending_media) == 1
+    job = repo.pending_media[0]
+    assert job.reference_kind == "video_id"
+    assert job.reference_id == "555"
+    assert job.tg_topic_id == 99
+    assert job.attachment_index == 4
+    assert "http" not in str(job)
+    assert "token" not in str(job).lower()
+
+
+@pytest.mark.asyncio
+async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    video_path = Path(tmp_path) / "retry.mp4"
+    video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    max_adapter.video_reference_result = MaxAttachment(
+        "video",
+        str(video_path),
+        "retry.mp4",
+        10,
+        640,
+        360,
+        "VIDEO",
+    )
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-video-1",
+        tg_topic_id=99,
+        attachment_index=4,
+        kind="video",
+        source_type="VIDEO",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-video-1",
+        reference_kind="video_id",
+        reference_id="555",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await bridge._process_pending_media_download(job)
+
+    assert tg_adapter.calls == [
+        ("video", "Докачанное видео MAX #5", "retry.mp4", 10, 640, 360),
+    ]
+    assert repo.reply_mappings[3] == "mx-video-1"
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 3
+    assert not video_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pending_media_worker_reschedules_download_failure():
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-video-1",
+        tg_topic_id=99,
+        attachment_index=4,
+        kind="video",
+        source_type="VIDEO",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-video-1",
+        reference_kind="video_id",
+        reference_id="555",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await bridge._process_pending_media_download(job)
+
+    assert job.status == "retry"
+    assert job.attempts == 1
+    assert job.last_error == "download_failed"
+    assert job.next_attempt_at > 0
+
+
+@pytest.mark.asyncio
+async def test_pending_media_worker_marks_missing_reference_terminal():
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-video-1",
+        tg_topic_id=99,
+        attachment_index=4,
+        kind="video",
+        source_type="VIDEO",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-video-1",
+        reference_kind="video_id",
+        reference_id="",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await bridge._process_pending_media_download(job)
+
+    assert job.status == "failed"
+    assert job.last_error == "missing_stable_media_reference"
+
+
+@pytest.mark.asyncio
+async def test_on_tg_reply_to_delayed_video_uses_original_max_message():
+    repo = DummyRepo()
+    repo.reply_mappings[777] = "mx-video-1"
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    await bridge._on_tg_reply(
+        topic_id=99,
+        tg_msg_id=778,
+        text="Ответ на позднее видео",
+        reply_to_tg_msg_id=777,
+        sender_name="Мария Иванова",
+    )
+
+    assert max_adapter.sent == (
+        "-70000000000003",
+        "[Мария Иванова]\nОтвет на позднее видео",
+        "mx-video-1",
+        "tg:99:778",
+    )
 
 
 @pytest.mark.asyncio

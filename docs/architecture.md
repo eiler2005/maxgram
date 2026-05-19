@@ -226,6 +226,7 @@ src/logging_utils.py
 - `tg.inbound.*` — входящее из Telegram и скачивание медиа
 - `bridge.outbound.*` — reply resolution и доставка TG -> MAX
 - `max.outbound.*` — отправка в MAX и echo/ack result
+- `bridge.media_retry.*` — durable retry MAX-видео из `pending_media_downloads`
 - `bridge.watchdog.*`, `bridge.cleanup.*`, `app.startup.*` — эксплуатационные фоновые события
 
 Общие поля событий:

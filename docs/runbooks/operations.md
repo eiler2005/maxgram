@@ -337,17 +337,29 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - при обрыве следующая попытка отправляет `Range: bytes=<уже_скачано>-`;
 - если CDN не поддерживает `Range` и отвечает `200`, bridge удаляет `*.part` и качает заново;
 - если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
-- если после всех попыток вложение не скачалось, bridge отправляет в Telegram текстовое предупреждение вместо тихой потери.
+- если ретриабельное видео всё равно не скачалось, bridge отправляет остальные части сообщения сразу, показывает `⏳ Видео MAX #N докачивается...` и кладёт job в `pending_media_downloads`;
+- retry worker заново получает playable URL через `VIDEO_PLAY`, не хранит signed URL/token/text, и досылает видео в тот же Telegram topic отдельным сообщением.
 
 Что смотреть в логах:
 
 ```bash
 rg 'flow_id=mx:<chat_id>:<msg_id>' data/bridge.log
 rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback|audio_fallback|voice_reference_missing)' data/bridge.log
+rg 'event=bridge\.media_retry\.(enqueued|attempt_started|retry_scheduled|delivered|failed)' data/bridge.log
 rg 'event=bridge\.inbound\.forward_finished .*outcome=partial' data/bridge.log
 ```
 
 Для CDN download-ошибок смотри поля `src_ag`, `ua_family`, `http_status` и `download_source`. Signed query-параметры URL в логах не должны появляться.
+
+Очередь durable video retry:
+
+```bash
+sqlite3 -header -column data/bridge.db \
+  "SELECT id, max_msg_id, max_chat_id, attachment_index, status, attempts, datetime(next_attempt_at, 'unixepoch', 'localtime') AS next_local, last_error \
+   FROM pending_media_downloads \
+   WHERE status IN ('pending','retry','leased') \
+   ORDER BY next_attempt_at LIMIT 20"
+```
 
 В `delivery_log` для частичной доставки:
 
@@ -380,7 +392,8 @@ sqlite3 -header -column data/bridge.db \
 1. Отправь короткое видео в тестовый MAX-чат или DM.
 2. Убедись, что в Telegram оно пришло именно видео-сообщением.
 3. В логах проверь `max.attachment.download outcome=downloaded`, затем `tg.outbound.sent media_type=video`.
-4. Если вместо видео пришёл текст `⚠️ Не удалось скачать вложение MAX...`, смотри `max.attachment.download_retry` и `delivery_log.status='partial'`.
+4. Если пришёл текст `⏳ Видео MAX #N докачивается...`, проверь `bridge.media_retry.enqueued`, затем `bridge.media_retry.delivered` и `tg.outbound.sent media_type=video`.
+5. Если видео стало terminal failure, смотри `bridge.media_retry.failed` и строку в `pending_media_downloads.last_error`.
 
 ### Проверка 1c: MAX voice -> Telegram
 

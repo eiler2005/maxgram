@@ -394,6 +394,10 @@ async def run_bridge_worker(cfg,
                 name="tg_polling",
             )
             tg.create_task(bridge.run_cleanup(), name="cleanup")
+            tg.create_task(
+                bridge.run_pending_media_downloads(),
+                name="pending_media_downloads",
+            )
             tg.create_task(bridge.run_max_watchdog(), name="max_watchdog")
             tg.create_task(
                 bridge.run_periodic_status(cfg.health.reminder_interval_hours),

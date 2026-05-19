@@ -77,6 +77,14 @@ class MaxAttachmentFailure:
     filename: Optional[str]
     index: int
     reason: str
+    retryable: bool = False
+    media_chat_id: Optional[str] = None
+    media_msg_id: Optional[str] = None
+    reference_kind: Optional[str] = None
+    reference_id: Optional[str] = None
+    duration: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
 
 
 @dataclass
@@ -1345,6 +1353,8 @@ class MaxAdapter:
                 "filename": sanitize_path(failure.filename),
                 "index": failure.index,
                 "reason": failure.reason,
+                "retryable": failure.retryable,
+                "reference_kind": failure.reference_kind,
             }
             for failure in failures
         ]
@@ -1359,6 +1369,48 @@ class MaxAdapter:
         if atype == "FILE":
             return "document"
         return atype.lower() or "unknown"
+
+    def _build_attachment_failure(
+        self,
+        *,
+        atype: str,
+        raw_type: str,
+        attach,
+        index: int,
+        filename: Optional[str],
+        media_chat_id: str,
+        media_msg_id: str,
+        reason: str = "download_failed",
+    ) -> MaxAttachmentFailure:
+        retryable = False
+        reference_kind = None
+        reference_id = None
+        if atype == "VIDEO":
+            video_id = (
+                getattr(attach, "video_id", None)
+                or getattr(attach, "videoId", None)
+                or getattr(attach, "id", None)
+            )
+            if video_id is not None:
+                retryable = True
+                reference_kind = "video_id"
+                reference_id = str(video_id)
+
+        return MaxAttachmentFailure(
+            kind=self._attachment_kind_for_type(atype),
+            source_type=raw_type,
+            filename=filename,
+            index=index,
+            reason=reason,
+            retryable=retryable,
+            media_chat_id=str(media_chat_id) if media_chat_id is not None else None,
+            media_msg_id=str(media_msg_id) if media_msg_id is not None else None,
+            reference_kind=reference_kind,
+            reference_id=reference_id,
+            duration=getattr(attach, "duration", None),
+            width=getattr(attach, "width", None),
+            height=getattr(attach, "height", None),
+        )
 
     def _should_skip_empty_event(self, message_type: Optional[str], text: Optional[str],
                                  attachments: list["MaxAttachment"],
@@ -2319,6 +2371,47 @@ class MaxAdapter:
             )
         return None, None
 
+    async def download_video_reference(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        video_id: str,
+        attachment_index: int = 0,
+        filename_hint: Optional[str] = None,
+        duration: Optional[int] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        source_type: Optional[str] = "VIDEO",
+        flow_id: Optional[str] = None,
+    ) -> Optional[MaxAttachment]:
+        """Скачать видео по стабильной ссылке MAX без хранения signed URL."""
+        idx = f"_{attachment_index}" if attachment_index > 0 else ""
+        try:
+            video_id_int = int(video_id)
+        except (TypeError, ValueError):
+            return None
+
+        local_path, filename = await self._download_video_by_id(
+            chat_id,
+            msg_id,
+            video_id_int,
+            f"video_retry_{chat_id}_{msg_id}{idx}",
+            filename_hint,
+            flow_id=flow_id,
+        )
+        if not local_path:
+            return None
+        return MaxAttachment(
+            kind="video",
+            local_path=local_path,
+            filename=filename,
+            duration=duration,
+            width=width,
+            height=height,
+            source_type=source_type,
+        )
+
     async def _download_attachment(self, chat_id: str, msg_id: str,
                                    attach, index: int = 0,
                                    flow_id: Optional[str] = None) -> Optional[MaxAttachment]:
@@ -2745,12 +2838,14 @@ class MaxAdapter:
                         attachments.append(attachment)
                     else:
                         attachment_failures.append(
-                            MaxAttachmentFailure(
-                                kind=self._attachment_kind_for_type(atype),
-                                source_type=raw_type,
-                                filename=filename_hint,
+                            self._build_attachment_failure(
+                                atype=atype,
+                                raw_type=raw_type,
+                                attach=attach,
                                 index=media_index - 1,
-                                reason="download_failed",
+                                filename=filename_hint,
+                                media_chat_id=media_chat_id,
+                                media_msg_id=media_msg_id,
                             )
                         )
                     continue

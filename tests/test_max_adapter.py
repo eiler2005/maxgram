@@ -1654,6 +1654,64 @@ async def test_download_video_by_id_uses_raw_video_play_payload(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_marks_failed_video_retryable_by_video_id(tmp_path):
+    class FailingVideoAdapter(MaxAdapter):
+        async def _download_video_by_id(self, *args, **kwargs):
+            return None, None
+
+    adapter = FailingVideoAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(users={7001: make_user("Вита")})
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    await adapter._handle_raw_message(
+        SimpleNamespace(
+            id=777,
+            chat_id=-70000000000003,
+            sender=7001,
+            text="",
+            type="USER",
+            status=None,
+            attaches=[
+                SimpleNamespace(
+                    type="VIDEO",
+                    video_id=555,
+                    duration=10,
+                    width=640,
+                    height=360,
+                    url=None,
+                    token="secret-token",
+                )
+            ],
+            link=None,
+        )
+    )
+
+    assert len(received) == 1
+    failure = received[0].attachment_failures[0]
+    assert failure.kind == "video"
+    assert failure.retryable is True
+    assert failure.reference_kind == "video_id"
+    assert failure.reference_id == "555"
+    assert failure.media_chat_id == "-70000000000003"
+    assert failure.media_msg_id == "777"
+    assert failure.duration == 10
+    assert failure.width == 640
+    assert failure.height == 360
+    assert "secret-token" not in str(failure)
+    assert "http" not in str(failure)
+
+
+@pytest.mark.asyncio
 async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeypatch):
     adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     captured = {}

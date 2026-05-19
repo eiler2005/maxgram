@@ -21,7 +21,7 @@ from typing import Optional
 from ..adapters.max_adapter import MaxAdapter, MaxAttachment, MaxAttachmentFailure, MaxMessage
 from ..adapters.tg_adapter import TelegramAdapter
 from ..config.loader import AppConfig
-from ..db.repository import Repository, ChatBinding, MessageRecord
+from ..db.repository import Repository, ChatBinding, MessageRecord, PendingMediaDownload
 from ..logging_utils import build_max_flow_id, build_tg_flow_id, log_event, sanitize_path
 from ..runtime.health import (
     RuntimeHealthStore,
@@ -235,6 +235,13 @@ class BridgeCore:
                 delivery_status,
                 delivery_error,
             )
+            enqueued_media = 0
+            if msg.attachment_failures:
+                enqueued_media = await self._enqueue_retryable_media_failures(
+                    msg,
+                    topic_id,
+                    flow_id=flow_id,
+                )
             if msg.attachments or msg.attachment_failures:
                 self._stats["inbound_media"] += 1
             else:
@@ -253,6 +260,7 @@ class BridgeCore:
                 tg_topic_id=topic_id,
                 tg_msg_id=tg_msg_id,
                 failed_attachment_count=len(msg.attachment_failures),
+                enqueued_media_count=enqueued_media,
             )
         else:
             await self._repo.log_delivery(msg.msg_id, msg.chat_id, "inbound", "failed",
@@ -271,6 +279,59 @@ class BridgeCore:
                 max_msg_id=msg.msg_id,
                 tg_topic_id=topic_id,
             )
+
+    async def _enqueue_retryable_media_failures(
+        self,
+        msg: MaxMessage,
+        topic_id: int,
+        *,
+        flow_id: Optional[str] = None,
+    ) -> int:
+        enqueued = 0
+        now = int(time.time())
+        first_retry_at = now + 60
+        for failure in msg.attachment_failures:
+            if not self._is_retryable_media_failure(failure):
+                continue
+
+            job_id = await self._repo.enqueue_pending_media(
+                PendingMediaDownload(
+                    max_chat_id=msg.chat_id,
+                    max_msg_id=msg.msg_id,
+                    tg_topic_id=topic_id,
+                    attachment_index=failure.index,
+                    kind=failure.kind,
+                    source_type=failure.source_type,
+                    media_chat_id=failure.media_chat_id or msg.chat_id,
+                    media_msg_id=failure.media_msg_id or msg.msg_id,
+                    reference_kind=failure.reference_kind or "video_id",
+                    reference_id=failure.reference_id or "",
+                    filename=failure.filename,
+                    duration=failure.duration,
+                    width=failure.width,
+                    height=failure.height,
+                    next_attempt_at=first_retry_at,
+                    last_error=failure.reason,
+                )
+            )
+            enqueued += 1
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.media_retry.enqueued",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="media_retry",
+                outcome="enqueued",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+                pending_media_id=job_id,
+                attachment_index=failure.index,
+                kind=failure.kind,
+                reference_kind=failure.reference_kind,
+            )
+        return enqueued
 
     async def _get_or_create_topic(self, msg: MaxMessage, *,
                                    flow_id: Optional[str] = None) -> Optional[int]:
@@ -441,8 +502,40 @@ class BridgeCore:
         lines = []
         for failure in failures:
             label = failure.filename or f"{failure.kind} #{failure.index + 1}"
-            lines.append(f"⚠️ Не удалось скачать вложение MAX: {label}")
+            if self._is_retryable_media_failure(failure):
+                lines.append(
+                    f"⏳ Видео MAX #{failure.index + 1} докачивается "
+                    "и будет дослано позже"
+                )
+            else:
+                lines.append(f"⚠️ Не удалось скачать вложение MAX: {label}")
         return "\n".join(lines)
+
+    def _is_retryable_media_failure(self, failure: MaxAttachmentFailure) -> bool:
+        return bool(
+            failure.retryable
+            and failure.kind == "video"
+            and failure.reference_kind == "video_id"
+            and failure.reference_id
+            and failure.media_chat_id
+            and failure.media_msg_id
+        )
+
+    def _pending_media_retry_delay(self, attempts_after_failure: int) -> int:
+        # Бесконечный retry с cap: 1m, 2m, 4m ... до 6h.
+        exponent = max(0, min(attempts_after_failure - 1, 8))
+        return min(6 * 3600, 60 * (2 ** exponent))
+
+    def _format_duration_compact(self, seconds: int) -> str:
+        if seconds < 60:
+            return f"{seconds}с"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}м"
+        hours = minutes // 60
+        if hours < 48:
+            return f"{hours}ч"
+        return f"{hours // 24}д"
 
     def _build_failed_outbound_id(self, topic_id: int, tg_msg_id: Optional[int]) -> str:
         suffix = tg_msg_id if tg_msg_id is not None else int(time.time())
@@ -868,6 +961,246 @@ class BridgeCore:
             media_type=media_type,
         )
 
+    # ── Pending media retry ────────────────────────────────────────────────
+
+    async def _mark_pending_media_retry(
+        self,
+        job: PendingMediaDownload,
+        *,
+        error: str,
+        flow_id: str,
+    ):
+        attempts_after_failure = int(job.attempts or 0) + 1
+        delay = self._pending_media_retry_delay(attempts_after_failure)
+        next_attempt_at = int(time.time()) + delay
+        await self._repo.mark_pending_media_retry(
+            job.id,
+            error=error,
+            next_attempt_at=next_attempt_at,
+        )
+        log_event(
+            logger,
+            logging.WARNING,
+            "bridge.media_retry.retry_scheduled",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="media_retry",
+            outcome="retry",
+            reason=error,
+            max_chat_id=job.max_chat_id,
+            max_msg_id=job.max_msg_id,
+            tg_topic_id=job.tg_topic_id,
+            pending_media_id=job.id,
+            attachment_index=job.attachment_index,
+            attempts=attempts_after_failure,
+            retry_in_seconds=delay,
+        )
+
+    async def _process_pending_media_download(self, job: PendingMediaDownload):
+        flow_id = build_max_flow_id(
+            job.max_chat_id,
+            f"{job.max_msg_id}:media:{job.attachment_index}",
+        )
+        if not job.id:
+            return
+        if job.kind != "video" or job.reference_kind != "video_id" or not job.reference_id:
+            await self._repo.mark_pending_media_failed(
+                job.id,
+                error="missing_stable_media_reference",
+            )
+            log_event(
+                logger,
+                logging.ERROR,
+                "bridge.media_retry.failed",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="media_retry",
+                outcome="failed",
+                reason="missing_stable_media_reference",
+                max_chat_id=job.max_chat_id,
+                max_msg_id=job.max_msg_id,
+                pending_media_id=job.id,
+            )
+            return
+
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.media_retry.attempt_started",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="media_retry",
+            outcome="started",
+            max_chat_id=job.max_chat_id,
+            max_msg_id=job.max_msg_id,
+            tg_topic_id=job.tg_topic_id,
+            pending_media_id=job.id,
+            attachment_index=job.attachment_index,
+            attempts=int(job.attempts or 0) + 1,
+            kind=job.kind,
+            reference_kind=job.reference_kind,
+        )
+
+        download_video = getattr(self._max, "download_video_reference", None)
+        if not callable(download_video):
+            await self._mark_pending_media_retry(
+                job,
+                error="max_adapter_missing_video_retry",
+                flow_id=flow_id,
+            )
+            return
+
+        try:
+            attachment = await download_video(
+                chat_id=job.media_chat_id,
+                msg_id=job.media_msg_id,
+                video_id=job.reference_id,
+                attachment_index=job.attachment_index,
+                filename_hint=job.filename,
+                duration=job.duration,
+                width=job.width,
+                height=job.height,
+                source_type=job.source_type or "VIDEO",
+                flow_id=flow_id,
+            )
+        except Exception as e:
+            await self._mark_pending_media_retry(
+                job,
+                error=f"download_exception:{e.__class__.__name__}",
+                flow_id=flow_id,
+            )
+            return
+        if attachment is None:
+            await self._mark_pending_media_retry(
+                job,
+                error="download_failed",
+                flow_id=flow_id,
+            )
+            return
+
+        try:
+            if self._is_file_too_large(attachment.local_path):
+                placeholder = self._cfg.content.placeholder_file_too_large.format(
+                    filename=attachment.filename or Path(attachment.local_path).name
+                )
+                await self._tg.send_text(job.tg_topic_id, placeholder, flow_id=flow_id)
+                await self._repo.mark_pending_media_failed(
+                    job.id,
+                    error="file_too_large",
+                )
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "bridge.media_retry.failed",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="media_retry",
+                    outcome="failed",
+                    reason="file_too_large",
+                    max_chat_id=job.max_chat_id,
+                    max_msg_id=job.max_msg_id,
+                    tg_topic_id=job.tg_topic_id,
+                    pending_media_id=job.id,
+                    attachment_index=job.attachment_index,
+                )
+                return
+
+            caption = f"Докачанное видео MAX #{job.attachment_index + 1}"
+            try:
+                tg_msg_id = await self._send_attachment(
+                    job.tg_topic_id,
+                    attachment,
+                    caption,
+                    flow_id=flow_id,
+                )
+            except Exception as e:
+                await self._mark_pending_media_retry(
+                    job,
+                    error=f"tg_send_exception:{e.__class__.__name__}",
+                    flow_id=flow_id,
+                )
+                return
+            if not tg_msg_id:
+                await self._mark_pending_media_retry(
+                    job,
+                    error="tg_send_failed",
+                    flow_id=flow_id,
+                )
+                return
+
+            await self._repo.save_tg_reply_mapping(
+                tg_msg_id,
+                job.max_chat_id,
+                job.max_msg_id,
+                job.tg_topic_id,
+                source="pending_media",
+            )
+            await self._repo.mark_pending_media_delivered(
+                job.id,
+                tg_msg_id=tg_msg_id,
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.media_retry.delivered",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="media_retry",
+                outcome="delivered",
+                max_chat_id=job.max_chat_id,
+                max_msg_id=job.max_msg_id,
+                tg_topic_id=job.tg_topic_id,
+                tg_msg_id=tg_msg_id,
+                pending_media_id=job.id,
+                attachment_index=job.attachment_index,
+                attempts=int(job.attempts or 0) + 1,
+            )
+        finally:
+            try:
+                Path(attachment.local_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    async def run_pending_media_downloads(
+        self,
+        poll_interval: int = 60,
+        lease_seconds: int = 600,
+    ):
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.media_retry.worker_started",
+            stage="media_retry",
+            outcome="started",
+            poll_interval_seconds=poll_interval,
+            lease_seconds=lease_seconds,
+        )
+        while True:
+            try:
+                now = int(time.time())
+                jobs = await self._repo.get_due_pending_media(now=now, limit=5)
+                for job in jobs:
+                    if not job.id:
+                        continue
+                    leased = await self._repo.lease_pending_media(
+                        job.id,
+                        lease_until=now + lease_seconds,
+                        now=now,
+                    )
+                    if not leased:
+                        continue
+                    await self._process_pending_media_download(job)
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "bridge.media_retry.worker_failed",
+                    stage="media_retry",
+                    outcome="failed",
+                    error=str(e),
+                )
+            await asyncio.sleep(poll_interval)
+
     # ── Status report ─────────────────────────────────────────────────────
 
     async def _build_status_message(self, period_hours: int = 4) -> str:
@@ -924,6 +1257,15 @@ class BridgeCore:
                          f"  (↓{failed_in} ↑{failed_out})")
         else:
             lines.append("  Ошибок: 0")
+
+        media_stats = await self._repo.count_pending_media()
+        pending_media = int(media_stats.get("pending_count") or 0)
+        if pending_media:
+            oldest = media_stats.get("oldest_created_at")
+            age_text = ""
+            if oldest:
+                age_text = f", старейшее {self._format_duration_compact(int(time.time()) - int(oldest))}"
+            lines.append(f"  ⏳ Медиа в retry: {pending_media}{age_text}")
 
         if chat_activity:
             lines += ["", "💬 Активные чаты"]

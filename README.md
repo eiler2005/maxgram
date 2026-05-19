@@ -44,7 +44,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
 - **Ansible-driven ops** — regular deploy, backup, recovery, fresh-VM bootstrap, and hardening are all codified as idempotent playbooks under `infra/ansible/`; the manual runbook is kept only as fallback
 - **Supervisor runtime shell** — PID1 is now a supervisor that keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
-- **Resilient delivery** — Telegram API calls retry with exponential backoff; temporary TG→MAX transport failures retry automatically; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; `/status` gives live health snapshot on demand
+- **Resilient delivery** — Telegram API calls retry with exponential backoff; temporary TG→MAX transport failures retry automatically; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; retryable MAX video downloads are persisted until delivered; `/status` gives live health snapshot on demand
 - **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
 
 ---
@@ -55,6 +55,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Bidirectional messaging — replies in Telegram → delivered to MAX (including reply-to-message)
 - Media forwarding in both directions: photos, video, audio, voice, documents
 - MAX video downloads prefer real `MP4_*` streams over `EXTERNAL` player pages and use an adaptive CDN user-agent (`CHROME` vs mobile Safari)
+- Retryable MAX video failures are queued in SQLite and sent later to the same Telegram topic without storing signed URLs or tokens
 - MAX downloader validates `Content-Type` + file signature and rejects HTML/text fallbacks for expected media
 - MAX `CHANNEL`/forward wrappers are unwrapped into the real forwarded text and media instead of a generic system placeholder
 - Unknown MAX message shapes are forwarded with diagnostic metadata (`type`, `link_*`, counts, raw field names) so new formats can be fixed from the next occurrence

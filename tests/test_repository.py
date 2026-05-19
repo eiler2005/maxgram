@@ -1,6 +1,6 @@
 import pytest
 
-from src.db.repository import MessageRecord, Repository, KnownUser
+from src.db.repository import MessageRecord, PendingMediaDownload, Repository, KnownUser
 
 
 @pytest.mark.asyncio
@@ -32,6 +32,7 @@ async def test_save_message_upserts_tg_fields(tmp_path):
         )
 
         assert await repo.get_max_msg_id_by_tg(777) == "m1"
+        assert await repo.get_max_msg_id_by_tg(999) is None
 
         async with repo._db.execute(
             "SELECT tg_msg_id, tg_topic_id, direction FROM message_map WHERE max_msg_id = ? AND max_chat_id = ?",
@@ -42,6 +43,74 @@ async def test_save_message_upserts_tg_fields(tmp_path):
         assert row["tg_msg_id"] == 777
         assert row["tg_topic_id"] == 12
         assert row["direction"] == "inbound"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_tg_reply_mapping_resolves_delayed_media_message(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        await repo.save_tg_reply_mapping(
+            888,
+            "chat-1",
+            "m-delayed",
+            12,
+            source="pending_media",
+        )
+
+        assert await repo.get_max_msg_id_by_tg(888) == "m-delayed"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_media_queue_lifecycle_is_idempotent(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        job = PendingMediaDownload(
+            max_chat_id="chat-1",
+            max_msg_id="m1",
+            tg_topic_id=12,
+            attachment_index=4,
+            kind="video",
+            source_type="VIDEO",
+            media_chat_id="chat-1",
+            media_msg_id="m1",
+            reference_kind="video_id",
+            reference_id="555",
+            duration=10,
+            width=640,
+            height=360,
+            next_attempt_at=10,
+        )
+        first_id = await repo.enqueue_pending_media(job)
+        second_id = await repo.enqueue_pending_media(job)
+
+        assert first_id == second_id
+        due = await repo.get_due_pending_media(now=10)
+        assert len(due) == 1
+        assert due[0].reference_kind == "video_id"
+        assert due[0].reference_id == "555"
+
+        assert await repo.lease_pending_media(first_id, lease_until=100, now=10) is True
+        assert await repo.lease_pending_media(first_id, lease_until=100, now=10) is False
+
+        await repo.mark_pending_media_retry(first_id, error="download_failed", next_attempt_at=70, now=11)
+        due = await repo.get_due_pending_media(now=69)
+        assert due == []
+        due = await repo.get_due_pending_media(now=70)
+        assert len(due) == 1
+        assert due[0].attempts == 1
+        assert due[0].status == "retry"
+
+        await repo.mark_pending_media_delivered(first_id, tg_msg_id=999, now=80)
+        stats = await repo.count_pending_media()
+        assert stats == {"pending_count": 0, "oldest_created_at": None}
     finally:
         await repo.close()
 
