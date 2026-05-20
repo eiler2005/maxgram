@@ -131,6 +131,8 @@ class DummyMax:
         self._last_outbound_attempts: int = 0
         self.video_reference_result = None
         self.video_reference_calls = []
+        self.audio_reference_result = None
+        self.audio_reference_calls = []
         self.replay_calls = []
         self.empty_stats = {"pending_count": 0, "oldest_created_at": None}
 
@@ -160,6 +162,10 @@ class DummyMax:
     async def download_video_reference(self, **kwargs):
         self.video_reference_calls.append(kwargs)
         return self.video_reference_result
+
+    async def download_audio_reference(self, **kwargs):
+        self.audio_reference_calls.append(kwargs)
+        return self.audio_reference_result
 
     async def replay_recent_history(self, chat_id: str, *, limit: int = 30, since_ts=None, flow_id=None):
         self.replay_calls.append((chat_id, limit, since_ts, flow_id))
@@ -770,6 +776,73 @@ async def test_on_max_message_enqueues_retryable_video_failure(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_on_max_message_enqueues_retryable_audio_failure():
+    repo = DummyRepo()
+    repo.binding_by_chat["200056208"] = SimpleNamespace(
+        max_chat_id="200056208",
+        tg_topic_id=1372,
+        title="Людмила",
+        mode="active",
+    )
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+    msg = MaxMessage(
+        msg_id="116605799957888782",
+        chat_id="200056208",
+        chat_title=None,
+        sender_id="7001",
+        sender_name="Людмила",
+        text="",
+        attachments=[],
+        attachment_types=["AUDIO"],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=True,
+        is_own=False,
+        raw=None,
+        attachment_failures=[
+            MaxAttachmentFailure(
+                kind="audio",
+                source_type="AUDIO",
+                filename=None,
+                index=0,
+                reason="download_failed",
+                retryable=True,
+                media_chat_id="200056208",
+                media_msg_id="116605799957888782",
+                reference_kind="audio_id",
+                reference_id="92",
+                duration=9,
+            )
+        ],
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == [
+        ("text", "⏳ Голосовое MAX #1 докачивается и будет дослано позже"),
+    ]
+    assert len(repo.pending_media) == 1
+    job = repo.pending_media[0]
+    assert job.kind == "audio"
+    assert job.reference_kind == "audio_id"
+    assert job.reference_id == "92"
+
+
+@pytest.mark.asyncio
 async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
     repo = DummyRepo()
     max_adapter = DummyMax()
@@ -823,6 +896,62 @@ async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
     assert job.status == "delivered"
     assert job.delivered_tg_msg_id == 3
     assert not video_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pending_media_worker_delivers_audio_as_voice_and_maps_reply(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+    voice_path = Path(tmp_path) / "retry.ogg"
+    voice_path.write_bytes(b"OggS")
+    max_adapter.audio_reference_result = MaxAttachment(
+        "audio",
+        str(voice_path),
+        "retry.ogg",
+        9,
+        None,
+        None,
+        "AUDIO",
+    )
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="200056208",
+        max_msg_id="116605799957888782",
+        tg_topic_id=1372,
+        attachment_index=0,
+        kind="audio",
+        source_type="AUDIO",
+        media_chat_id="200056208",
+        media_msg_id="116605799957888782",
+        reference_kind="audio_id",
+        reference_id="92",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await bridge._process_pending_media_download(job)
+
+    assert tg_adapter.calls == [
+        ("voice", "Докачанное голосовое MAX #1", 9),
+    ]
+    assert repo.reply_mappings[6] == "116605799957888782"
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 6
+    assert not voice_path.exists()
+    assert max_adapter.audio_reference_calls[0]["reference_kind"] == "audio_id"
 
 
 @pytest.mark.asyncio

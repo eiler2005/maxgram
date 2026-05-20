@@ -1158,6 +1158,67 @@ async def test_replay_recent_history_reclassifies_unsupported_nested_audio(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_download_audio_reference_refreshes_raw_history_url(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    class RawHistoryClient(LookupClient):
+        async def _send_and_wait(self, opcode, payload, timeout=10):
+            return {
+                "payload": {
+                    "messages": [
+                        {
+                            "id": 116605799957888782,
+                            "sender": 7001,
+                            "time": 1779263296000,
+                            "type": "USER",
+                            "attaches": [
+                                {
+                                    "_type": "UNSUPPORTED",
+                                    "payload": {
+                                        "audioId": 92,
+                                        "url": "https://audio.example.test/retry.ogg",
+                                        "duration": 9,
+                                        "wave": "abc",
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+
+    adapter._client = RawHistoryClient()
+
+    attachment = await adapter.download_audio_reference(
+        chat_id="200056208",
+        msg_id="116605799957888782",
+        reference_id="92",
+        reference_kind="audio_id",
+        duration=9,
+        source_type="AUDIO",
+    )
+
+    assert attachment == MaxAttachment("audio", local_path, "voice.ogg", 9, None, None, "AUDIO")
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/retry.ogg",
+            "audio_200056208_116605799957888782",
+            None,
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_replay_recent_history_uses_requested_dm_chat_for_cid_only_payload(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

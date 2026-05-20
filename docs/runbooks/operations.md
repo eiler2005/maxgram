@@ -337,8 +337,8 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - при обрыве следующая попытка отправляет `Range: bytes=<уже_скачано>-`;
 - если CDN не поддерживает `Range` и отвечает `200`, bridge удаляет `*.part` и качает заново;
 - если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
-- если ретриабельное видео всё равно не скачалось, bridge отправляет остальные части сообщения сразу, показывает `⏳ Видео MAX #N докачивается...` и кладёт job в `pending_media_downloads`;
-- retry worker заново получает playable URL через `VIDEO_PLAY`, не хранит signed URL/token/text, и досылает видео в тот же Telegram topic отдельным сообщением.
+- если ретриабельное видео или голосовое всё равно не скачалось, bridge отправляет остальные части сообщения сразу, показывает `⏳ Видео MAX #N докачивается...` / `⏳ Голосовое MAX #N докачивается...` и кладёт job в `pending_media_downloads`;
+- retry worker для видео заново получает playable URL через `VIDEO_PLAY`; для голосовых заново читает raw `CHAT_HISTORY`, пытается взять свежий URL из payload, затем fallback через `FILE_DOWNLOAD`; signed URL/token/text не хранятся, медиа досылается в тот же Telegram topic отдельным сообщением.
 
 Что смотреть в логах:
 
@@ -351,7 +351,7 @@ rg 'event=bridge\.inbound\.forward_finished .*outcome=partial' data/bridge.log
 
 Для CDN download-ошибок смотри поля `src_ag`, `ua_family`, `http_status` и `download_source`. Signed query-параметры URL в логах не должны появляться.
 
-Очередь durable video retry:
+Очередь durable media retry:
 
 ```bash
 sqlite3 -header -column data/bridge.db \
@@ -404,7 +404,8 @@ sqlite3 -header -column data/bridge.db \
 5. Если raw `CHAT_HISTORY` задержался, bridge до 180 секунд держит in-memory wait job: сначала `max.inbound.empty_recovery outcome=queued reason=raw_history_cache_wait`, затем при успехе `reason=raw_history_cache_delayed_match`.
 6. Если MAX/history всё ещё отдаёт пустой message без `attaches`, bridge кладёт meta-only retry в `data/pending_empty_recoveries.json` и перечитывает history без лимита по времени. Ищи `reason=durable_history_retry`, `retry_scheduled`, затем при успехе `durable_history_recovered`.
 7. Каждые 120 секунд `bridge.dm_history_sweep.worker_started` перечитывает последние 30 сообщений активных DM за окно 48 часов и досылает пропущенные сообщения через обычный dedup path. При успехе ищи `max.history_sweep.replayed` и `tg.outbound.sent media_type=voice`.
-8. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения. Для новых неизвестных форм полезны безопасные поля `element_count`, `element_types`, `element_fields`, `options_fields`.
+8. Если voice распознан, но MAX пока не отдаёт скачиваемый файл, bridge ставит `kind=audio` в `pending_media_downloads`. Ищи `bridge.media_retry.enqueued`, `attempt_started`, `retry_scheduled`, затем `bridge.media_retry.delivered` и `tg.outbound.sent media_type=voice`.
+9. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения. Для новых неизвестных форм полезны безопасные поля `element_count`, `element_types`, `element_fields`, `options_fields`.
 
 ## Phantom topics `Чат 1779...`
 

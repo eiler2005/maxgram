@@ -2635,6 +2635,17 @@ class MaxAdapter:
                 retryable = True
                 reference_kind = "video_id"
                 reference_id = str(video_id)
+        elif atype == "AUDIO":
+            audio_id = getattr(attach, "audio_id", None) or getattr(attach, "audioId", None)
+            file_id = getattr(attach, "file_id", None) or getattr(attach, "fileId", None)
+            if audio_id is not None:
+                retryable = True
+                reference_kind = "audio_id"
+                reference_id = str(audio_id)
+            elif file_id is not None:
+                retryable = True
+                reference_kind = "file_id"
+                reference_id = str(file_id)
 
         return MaxAttachmentFailure(
             kind=self._attachment_kind_for_type(atype),
@@ -3649,6 +3660,99 @@ class MaxAdapter:
             duration=duration,
             width=width,
             height=height,
+            source_type=source_type,
+        )
+
+    async def download_audio_reference(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        reference_id: str,
+        reference_kind: str = "audio_id",
+        attachment_index: int = 0,
+        filename_hint: Optional[str] = None,
+        duration: Optional[int] = None,
+        source_type: Optional[str] = "AUDIO",
+        flow_id: Optional[str] = None,
+    ) -> Optional[MaxAttachment]:
+        """Retry MAX audio without persisting signed URLs."""
+        idx = f"_{attachment_index}" if attachment_index > 0 else ""
+        try:
+            chat_id_int = int(chat_id)
+        except (TypeError, ValueError):
+            return None
+
+        raw_payload = await self._fetch_raw_history_payload(
+            chat_id_int=chat_id_int,
+            from_time=int(time.time() * 1000) + 60_000,
+            forward=0,
+            backward=30,
+            flow_id=flow_id,
+        )
+        if raw_payload is not None:
+            raw_message = self._find_raw_history_message_dict(raw_payload, str(msg_id))
+            if raw_message is not None:
+                normalized = self._normalize_message_dict(raw_message)
+                raw_attaches = self._payload_value(normalized, "attaches", "attachments") or []
+                attach_list = raw_attaches if isinstance(raw_attaches, list) else [raw_attaches]
+                for attach in attach_list:
+                    if not isinstance(attach, dict):
+                        continue
+                    attach_obj = SimpleNamespace(**self._normalize_message_dict(attach))
+                    atype = self._normalize_attachment_type(
+                        self._attachment_type_name(attach_obj)
+                    )
+                    if atype != "AUDIO":
+                        continue
+                    attach_refs = {
+                        str(value)
+                        for value in (
+                            getattr(attach_obj, "audio_id", None),
+                            getattr(attach_obj, "audioId", None),
+                            getattr(attach_obj, "file_id", None),
+                            getattr(attach_obj, "fileId", None),
+                            getattr(attach_obj, "id", None),
+                        )
+                        if value is not None
+                    }
+                    if str(reference_id) not in attach_refs and len(attach_list) > 1:
+                        continue
+                    attachment = await self._download_attachment(
+                        chat_id,
+                        msg_id,
+                        attach_obj,
+                        index=attachment_index,
+                        flow_id=flow_id,
+                    )
+                    if attachment:
+                        attachment.duration = attachment.duration or duration
+                        attachment.source_type = source_type or attachment.source_type
+                        return attachment
+
+        try:
+            stable_id = int(reference_id)
+        except (TypeError, ValueError):
+            return None
+        local_path, filename = await self._download_file_by_id(
+            chat_id,
+            msg_id,
+            stable_id,
+            f"audio_retry_{chat_id}_{msg_id}{idx}",
+            filename_hint,
+            ".ogg",
+            expected_kind="audio",
+            flow_id=flow_id,
+        )
+        if not local_path:
+            return None
+        return MaxAttachment(
+            kind="audio",
+            local_path=local_path,
+            filename=filename,
+            duration=duration,
+            width=None,
+            height=None,
             source_type=source_type,
         )
 

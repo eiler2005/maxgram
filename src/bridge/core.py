@@ -526,8 +526,9 @@ class BridgeCore:
         for failure in failures:
             label = failure.filename or f"{failure.kind} #{failure.index + 1}"
             if self._is_retryable_media_failure(failure):
+                media_label = "Голосовое MAX" if failure.kind == "audio" else "Видео MAX"
                 lines.append(
-                    f"⏳ Видео MAX #{failure.index + 1} докачивается "
+                    f"⏳ {media_label} #{failure.index + 1} докачивается "
                     "и будет дослано позже"
                 )
             else:
@@ -535,14 +536,18 @@ class BridgeCore:
         return "\n".join(lines)
 
     def _is_retryable_media_failure(self, failure: MaxAttachmentFailure) -> bool:
-        return bool(
+        if not (
             failure.retryable
-            and failure.kind == "video"
-            and failure.reference_kind == "video_id"
             and failure.reference_id
             and failure.media_chat_id
             and failure.media_msg_id
-        )
+        ):
+            return False
+        if failure.kind == "video":
+            return failure.reference_kind == "video_id"
+        if failure.kind == "audio":
+            return failure.reference_kind in {"audio_id", "file_id"}
+        return False
 
     def _pending_media_retry_delay(self, attempts_after_failure: int) -> int:
         # Бесконечный retry с cap: 1m, 2m, 4m ... до 6h.
@@ -1026,7 +1031,10 @@ class BridgeCore:
         )
         if not job.id:
             return
-        if job.kind != "video" or job.reference_kind != "video_id" or not job.reference_id:
+        if not job.reference_id or not (
+            (job.kind == "video" and job.reference_kind == "video_id")
+            or (job.kind == "audio" and job.reference_kind in {"audio_id", "file_id"})
+        ):
             await self._repo.mark_pending_media_failed(
                 job.id,
                 error="missing_stable_media_reference",
@@ -1064,28 +1072,46 @@ class BridgeCore:
             reference_kind=job.reference_kind,
         )
 
-        download_video = getattr(self._max, "download_video_reference", None)
-        if not callable(download_video):
+        download_method_name = (
+            "download_audio_reference"
+            if job.kind == "audio"
+            else "download_video_reference"
+        )
+        download_media = getattr(self._max, download_method_name, None)
+        if not callable(download_media):
             await self._mark_pending_media_retry(
                 job,
-                error="max_adapter_missing_video_retry",
+                error=f"max_adapter_missing_{job.kind}_retry",
                 flow_id=flow_id,
             )
             return
 
         try:
-            attachment = await download_video(
-                chat_id=job.media_chat_id,
-                msg_id=job.media_msg_id,
-                video_id=job.reference_id,
-                attachment_index=job.attachment_index,
-                filename_hint=job.filename,
-                duration=job.duration,
-                width=job.width,
-                height=job.height,
-                source_type=job.source_type or "VIDEO",
-                flow_id=flow_id,
-            )
+            if job.kind == "audio":
+                attachment = await download_media(
+                    chat_id=job.media_chat_id,
+                    msg_id=job.media_msg_id,
+                    reference_id=job.reference_id,
+                    reference_kind=job.reference_kind,
+                    attachment_index=job.attachment_index,
+                    filename_hint=job.filename,
+                    duration=job.duration,
+                    source_type=job.source_type or "AUDIO",
+                    flow_id=flow_id,
+                )
+            else:
+                attachment = await download_media(
+                    chat_id=job.media_chat_id,
+                    msg_id=job.media_msg_id,
+                    video_id=job.reference_id,
+                    attachment_index=job.attachment_index,
+                    filename_hint=job.filename,
+                    duration=job.duration,
+                    width=job.width,
+                    height=job.height,
+                    source_type=job.source_type or "VIDEO",
+                    flow_id=flow_id,
+                )
         except Exception as e:
             await self._mark_pending_media_retry(
                 job,
@@ -1128,7 +1154,8 @@ class BridgeCore:
                 )
                 return
 
-            caption = f"Докачанное видео MAX #{job.attachment_index + 1}"
+            media_label = "голосовое" if job.kind == "audio" else "видео"
+            caption = f"Докачанное {media_label} MAX #{job.attachment_index + 1}"
             try:
                 tg_msg_id = await self._send_attachment(
                     job.tg_topic_id,
