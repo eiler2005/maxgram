@@ -1086,6 +1086,78 @@ async def test_typed_empty_message_recovers_top_level_audio_from_raw_history(
 
 
 @pytest.mark.asyncio
+async def test_replay_recent_history_reclassifies_unsupported_nested_audio(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    class RawHistoryClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Людмила")})
+
+        async def _send_and_wait(self, opcode, payload, timeout=10):
+            return {
+                "payload": {
+                    "messages": [
+                        {
+                            "cid": 1779274610031002,
+                            "id": 116605799957888782,
+                            "sender": 7001,
+                            "time": 1779263296000,
+                            "type": "USER",
+                            "attaches": [
+                                {
+                                    "_type": "UNSUPPORTED",
+                                    "payload": {
+                                        "audioId": 92,
+                                        "url": "https://audio.example.test/nested.ogg",
+                                        "duration": 9,
+                                        "wave": "abc",
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+
+    adapter._client = RawHistoryClient()
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+    replayed = await adapter.replay_recent_history(
+        "200056208",
+        limit=30,
+        since_ts=0,
+    )
+
+    assert replayed == 1
+    assert received[0].chat_id == "200056208"
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 9, None, None, "AUDIO")
+    ]
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/nested.ogg",
+            "audio_200056208_116605799957888782",
+            None,
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_replay_recent_history_uses_requested_dm_chat_for_cid_only_payload(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

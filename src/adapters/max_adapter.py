@@ -793,36 +793,7 @@ class MaxAdapter:
         if not any(key in message for key in ("id", "messageId", "message_id", "msgId", "sender", "text", "attaches", "attachments")):
             return message
 
-        existing = self._payload_value(message, "attaches", "attachments") or []
-        if existing:
-            existing_list = existing if isinstance(existing, list) else [existing]
-            normalized_attaches: list[object] = []
-            changed = False
-            for attach in existing_list:
-                if not isinstance(attach, dict):
-                    normalized_attaches.append(attach)
-                    continue
-                normalized_attach = dict(attach)
-                raw_type = self._payload_value(normalized_attach, "_type", "type")
-                upper_type = str(getattr(raw_type, "value", raw_type) or "").upper()
-                if upper_type.startswith("VOICE"):
-                    normalized_attach["_type"] = "AUDIO"
-                    normalized_attach["type"] = "AUDIO"
-                    changed = True
-                elif upper_type:
-                    normalized_attach["_type"] = upper_type
-                    normalized_attach["type"] = upper_type
-                if normalized_attach != attach:
-                    changed = True
-                normalized_attaches.append(normalized_attach)
-            if changed:
-                normalized = dict(message)
-                normalized["attaches"] = normalized_attaches
-                normalized.setdefault("attachments", normalized_attaches)
-                return normalized
-            return message
-
-        def media_type_for_key(key: str, node: dict) -> Optional[str]:
+        def infer_media_type_for_key(key: str, node: dict) -> Optional[str]:
             raw_type = self._payload_value(node, "_type", "type", "mediaType", "kind")
             if raw_type:
                 upper = str(getattr(raw_type, "value", raw_type)).upper()
@@ -848,6 +819,80 @@ class MaxAdapter:
             if "photo" in key_lower or "image" in key_lower:
                 return "PHOTO"
             return None
+
+        def copy_nested_media_markers(attach: dict) -> dict:
+            normalized_attach = dict(attach)
+            marker_keys = (
+                "audioId",
+                "audio_id",
+                "videoId",
+                "video_id",
+                "photoId",
+                "photo_id",
+                "imageId",
+                "image_id",
+                "fileId",
+                "file_id",
+                "url",
+                "baseUrl",
+                "duration",
+                "wave",
+            )
+            for nested_key in (
+                "audio",
+                "voice",
+                "audioMessage",
+                "voiceMessage",
+                "media",
+                "file",
+                "payload",
+                "data",
+                "content",
+                "body",
+            ):
+                nested = self._payload_value(normalized_attach, nested_key)
+                if not isinstance(nested, dict):
+                    continue
+                for marker in marker_keys:
+                    if self._payload_value(normalized_attach, marker) is not None:
+                        continue
+                    value = self._payload_value(nested, marker)
+                    if value is not None:
+                        normalized_attach[marker] = value
+            return normalized_attach
+
+        existing = self._payload_value(message, "attaches", "attachments") or []
+        if existing:
+            existing_list = existing if isinstance(existing, list) else [existing]
+            normalized_attaches: list[object] = []
+            changed = False
+            for attach in existing_list:
+                if not isinstance(attach, dict):
+                    normalized_attaches.append(attach)
+                    continue
+                normalized_attach = copy_nested_media_markers(attach)
+                raw_type = self._payload_value(normalized_attach, "_type", "type")
+                upper_type = str(getattr(raw_type, "value", raw_type) or "").upper()
+                inferred_type = infer_media_type_for_key("attach", normalized_attach)
+                if inferred_type:
+                    normalized_attach["_type"] = inferred_type
+                    normalized_attach["type"] = inferred_type
+                    changed = True
+                elif upper_type:
+                    normalized_attach["_type"] = upper_type
+                    normalized_attach["type"] = upper_type
+                if normalized_attach != attach:
+                    changed = True
+                normalized_attaches.append(normalized_attach)
+            if changed:
+                normalized = dict(message)
+                normalized["attaches"] = normalized_attaches
+                normalized.setdefault("attachments", normalized_attaches)
+                return normalized
+            return message
+
+        def media_type_for_key(key: str, node: dict) -> Optional[str]:
+            return infer_media_type_for_key(key, node)
 
         def looks_like_media(node: dict) -> bool:
             media_markers = (
