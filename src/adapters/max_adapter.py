@@ -67,6 +67,7 @@ MAX_EMPTY_RECOVERY_RETRY_MAX_SECONDS = 6 * 60 * 60
 MAX_EMPTY_RECOVERY_STATE_FILE = "pending_empty_recoveries.json"
 MAX_PROBABLE_CLIENT_CID_MIN = 1_000_000_000_000
 MAX_DM_SWEEP_BACKFILL_SECONDS = 48 * 60 * 60
+MAX_HISTORY_SWEEP_DIAGNOSTIC_TTL_SECONDS = 10 * 60
 
 
 def is_probable_client_cid(value: object) -> bool:
@@ -198,6 +199,7 @@ class MaxAdapter:
         self._pending_empty_recovery_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._pending_empty_recoveries: dict[str, dict[str, object]] = {}
         self._pending_empty_recovery_worker: Optional[asyncio.Task] = None
+        self._history_sweep_diagnostic_log_until: dict[tuple[str, str, str], float] = {}
         self._load_pending_empty_recoveries()
 
     def on_message(self, handler: MessageHandler):
@@ -832,6 +834,12 @@ class MaxAdapter:
                     return "PHOTO"
                 if "FILE" in upper or "DOCUMENT" in upper:
                     return "FILE"
+            if self._payload_value(node, "audioId", "audio_id", "wave") is not None:
+                return "AUDIO"
+            if self._payload_value(node, "videoId", "video_id") is not None:
+                return "VIDEO"
+            if self._payload_value(node, "photoId", "photo_id", "imageId", "image_id") is not None:
+                return "PHOTO"
             key_lower = key.lower()
             if "voice" in key_lower or "audio" in key_lower:
                 return "AUDIO"
@@ -858,6 +866,48 @@ class MaxAdapter:
             )
             return any(self._payload_value(node, marker) is not None for marker in media_markers)
 
+        top_level_type = media_type_for_key("message", message)
+        if top_level_type and looks_like_media(message):
+            attach = dict(message)
+            attach["_type"] = top_level_type
+            attach["type"] = top_level_type
+            normalized = dict(message)
+            normalized["attaches"] = [attach]
+            normalized.setdefault("attachments", [attach])
+            return normalized
+
+        media_container_keys = (
+            "audio",
+            "voice",
+            "audioMessage",
+            "voiceMessage",
+            "audios",
+            "voices",
+            "media",
+            "medias",
+            "attachment",
+            "attachments",
+            "attach",
+            "attaches",
+            "file",
+            "files",
+            "video",
+            "videos",
+            "photo",
+            "photos",
+            "image",
+            "images",
+            "content",
+            "body",
+            "data",
+            "payload",
+            "object",
+            "item",
+            "items",
+            "parts",
+            "elements",
+        )
+
         candidates: list[dict] = []
 
         def collect(key: str, node):
@@ -876,12 +926,12 @@ class MaxAdapter:
                 attach["type"] = attach_type
                 candidates.append(attach)
                 return
-            for nested_key in ("audio", "voice", "media", "attachment", "attach", "file", "video", "photo"):
+            for nested_key in media_container_keys:
                 nested = self._payload_value(node, nested_key)
                 if nested is not None:
                     collect(nested_key, nested)
 
-        for key in ("audio", "voice", "media", "attachment", "attach", "file", "video", "photo"):
+        for key in media_container_keys:
             collect(key, self._payload_value(message, key))
 
         if candidates:
@@ -982,7 +1032,13 @@ class MaxAdapter:
             )
         return None, None
 
-    def _message_object_from_dict(self, message: dict, chat_id: Optional[str]):
+    def _message_object_from_dict(
+        self,
+        message: dict,
+        chat_id: Optional[str],
+        *,
+        prefer_raw: bool = False,
+    ):
         payload = {
             "chatId": (
                 int(chat_id)
@@ -991,28 +1047,31 @@ class MaxAdapter:
             ),
             "message": self._normalize_message_dict(message),
         }
-        try:
-            from pymax.types import Message
+        if not prefer_raw:
+            try:
+                from pymax.types import Message
 
-            return Message.from_dict(payload)
-        except Exception:
-            attaches = [
-                SimpleNamespace(**self._normalize_message_dict(attach))
-                for attach in (message.get("attaches") or [])
-                if isinstance(attach, dict)
-            ]
-            return SimpleNamespace(
-                id=message.get("id"),
-                chat_id=chat_id,
-                sender=message.get("sender"),
-                time=message.get("time"),
-                text=message.get("text") or "",
-                type=message.get("type"),
-                status=message.get("status"),
-                attaches=attaches,
-                link=None,
-                reactionInfo=message.get("reactionInfo"),
-            )
+                return Message.from_dict(payload)
+            except Exception:
+                pass
+        normalized_message = payload["message"]
+        attaches = [
+            SimpleNamespace(**self._normalize_message_dict(attach))
+            for attach in (normalized_message.get("attaches") or [])
+            if isinstance(attach, dict)
+        ]
+        return SimpleNamespace(
+            id=normalized_message.get("id"),
+            chat_id=chat_id,
+            sender=normalized_message.get("sender"),
+            time=normalized_message.get("time"),
+            text=normalized_message.get("text") or "",
+            type=normalized_message.get("type"),
+            status=normalized_message.get("status"),
+            attaches=attaches,
+            link=None,
+            reactionInfo=normalized_message.get("reactionInfo"),
+        )
 
     def _cache_raw_history_payload(self, payload: dict) -> int:
         """Cache raw CHAT_HISTORY messages briefly for empty pymax events."""
@@ -1046,7 +1105,11 @@ class MaxAdapter:
             if is_probable_client_cid(chat_id):
                 continue
 
-            message_obj = self._message_object_from_dict(message, str(chat_id))
+            message_obj = self._message_object_from_dict(
+                message,
+                str(chat_id),
+                prefer_raw=True,
+            )
             self._raw_history_messages[(str(chat_id), str(msg_id))] = (
                 now + MAX_RAW_HISTORY_CACHE_TTL_SECONDS,
                 message_obj,
@@ -1170,6 +1233,7 @@ class MaxAdapter:
             candidate = self._message_object_from_dict(
                 self._normalize_message_dict(candidate),
                 chat_id,
+                prefer_raw=True,
             )
 
         if not self._message_object_has_content(candidate):
@@ -1308,6 +1372,7 @@ class MaxAdapter:
         message_obj = self._message_object_from_dict(
             message,
             str(chat_id),
+            prefer_raw=True,
         )
         setattr(message_obj, "_from_raw_unwrapped", True)
         return message_obj
@@ -1529,8 +1594,6 @@ class MaxAdapter:
 
         if not self._client:
             return None
-        if getattr(self._client, "fetch_history", None) is None:
-            return None
 
         self._remember_expected_raw_history_message(chat_id, raw_msg_id_str)
         history_from_time = int(time.time() * 1000) + 60_000
@@ -1554,6 +1617,9 @@ class MaxAdapter:
                 )
                 if recovered is not None:
                     return recovered
+
+        if getattr(self._client, "fetch_history", None) is None:
+            return None
 
         try:
             messages = await self._client.fetch_history(
@@ -1656,6 +1722,59 @@ class MaxAdapter:
             return ts // 1000
         return ts
 
+    def _pending_empty_recovery_ids_for_chat(self, chat_id: str) -> set[str]:
+        return {
+            str(job.get("raw_msg_id"))
+            for job in self._pending_empty_recoveries.values()
+            if str(job.get("chat_id")) == str(chat_id) and job.get("raw_msg_id") is not None
+        }
+
+    def _log_history_sweep_pending_diagnostic(
+        self,
+        *,
+        chat_id: str,
+        raw_msg_id: str,
+        reason: str,
+        flow_id: Optional[str],
+        message: Optional[dict] = None,
+        message_count: Optional[int] = None,
+    ):
+        key = (str(chat_id), str(raw_msg_id), reason)
+        now = time.monotonic()
+        if self._history_sweep_diagnostic_log_until.get(key, 0) > now:
+            return
+        self._history_sweep_diagnostic_log_until[key] = (
+            now + MAX_HISTORY_SWEEP_DIAGNOSTIC_TTL_SECONDS
+        )
+        fields: dict[str, object] = {
+            "flow_id": flow_id,
+            "direction": "inbound",
+            "stage": "history_sweep",
+            "outcome": "diagnostic",
+            "reason": reason,
+            "max_chat_id": str(chat_id),
+            "max_msg_id": str(raw_msg_id),
+            "message_count": message_count,
+        }
+        if isinstance(message, dict):
+            fields.update(
+                {
+                    "message_type": str(
+                        self._payload_value(message, "type", "_type") or ""
+                    ) or None,
+                    "message_fields": self._safe_field_paths(message),
+                    "raw_attachment_types": self._raw_attachment_types_from_message_dict(
+                        message
+                    ),
+                }
+            )
+        log_event(
+            logger,
+            logging.INFO,
+            "max.history_sweep.pending_diagnostic",
+            **fields,
+        )
+
     async def replay_recent_history(
         self,
         chat_id: str,
@@ -1681,7 +1800,22 @@ class MaxAdapter:
         )
         candidates: list[object] = []
         if raw_payload is not None:
-            for message in self._raw_history_message_dicts(raw_payload):
+            pending_ids = self._pending_empty_recovery_ids_for_chat(str(chat_id))
+            seen_pending_ids: set[str] = set()
+            raw_messages = self._raw_history_message_dicts(raw_payload)
+            for message in raw_messages:
+                raw_history_msg_id = self._payload_value(
+                    message,
+                    "id",
+                    "messageId",
+                    "message_id",
+                    "msgId",
+                )
+                raw_history_msg_id_str = (
+                    str(raw_history_msg_id) if raw_history_msg_id is not None else ""
+                )
+                if raw_history_msg_id_str in pending_ids:
+                    seen_pending_ids.add(raw_history_msg_id_str)
                 candidate_chat_id = (
                     self._payload_value(message, "chatId", "chat_id")
                     or chat_id
@@ -1689,8 +1823,31 @@ class MaxAdapter:
                 if is_probable_client_cid(candidate_chat_id):
                     candidate_chat_id = chat_id
                 if not self._message_dict_has_content(message):
+                    if raw_history_msg_id_str in pending_ids:
+                        self._log_history_sweep_pending_diagnostic(
+                            chat_id=str(chat_id),
+                            raw_msg_id=raw_history_msg_id_str,
+                            reason="pending_message_without_content",
+                            flow_id=flow_id,
+                            message=message,
+                            message_count=len(raw_messages),
+                        )
                     continue
-                candidates.append(self._message_object_from_dict(message, str(candidate_chat_id)))
+                candidates.append(
+                    self._message_object_from_dict(
+                        message,
+                        str(candidate_chat_id),
+                        prefer_raw=True,
+                    )
+                )
+            for pending_id in pending_ids - seen_pending_ids:
+                self._log_history_sweep_pending_diagnostic(
+                    chat_id=str(chat_id),
+                    raw_msg_id=pending_id,
+                    reason="pending_message_not_found",
+                    flow_id=flow_id,
+                    message_count=len(raw_messages),
+                )
         elif self._client and getattr(self._client, "fetch_history", None):
             try:
                 candidates = list(
@@ -1772,6 +1929,7 @@ class MaxAdapter:
         if not isinstance(data, list):
             return
         pending: dict[str, dict[str, object]] = {}
+        now = int(time.time())
         for item in data:
             if not isinstance(item, dict):
                 continue
@@ -1789,9 +1947,12 @@ class MaxAdapter:
                     else None
                 ),
                 "attempts": int(item.get("attempts") or 0),
-                "created_at": int(item.get("created_at") or time.time()),
-                "updated_at": int(item.get("updated_at") or time.time()),
-                "next_attempt_at": int(item.get("next_attempt_at") or time.time()),
+                "created_at": int(item.get("created_at") or now),
+                "updated_at": int(item.get("updated_at") or now),
+                "next_attempt_at": min(
+                    int(item.get("next_attempt_at") or now),
+                    now + MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS,
+                ),
                 "last_error": (
                     str(item["last_error"])
                     if item.get("last_error") is not None

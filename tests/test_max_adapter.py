@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from src.adapters.max_adapter import (
     MAX_CDN_CHROME_USER_AGENT,
     MAX_CDN_IOS_CHROME_USER_AGENT,
     MAX_CDN_USER_AGENT,
+    MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS,
     MaxAttachment,
     MaxAdapter,
 )
@@ -1010,6 +1012,80 @@ async def test_typed_empty_message_recovers_audio_from_raw_send_and_wait_history
 
 
 @pytest.mark.asyncio
+async def test_typed_empty_message_recovers_top_level_audio_from_raw_history(
+    tmp_path,
+):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    class RawHistoryClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Людмила")})
+
+        async def _send_and_wait(self, opcode, payload, timeout=10):
+            return {
+                "payload": {
+                    "messages": [
+                        {
+                            "cid": 1779274610031001,
+                            "id": 116605798165273695,
+                            "sender": 7001,
+                            "time": 1779263269000,
+                            "type": "AUDIO",
+                            "audioId": 91,
+                            "url": "https://audio.example.test/top-level.ogg",
+                            "duration": 20,
+                            "wave": "abc",
+                        }
+                    ]
+                }
+            }
+
+    adapter._client = RawHistoryClient()
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+    await adapter._handle_raw_message(
+        SimpleNamespace(
+            id=116605798165273695,
+            chat_id=200056208,
+            sender=7001,
+            text="",
+            type="USER",
+            status=None,
+            attaches=[],
+            link=None,
+        )
+    )
+
+    assert len(received) == 1
+    assert received[0].chat_id == "200056208"
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 20, None, None, "AUDIO")
+    ]
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/top-level.ogg",
+            "audio_200056208_116605798165273695",
+            None,
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_replay_recent_history_uses_requested_dm_chat_for_cid_only_payload(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",
@@ -1341,6 +1417,38 @@ async def test_pending_empty_recovery_worker_delivers_late_audio(tmp_path, caplo
         and event.get("reason") in {"durable_history_recovered", "content_arrived"}
         for event in events
     )
+
+
+def test_pending_empty_recovery_load_retries_soon_after_restart(tmp_path):
+    now = int(time.time())
+    state = [
+        {
+            "chat_id": "200056208",
+            "raw_msg_id": "116605798165273695",
+            "msg_id": "116605798165273695",
+            "message_type": "USER",
+            "attempts": 9,
+            "created_at": now - 3600,
+            "updated_at": now - 60,
+            "next_attempt_at": now + 6 * 60 * 60,
+            "last_error": "history_message_not_found_or_empty",
+        }
+    ]
+    (tmp_path / "pending_empty_recoveries.json").write_text(
+        json.dumps(state),
+        encoding="utf-8",
+    )
+
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    job = adapter._pending_empty_recoveries["200056208:116605798165273695"]
+    assert job["attempts"] == 9
+    assert int(job["next_attempt_at"]) <= now + MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS
 
 
 @pytest.mark.asyncio
