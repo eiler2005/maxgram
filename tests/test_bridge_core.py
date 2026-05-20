@@ -22,6 +22,8 @@ class DummyRepo:
         self.pending_media = []
         self.reply_mappings = {}
         self.pending_stats = {"pending_count": 0, "oldest_created_at": None}
+        self.duplicates: set[tuple[str, str]] = set()
+        self.phantom_bindings = []
 
     async def get_binding_by_topic(self, tg_topic_id: int):
         return SimpleNamespace(max_chat_id="-70000000000003", tg_topic_id=tg_topic_id, mode="active")
@@ -42,6 +44,14 @@ class DummyRepo:
         binding = self.binding_by_chat.get(max_chat_id)
         if binding is not None:
             binding.title = title
+
+    async def update_mode(self, max_chat_id: str, mode: str):
+        binding = self.binding_by_chat.get(max_chat_id)
+        if binding is not None:
+            binding.mode = mode
+
+    async def find_phantom_topic_bindings(self):
+        return list(self.phantom_bindings)
 
     async def log_delivery(self, *args, **kwargs):
         self.delivery_logs.append((args, kwargs))
@@ -111,7 +121,7 @@ class DummyRepo:
         return self._find_user_result
 
     async def is_duplicate(self, max_msg_id: str, max_chat_id: str) -> bool:
-        return False
+        return (max_msg_id, max_chat_id) in self.duplicates
 
 
 class DummyMax:
@@ -121,6 +131,8 @@ class DummyMax:
         self._last_outbound_attempts: int = 0
         self.video_reference_result = None
         self.video_reference_calls = []
+        self.replay_calls = []
+        self.empty_stats = {"pending_count": 0, "oldest_created_at": None}
 
     def on_message(self, handler):
         self.handler = handler
@@ -149,6 +161,13 @@ class DummyMax:
         self.video_reference_calls.append(kwargs)
         return self.video_reference_result
 
+    async def replay_recent_history(self, chat_id: str, *, limit: int = 30, since_ts=None, flow_id=None):
+        self.replay_calls.append((chat_id, limit, since_ts, flow_id))
+        return 0
+
+    def get_pending_empty_recovery_stats(self):
+        return self.empty_stats
+
     def get_last_outbound_error(self) -> str | None:
         return self._last_outbound_error
 
@@ -162,6 +181,8 @@ class DummyTelegram:
         self.commands = {}
         self.arg_commands = {}
         self.fail_voice = False
+        self.delete_topic_result = True
+        self.close_topic_result = True
 
     def on_reply(self, handler):
         self.handler = handler
@@ -208,6 +229,14 @@ class DummyTelegram:
     async def rename_topic(self, topic_id, title, flow_id=None):
         self.calls.append(("rename_topic", topic_id, title, flow_id))
 
+    async def delete_topic(self, topic_id, flow_id=None):
+        self.calls.append(("delete_topic", topic_id, flow_id))
+        return self.delete_topic_result
+
+    async def close_topic(self, topic_id, flow_id=None):
+        self.calls.append(("close_topic", topic_id, flow_id))
+        return self.close_topic_result
+
 
 class DummyConfig(SimpleNamespace):
     def get_chat_title(self, max_chat_id: str):
@@ -217,6 +246,127 @@ class DummyConfig(SimpleNamespace):
     def get_chat_mode(self, max_chat_id: str):
         modes = getattr(self, "_chat_modes", {})
         return modes.get(max_chat_id, "active")
+
+
+def make_bridge(repo=None, max_adapter=None, tg_adapter=None):
+    return BridgeCore(
+        config=DummyConfig(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+                forward_voice=True,
+                forward_documents=True,
+                forward_photos=True,
+            ),
+            health=SimpleNamespace(reminder_interval_hours=4),
+        ),
+        repo=repo or DummyRepo(),
+        max_adapter=max_adapter or DummyMax(),
+        tg_adapter=tg_adapter or DummyTelegram(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_max_message_skips_probable_client_cid_chat_id():
+    repo = DummyRepo()
+    tg = DummyTelegram()
+    bridge = make_bridge(repo=repo, tg_adapter=tg)
+
+    await bridge._on_max_message(
+        MaxMessage(
+            msg_id="116606540857475456",
+            chat_id="1779274610031001",
+            chat_title=None,
+            sender_id="7001",
+            sender_name="Ирина",
+            text="hello",
+            attachments=[],
+            attachment_types=[],
+            rendered_texts=[],
+            message_type="USER",
+            status=None,
+            is_dm=True,
+            is_own=False,
+            raw=SimpleNamespace(),
+        )
+    )
+
+    assert tg.calls == []
+    assert repo.binding_by_chat == {}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_phantom_topics_deletes_then_disables_binding():
+    repo = DummyRepo()
+    tg = DummyTelegram()
+    binding = SimpleNamespace(
+        max_chat_id="1779274610031001",
+        tg_topic_id=1564,
+        title="Чат 1779274610031001",
+        mode="active",
+        created_at=1,
+    )
+    repo.phantom_bindings = [binding]
+    repo.binding_by_chat[binding.max_chat_id] = binding
+    bridge = make_bridge(repo=repo, tg_adapter=tg)
+
+    stats = await bridge.cleanup_phantom_topics()
+
+    assert stats == {"found": 1, "deleted": 1, "closed": 0, "disabled": 1}
+    assert ("delete_topic", 1564, "mx:1779274610031001:phantom-cleanup") in tg.calls
+    assert binding.mode == "disabled"
+    assert binding.title == "[deleted phantom] Чат 1779274610031001"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_phantom_topics_falls_back_to_close():
+    repo = DummyRepo()
+    tg = DummyTelegram()
+    tg.delete_topic_result = False
+    binding = SimpleNamespace(
+        max_chat_id="1779274610031001",
+        tg_topic_id=1564,
+        title="Чат 1779274610031001",
+        mode="active",
+        created_at=1,
+    )
+    repo.phantom_bindings = [binding]
+    repo.binding_by_chat[binding.max_chat_id] = binding
+    bridge = make_bridge(repo=repo, tg_adapter=tg)
+
+    stats = await bridge.cleanup_phantom_topics()
+
+    assert stats == {"found": 1, "deleted": 0, "closed": 1, "disabled": 1}
+    assert ("close_topic", 1564, "mx:1779274610031001:phantom-cleanup") in tg.calls
+    assert binding.mode == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_dm_history_sweep_replays_active_direct_chats(monkeypatch):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    repo.bindings = [
+        SimpleNamespace(max_chat_id="200056208", tg_topic_id=1, title="Людмила", mode="active"),
+        SimpleNamespace(max_chat_id="-70638114166223", tg_topic_id=2, title="Happy School", mode="active"),
+        SimpleNamespace(max_chat_id="1779274610031001", tg_topic_id=3, title="Чат 1779274610031001", mode="active"),
+        SimpleNamespace(max_chat_id="28093080", tg_topic_id=4, title="Вик", mode="disabled"),
+    ]
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter)
+
+    async def stop_after_first_sleep(_delay):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("src.bridge.core.asyncio.sleep", stop_after_first_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await bridge.run_dm_history_sweep(poll_interval=120, limit=30, backfill_seconds=48 * 60 * 60)
+
+    assert len(max_adapter.replay_calls) == 1
+    chat_id, limit, since_ts, flow_id = max_adapter.replay_calls[0]
+    assert chat_id == "200056208"
+    assert limit == 30
+    assert since_ts is not None
+    assert flow_id == "mx:200056208:history-sweep"
 
 
 @pytest.mark.asyncio

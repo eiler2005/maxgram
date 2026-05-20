@@ -118,6 +118,68 @@ class TelegramAdapter:
                 error=str(e),
             )
 
+    async def delete_topic(self, topic_id: int, *, flow_id: Optional[str] = None) -> bool:
+        """Удалить forum topic, если Telegram разрешает."""
+        try:
+            await self._bot.delete_forum_topic(
+                chat_id=self._group_id,
+                message_thread_id=topic_id,
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "tg.topic.deleted",
+                flow_id=flow_id,
+                stage="routing",
+                outcome="deleted",
+                tg_topic_id=topic_id,
+            )
+            return True
+        except TelegramAPIError as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "tg.topic.delete_failed",
+                flow_id=flow_id,
+                stage="routing",
+                outcome="failed",
+                reason="tg_api_error",
+                tg_topic_id=topic_id,
+                error=str(e),
+            )
+            return False
+
+    async def close_topic(self, topic_id: int, *, flow_id: Optional[str] = None) -> bool:
+        """Закрыть forum topic, если delete недоступен."""
+        try:
+            await self._bot.close_forum_topic(
+                chat_id=self._group_id,
+                message_thread_id=topic_id,
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "tg.topic.closed",
+                flow_id=flow_id,
+                stage="routing",
+                outcome="closed",
+                tg_topic_id=topic_id,
+            )
+            return True
+        except TelegramAPIError as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "tg.topic.close_failed",
+                flow_id=flow_id,
+                stage="routing",
+                outcome="failed",
+                reason="tg_api_error",
+                tg_topic_id=topic_id,
+                error=str(e),
+            )
+            return False
+
     # ── Retry helper ──────────────────────────────────────────────────────
 
     async def _tg_retry(self, coro_fn, label: str, *,

@@ -18,7 +18,14 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from ..adapters.max_adapter import MaxAdapter, MaxAttachment, MaxAttachmentFailure, MaxMessage
+from ..adapters.max_adapter import (
+    MaxAdapter,
+    MaxAttachment,
+    MaxAttachmentFailure,
+    MaxMessage,
+    MAX_DM_SWEEP_BACKFILL_SECONDS,
+    is_probable_client_cid,
+)
 from ..adapters.tg_adapter import TelegramAdapter
 from ..config.loader import AppConfig
 from ..db.repository import Repository, ChatBinding, MessageRecord, PendingMediaDownload
@@ -84,6 +91,22 @@ class BridgeCore:
         flow_id = build_max_flow_id(msg.chat_id, msg.msg_id)
 
         if not msg.msg_id or not msg.chat_id:
+            return
+
+        if is_probable_client_cid(msg.chat_id):
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.forward_finished",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="routing",
+                outcome="skipped",
+                reason="probable_client_cid_chat_id",
+                max_msg_id=msg.msg_id,
+                message_type=msg.message_type,
+                attachment_types=msg.attachment_types,
+            )
             return
 
         # Собственные сообщения: фильтруем эхо bridge-отправок, остальные форвардим
@@ -1201,6 +1224,91 @@ class BridgeCore:
                 )
             await asyncio.sleep(poll_interval)
 
+    async def run_dm_history_sweep(
+        self,
+        poll_interval: int = 120,
+        limit: int = 30,
+        backfill_seconds: int = MAX_DM_SWEEP_BACKFILL_SECONDS,
+    ):
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.dm_history_sweep.worker_started",
+            stage="history_sweep",
+            outcome="started",
+            poll_interval_seconds=poll_interval,
+            limit=limit,
+            backfill_seconds=backfill_seconds,
+        )
+        while True:
+            try:
+                since_ts = int(time.time()) - int(backfill_seconds)
+                bindings = await self._repo.list_bindings()
+                for binding in bindings:
+                    chat_id = str(binding.max_chat_id)
+                    if binding.mode != "active":
+                        continue
+                    if chat_id.startswith("-") or is_probable_client_cid(chat_id):
+                        continue
+                    replay = getattr(self._max, "replay_recent_history", None)
+                    if not callable(replay):
+                        continue
+                    flow_id = build_max_flow_id(chat_id, "history-sweep")
+                    await replay(
+                        chat_id,
+                        limit=limit,
+                        since_ts=since_ts,
+                        flow_id=flow_id,
+                    )
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "bridge.dm_history_sweep.worker_failed",
+                    stage="history_sweep",
+                    outcome="failed",
+                    error=str(e),
+                )
+            await asyncio.sleep(poll_interval)
+
+    async def cleanup_phantom_topics(self) -> dict[str, int]:
+        finder = getattr(self._repo, "find_phantom_topic_bindings", None)
+        if not callable(finder):
+            return {"found": 0, "deleted": 0, "closed": 0, "disabled": 0}
+        bindings = await finder()
+        stats = {"found": len(bindings), "deleted": 0, "closed": 0, "disabled": 0}
+        for binding in bindings:
+            flow_id = build_max_flow_id(binding.max_chat_id, "phantom-cleanup")
+            deleted = False
+            delete_topic = getattr(self._tg, "delete_topic", None)
+            if callable(delete_topic):
+                deleted = bool(await delete_topic(binding.tg_topic_id, flow_id=flow_id))
+            if deleted:
+                stats["deleted"] += 1
+            else:
+                close_topic = getattr(self._tg, "close_topic", None)
+                if callable(close_topic) and await close_topic(binding.tg_topic_id, flow_id=flow_id):
+                    stats["closed"] += 1
+
+            await self._repo.update_mode(binding.max_chat_id, "disabled")
+            await self._repo.update_title(
+                binding.max_chat_id,
+                f"[deleted phantom] {binding.title}",
+            )
+            stats["disabled"] += 1
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.phantom_topic.cleaned",
+                flow_id=flow_id,
+                stage="maintenance",
+                outcome="cleaned",
+                max_chat_id=binding.max_chat_id,
+                tg_topic_id=binding.tg_topic_id,
+                deleted=deleted,
+            )
+        return stats
+
     # ── Status report ─────────────────────────────────────────────────────
 
     async def _build_status_message(self, period_hours: int = 4) -> str:
@@ -1269,6 +1377,19 @@ class BridgeCore:
                     f"{self._format_duration_compact(int(time.time()) - int(oldest))}"
                 )
         lines.append(media_retry_line)
+
+        empty_stats_getter = getattr(self._max, "get_pending_empty_recovery_stats", None)
+        if callable(empty_stats_getter):
+            empty_stats = empty_stats_getter()
+            pending_empty = int(empty_stats.get("pending_count") or 0)
+            empty_line = f"  ⏳ Empty/voice recovery: {pending_empty}"
+            oldest_empty = empty_stats.get("oldest_created_at")
+            if pending_empty and oldest_empty:
+                empty_line += (
+                    f", старейшее "
+                    f"{self._format_duration_compact(int(time.time()) - int(oldest_empty))}"
+                )
+            lines.append(empty_line)
 
         if chat_activity:
             lines += ["", "💬 Активные чаты"]

@@ -921,6 +921,162 @@ async def test_raw_history_with_only_cid_is_not_cached_without_expected_context(
 
 
 @pytest.mark.asyncio
+async def test_typed_empty_message_recovers_audio_from_raw_send_and_wait_history(
+    tmp_path,
+    caplog,
+):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    class RawHistoryClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Людмила")})
+            self.fetch_history_calls = 0
+
+        async def _send_and_wait(self, opcode, payload, timeout=10):
+            return {
+                "payload": {
+                    "messages": [
+                        {
+                            "cid": 1779274610031001,
+                            "id": 116605798165273695,
+                            "sender": 7001,
+                            "time": 1779263269000,
+                            "type": "USER",
+                            "text": "",
+                            "audio": {
+                                "audioId": 91,
+                                "url": "https://audio.example.test/ludmila.ogg",
+                                "duration": 20,
+                                "wave": "abc",
+                                "token": "secret-token",
+                            },
+                        }
+                    ]
+                }
+            }
+
+        async def fetch_history(self, chat_id, from_time=None, forward=0, backward=200):
+            self.fetch_history_calls += 1
+            return []
+
+    client = RawHistoryClient()
+    adapter._client = client
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_message(
+            SimpleNamespace(
+                id=116605798165273695,
+                chat_id=200056208,
+                sender=7001,
+                text="",
+                type="USER",
+                status=None,
+                attaches=[],
+                link=None,
+            )
+        )
+
+    assert client.fetch_history_calls == 0
+    assert len(received) == 1
+    assert received[0].chat_id == "200056208"
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 20, None, None, "AUDIO")
+    ]
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/ludmila.ogg",
+            "audio_200056208_116605798165273695",
+            None,
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+    assert "secret-token" not in caplog.text
+    assert "https://audio.example.test/ludmila.ogg" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_replay_recent_history_uses_requested_dm_chat_for_cid_only_payload(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    class RawHistoryClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Людмила")})
+
+        async def _send_and_wait(self, opcode, payload, timeout=10):
+            return {
+                "payload": {
+                    "messages": [
+                        {
+                            "cid": 1779274610031001,
+                            "id": 116605798165273695,
+                            "sender": 7001,
+                            "time": 1779263269000,
+                            "type": "USER",
+                            "text": "Вы придете?",
+                        },
+                        {
+                            "cid": 1779274610031002,
+                            "id": 116605799957888782,
+                            "sender": 7001,
+                            "time": 1779263296000,
+                            "type": "USER",
+                            "voice": {
+                                "_type": "VOICE",
+                                "audioId": 92,
+                                "url": "https://audio.example.test/replay.ogg",
+                                "duration": 9,
+                            },
+                        },
+                    ]
+                }
+            }
+
+    adapter._client = RawHistoryClient()
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    replayed = await adapter.replay_recent_history(
+        "200056208",
+        limit=30,
+        since_ts=0,
+    )
+
+    assert replayed == 2
+    assert [msg.chat_id for msg in received] == ["200056208", "200056208"]
+    assert received[0].text == "Вы придете?"
+    assert received[1].attachment_types == ["AUDIO"]
+    assert received[1].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 9, None, None, "AUDIO")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_typed_empty_message_uses_raw_history_after_fetch_socket_error(
     tmp_path,
     monkeypatch,

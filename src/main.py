@@ -398,6 +398,10 @@ async def run_bridge_worker(cfg,
                 bridge.run_pending_media_downloads(),
                 name="pending_media_downloads",
             )
+            tg.create_task(
+                bridge.run_dm_history_sweep(),
+                name="dm_history_sweep",
+            )
             tg.create_task(bridge.run_max_watchdog(), name="max_watchdog")
             tg.create_task(
                 bridge.run_periodic_status(cfg.health.reminder_interval_hours),

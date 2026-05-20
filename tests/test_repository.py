@@ -1,6 +1,6 @@
 import pytest
 
-from src.db.repository import MessageRecord, PendingMediaDownload, Repository, KnownUser
+from src.db.repository import ChatBinding, MessageRecord, PendingMediaDownload, Repository, KnownUser
 
 
 @pytest.mark.asyncio
@@ -62,6 +62,26 @@ async def test_tg_reply_mapping_resolves_delayed_media_message(tmp_path):
         )
 
         assert await repo.get_max_msg_id_by_tg(888) == "m-delayed"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_find_phantom_topic_bindings_requires_duplicate_real_delivery(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        await repo.save_binding(ChatBinding("1779274610031001", 1564, "Чат 1779274610031001", "active", 1))
+        await repo.save_binding(ChatBinding("-70638114166223", 336, "Happy School", "active", 1))
+        await repo.save_binding(ChatBinding("1779279999999999", 1565, "Чат 1779279999999999", "active", 1))
+        await repo.save_message(MessageRecord("m1", "1779274610031001", 1565, 1564, "inbound", 1))
+        await repo.save_message(MessageRecord("m1", "-70638114166223", 1566, 336, "inbound", 1))
+        await repo.save_message(MessageRecord("m2", "1779279999999999", 1567, 1565, "inbound", 1))
+
+        phantoms = await repo.find_phantom_topic_bindings()
+
+        assert [binding.max_chat_id for binding in phantoms] == ["1779274610031001"]
     finally:
         await repo.close()
 

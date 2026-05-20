@@ -400,10 +400,23 @@ sqlite3 -header -column data/bridge.db \
 1. Отправь короткое голосовое в тестовый MAX DM.
 2. Убедись, что в Telegram topic пришёл native voice bubble.
 3. В логах проверь `attachment_types=["AUDIO"]` или `["VOICE"]`, затем `tg.outbound.sent media_type=voice`.
-4. Если MAX сначала отдаёт пустой typed `USER`, bridge делает recent-history recovery. Успешный raw-history путь виден как `max.raw.auxiliary_event opcode_name=CHAT_HISTORY`, затем `max.inbound.empty_recovery outcome=recovered reason=raw_history_cache_match` или `raw_history_cache_after_fetch_error`.
+4. Если MAX сначала отдаёт пустой typed `USER`, bridge делает recent-history recovery. Успешный raw-history путь виден как `max.raw.history_fetch outcome=received`, затем `max.inbound.empty_recovery outcome=recovered reason=raw_recent_history_match`, `raw_history_cache_match` или `raw_history_cache_after_fetch_error`.
 5. Если raw `CHAT_HISTORY` задержался, bridge до 180 секунд держит in-memory wait job: сначала `max.inbound.empty_recovery outcome=queued reason=raw_history_cache_wait`, затем при успехе `reason=raw_history_cache_delayed_match`.
 6. Если MAX/history всё ещё отдаёт пустой message без `attaches`, bridge кладёт meta-only retry в `data/pending_empty_recoveries.json` и перечитывает history без лимита по времени. Ищи `reason=durable_history_retry`, `retry_scheduled`, затем при успехе `durable_history_recovered`.
-7. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения. Для новых неизвестных форм полезны безопасные поля `element_count`, `element_types`, `element_fields`, `options_fields`.
+7. Каждые 120 секунд `bridge.dm_history_sweep.worker_started` перечитывает последние 30 сообщений активных DM за окно 48 часов и досылает пропущенные сообщения через обычный dedup path. При успехе ищи `max.history_sweep.replayed` и `tg.outbound.sent media_type=voice`.
+8. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения. Для новых неизвестных форм полезны безопасные поля `element_count`, `element_types`, `element_fields`, `options_fields`.
+
+## Phantom topics `Чат 1779...`
+
+MAX raw payload может содержать `cid` — timestamp-like client id. Он не является `chat_id`; bridge пропускает такие события с `reason=probable_client_cid_chat_id` и не создаёт topic.
+
+One-time cleanup ошибочно созданных topics:
+
+```bash
+python scripts/cleanup_phantom_topics.py
+```
+
+Скрипт выбирает только fallback bindings `Чат 1779...`, у которых тот же `max_msg_id` уже доставлен в настоящий чат, вызывает Telegram `delete_forum_topic`, а если Telegram отказал — `close_forum_topic`. После этого binding получает `mode='disabled'` и title `[deleted phantom] ...`.
 
 ### Проверка 2: Telegram -> MAX
 

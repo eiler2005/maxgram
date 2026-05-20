@@ -132,6 +132,25 @@ class Repository:
         )
         await self._db.commit()
 
+    async def find_phantom_topic_bindings(self) -> list[ChatBinding]:
+        """Timestamp-like fallback topics that duplicated a real chat delivery."""
+        async with self._db.execute(
+            """SELECT DISTINCT cb.*
+               FROM chat_bindings cb
+               JOIN message_map phantom
+                 ON phantom.max_chat_id = cb.max_chat_id
+                AND phantom.direction = 'inbound'
+               JOIN message_map real
+                 ON real.max_msg_id = phantom.max_msg_id
+                AND real.max_chat_id != phantom.max_chat_id
+                AND real.direction = 'inbound'
+               WHERE cb.title LIKE 'Чат 1779%'
+                 AND cb.max_chat_id LIKE '1779%'
+               ORDER BY cb.created_at DESC"""
+        ) as cur:
+            rows = await cur.fetchall()
+            return [ChatBinding(**dict(row)) for row in rows]
+
     async def list_bindings(self) -> list[ChatBinding]:
         async with self._db.execute("SELECT * FROM chat_bindings ORDER BY created_at") as cur:
             rows = await cur.fetchall()
