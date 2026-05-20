@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 
 # Исходники
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 COPY tests/ ./tests/
 COPY pytest.ini .
 COPY config.yaml .
