@@ -507,6 +507,98 @@ async def test_handle_raw_receive_forwards_top_level_audio_payload(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_receive_skips_top_level_message_with_only_cid(
+    tmp_path,
+    caplog,
+):
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+    raw_event = {
+        "opcode": 128,
+        "payload": {
+            "cid": 1779268162669013,
+            "id": 116606118527662695,
+            "time": 1,
+            "sender": 7001,
+            "text": "secret text",
+            "type": "USER",
+            "attaches": [],
+            "token": "secret-token",
+        },
+    }
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_receive(raw_event)
+
+    assert received == []
+    record = next(
+        r
+        for r in caplog.records
+        if getattr(r, "event_fields", {}).get("event") == "max.raw.message_skipped"
+    )
+    fields = record.event_fields
+    assert fields["reason"] == "missing_chat_id"
+    assert "max_chat_id" not in fields
+    assert fields["max_msg_id"] == "116606118527662695"
+    assert fields["message_type"] == "USER"
+    assert "cid" in fields["message_fields"]
+    assert "text" not in fields["message_fields"]
+    assert "token" not in fields["message_fields"]
+    assert "1779268162669013" not in str(fields)
+    assert "secret text" not in caplog.text
+    assert "secret-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_receive_prefers_real_chat_id_over_cid(tmp_path):
+    adapter = MaxAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")]
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+    raw_event = {
+        "opcode": 128,
+        "payload": {
+            "chatId": -70000000000003,
+            "cid": 1779268162669013,
+            "id": 116606118527662696,
+            "time": 1,
+            "sender": 7001,
+            "text": "ok",
+            "type": "USER",
+            "attaches": [],
+        },
+    }
+
+    await adapter._handle_raw_receive(raw_event)
+
+    assert len(received) == 1
+    assert received[0].chat_id == "-70000000000003"
+    assert received[0].msg_id == "116606118527662696"
+    assert received[0].text == "ok"
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_receive_logs_top_level_empty_message_diagnostic(tmp_path, caplog):
     adapter = MaxAdapter(
         phone="+7",
@@ -726,7 +818,7 @@ async def test_typed_empty_message_recovers_audio_from_raw_history_cache(tmp_pat
         "payload": {
             "messages": [
                 {
-                    "cid": 195509792,
+                    "chatId": 195509792,
                     "id": 110,
                     "sender": 7001,
                     "text": "",
@@ -789,6 +881,43 @@ async def test_typed_empty_message_recovers_audio_from_raw_history_cache(tmp_pat
     assert "secret-token" not in caplog.text
     assert "secret text" not in caplog.text
     assert "https://audio.example.test/secret.ogg" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_raw_history_with_only_cid_is_not_cached_without_expected_context(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(users={7001: make_user("Вита")})
+
+    await adapter._handle_raw_receive(
+        {
+            "opcode": 49,
+            "payload": {
+                "messages": [
+                    {
+                        "cid": 1779268162669013,
+                        "id": 116606118527662695,
+                        "sender": 7001,
+                        "type": "USER",
+                        "attaches": [
+                            {
+                                "_type": "AUDIO",
+                                "audioId": 85,
+                                "url": "https://audio.example.test/secret.ogg",
+                                "duration": 9,
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+    )
+
+    assert adapter._raw_history_messages == {}
 
 
 @pytest.mark.asyncio

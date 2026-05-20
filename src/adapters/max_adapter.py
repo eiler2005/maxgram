@@ -58,6 +58,7 @@ MAX_DOWNLOAD_ATTEMPTS = 7
 MAX_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 MAX_RAW_HISTORY_CACHE_TTL_SECONDS = 180
 MAX_RAW_HISTORY_CACHE_SIZE = 256
+MAX_RAW_HISTORY_EXPECTED_TTL_SECONDS = 30
 MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS = 180
 MAX_EMPTY_RECOVERY_CACHE_POLL_SECONDS = 1.0
 MAX_EMPTY_RECOVERY_RETRY_POLL_SECONDS = 30
@@ -182,6 +183,7 @@ class MaxAdapter:
         self._last_connected_at: Optional[int] = None
         self._raw_processed_message_ids: dict[tuple[str, str], float] = {}
         self._raw_history_messages: dict[tuple[str, str], tuple[float, object]] = {}
+        self._expected_raw_history_messages: dict[str, tuple[str, float]] = {}
         self._pending_empty_recovery_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._pending_empty_recoveries: dict[str, dict[str, object]] = {}
         self._pending_empty_recovery_worker: Optional[asyncio.Task] = None
@@ -631,6 +633,27 @@ class MaxAdapter:
             for key, value in self._raw_history_messages.items()
             if value[0] > now
         }
+        self._expected_raw_history_messages = {
+            msg_id: value
+            for msg_id, value in self._expected_raw_history_messages.items()
+            if value[1] > now
+        }
+
+    def _remember_expected_raw_history_message(self, chat_id: str, msg_id: str):
+        self._cleanup_raw_unwrapped_state()
+        self._expected_raw_history_messages[str(msg_id)] = (
+            str(chat_id),
+            time.monotonic() + MAX_RAW_HISTORY_EXPECTED_TTL_SECONDS,
+        )
+
+    def _expected_raw_history_chat_id(self, msg_id: object) -> Optional[str]:
+        if msg_id is None:
+            return None
+        self._cleanup_raw_unwrapped_state()
+        expected = self._expected_raw_history_messages.get(str(msg_id))
+        if expected is None:
+            return None
+        return expected[0]
 
     def _mark_raw_unwrapped_message(self, chat_id: str, msg_id: str):
         self._cleanup_raw_unwrapped_state()
@@ -729,8 +752,6 @@ class MaxAdapter:
         normalized = dict(data)
         if "_type" in normalized and "type" not in normalized:
             normalized["type"] = normalized["_type"]
-        if "cid" in normalized and "chatId" not in normalized:
-            normalized["chatId"] = normalized["cid"]
         if "chat_id" in normalized and "chatId" not in normalized:
             normalized["chatId"] = normalized["chat_id"]
         if "chatId" in normalized and "chat_id" not in normalized:
@@ -787,7 +808,7 @@ class MaxAdapter:
         if not isinstance(payload, dict):
             return None, None
 
-        outer_chat_id = self._payload_value(payload, "chatId", "chat_id", "cid")
+        outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
         message = self._payload_value(payload, "message")
         if isinstance(message, dict):
             return self._normalize_message_dict(message), outer_chat_id
@@ -814,7 +835,7 @@ class MaxAdapter:
         message, outer_chat_id = self._payload_message_dict(payload)
         if not message:
             return None
-        chat_id = self._payload_value(message, "chatId", "chat_id", "cid") or outer_chat_id
+        chat_id = self._payload_value(message, "chatId", "chat_id") or outer_chat_id
         msg_id = self._payload_value(message, "id", "messageId", "message_id", "msgId")
         if chat_id is None or msg_id is None:
             return None
@@ -884,7 +905,7 @@ class MaxAdapter:
             return 0
 
         self._cleanup_raw_unwrapped_state()
-        outer_chat_id = self._payload_value(payload, "chatId", "chat_id", "cid")
+        outer_chat_id = self._payload_value(payload, "chatId", "chat_id")
         cached = 0
         now = time.monotonic()
 
@@ -895,11 +916,12 @@ class MaxAdapter:
             if not self._message_dict_has_content(message):
                 continue
 
-            chat_id = (
-                self._payload_value(message, "chatId", "chat_id", "cid")
-                or outer_chat_id
-            )
             msg_id = self._payload_value(message, "id", "messageId", "message_id", "msgId")
+            chat_id = (
+                self._payload_value(message, "chatId", "chat_id")
+                or outer_chat_id
+                or self._expected_raw_history_chat_id(msg_id)
+            )
             if chat_id is None or msg_id is None:
                 continue
 
@@ -1075,12 +1097,38 @@ class MaxAdapter:
             self._payload_value(message, "chatId", "chat_id")
             or outer_chat_id
         )
+        if chat_id is None:
+            return None
         message_obj = self._message_object_from_dict(
             message,
-            str(chat_id) if chat_id is not None else None,
+            str(chat_id),
         )
         setattr(message_obj, "_from_raw_unwrapped", True)
         return message_obj
+
+    def _log_raw_message_missing_chat_id(self, payload: dict):
+        message, _outer_chat_id = self._payload_message_dict(payload)
+        if not message or not self._message_dict_has_content(message):
+            return
+
+        msg_id = self._payload_value(message, "id", "messageId", "message_id", "msgId")
+        flow_id = build_max_flow_id("", str(msg_id or ""))
+        log_event(
+            logger,
+            logging.INFO,
+            "max.raw.message_skipped",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="received",
+            outcome="skipped",
+            reason="missing_chat_id",
+            max_chat_id=None,
+            max_msg_id=str(msg_id) if msg_id is not None else None,
+            message_type=str(self._payload_value(message, "type") or "") or None,
+            payload_fields=self._safe_attachment_field_names(SimpleNamespace(**payload)),
+            message_fields=self._safe_attachment_field_names(SimpleNamespace(**message)),
+            raw_attachment_types=self._raw_attachment_types_from_message_dict(message),
+        )
 
     def _log_raw_empty_message(self, payload: dict):
         message, outer_chat_id = self._payload_message_dict(payload)
@@ -1116,11 +1164,12 @@ class MaxAdapter:
     def _raw_payload_identity_hints(self, payload: dict) -> tuple[object, object]:
         message, outer_chat_id = self._payload_message_dict(payload)
         if message:
-            chat_id = (
-                self._payload_value(message, "chatId", "chat_id", "cid")
-                or outer_chat_id
-            )
             msg_id = self._payload_value(message, "id", "messageId", "message_id", "msgId")
+            chat_id = (
+                self._payload_value(message, "chatId", "chat_id")
+                or outer_chat_id
+                or self._expected_raw_history_chat_id(msg_id)
+            )
             return chat_id, msg_id
 
         messages = self._payload_value(payload, "messages")
@@ -1129,7 +1178,6 @@ class MaxAdapter:
                 if not isinstance(raw_message, dict):
                     continue
                 message = self._normalize_message_dict(raw_message)
-                chat_id = self._payload_value(message, "chatId", "chat_id", "cid")
                 msg_id = self._payload_value(
                     message,
                     "id",
@@ -1137,10 +1185,14 @@ class MaxAdapter:
                     "message_id",
                     "msgId",
                 )
+                chat_id = (
+                    self._payload_value(message, "chatId", "chat_id")
+                    or self._expected_raw_history_chat_id(msg_id)
+                )
                 if chat_id is not None or msg_id is not None:
                     return chat_id, msg_id
 
-        chat_id = self._payload_value(payload, "chatId", "chat_id", "cid")
+        chat_id = self._payload_value(payload, "chatId", "chat_id")
         msg_id = self._payload_value(payload, "messageId", "message_id", "msgId", "id")
         return chat_id, msg_id
 
@@ -1274,6 +1326,7 @@ class MaxAdapter:
         if getattr(self._client, "fetch_history", None) is None:
             return None
 
+        self._remember_expected_raw_history_message(chat_id, raw_msg_id_str)
         try:
             messages = await self._client.fetch_history(
                 chat_id_int,
@@ -1787,7 +1840,10 @@ class MaxAdapter:
             if regular is None:
                 message, _outer_chat_id = self._payload_message_dict(payload)
                 if message:
-                    self._log_raw_empty_message(payload)
+                    if self._message_dict_has_content(message):
+                        self._log_raw_message_missing_chat_id(payload)
+                    else:
+                        self._log_raw_empty_message(payload)
                 else:
                     self._log_raw_unhandled_message_payload(payload)
                 return
