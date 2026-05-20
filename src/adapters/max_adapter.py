@@ -3683,6 +3683,65 @@ class MaxAdapter:
         except (TypeError, ValueError):
             return None
 
+        if self._client:
+            try:
+                dialog = next(
+                    (
+                        d
+                        for d in getattr(self._client, "dialogs", [])
+                        if getattr(d, "id", None) == chat_id_int
+                    ),
+                    None,
+                )
+                last_message = getattr(dialog, "last_message", None) if dialog else None
+                if str(getattr(last_message, "id", "")) == str(msg_id):
+                    attaches = getattr(last_message, "attaches", None) or []
+                    attach_list = attaches if isinstance(attaches, list) else [attaches]
+                    for attach in attach_list:
+                        atype = self._normalize_attachment_type(
+                            self._attachment_type_name(attach)
+                        )
+                        if atype != "AUDIO":
+                            continue
+                        attach_refs = {
+                            str(value)
+                            for value in (
+                                getattr(attach, "audio_id", None),
+                                getattr(attach, "audioId", None),
+                                getattr(attach, "file_id", None),
+                                getattr(attach, "fileId", None),
+                                getattr(attach, "id", None),
+                            )
+                            if value is not None
+                        }
+                        if str(reference_id) not in attach_refs and len(attach_list) > 1:
+                            continue
+                        attachment = await self._download_attachment(
+                            chat_id,
+                            msg_id,
+                            attach,
+                            index=attachment_index,
+                            flow_id=flow_id,
+                        )
+                        if attachment:
+                            attachment.duration = attachment.duration or duration
+                            attachment.source_type = source_type or attachment.source_type
+                            return attachment
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.attachment.audio_dialog_fallback",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="failed",
+                    reason="dialog_last_message_failed",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    error=str(e),
+                )
+
         raw_payload = await self._fetch_raw_history_payload(
             chat_id_int=chat_id_int,
             from_time=int(time.time() * 1000) + 60_000,
