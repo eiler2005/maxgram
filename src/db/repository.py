@@ -232,6 +232,55 @@ class Repository:
     def _pending_media_from_row(self, row) -> PendingMediaDownload:
         return PendingMediaDownload(**dict(row))
 
+    async def find_active_pending_media(
+        self,
+        *,
+        max_chat_id: str,
+        max_msg_id: str,
+        attachment_index: int,
+        kind: str,
+    ) -> Optional[PendingMediaDownload]:
+        async with self._db.execute(
+            """SELECT * FROM pending_media_downloads
+               WHERE max_chat_id = ? AND max_msg_id = ?
+                 AND attachment_index = ? AND kind = ?
+                 AND status IN ('pending', 'retry', 'leased')
+               LIMIT 1""",
+            (max_chat_id, max_msg_id, attachment_index, kind),
+        ) as cur:
+            row = await cur.fetchone()
+            return self._pending_media_from_row(row) if row else None
+
+    async def find_active_pending_media_by_reference(
+        self,
+        *,
+        media_chat_id: str,
+        media_msg_id: str,
+        attachment_index: int,
+        kind: str,
+        reference_kind: str,
+        reference_id: str,
+    ) -> Optional[PendingMediaDownload]:
+        async with self._db.execute(
+            """SELECT * FROM pending_media_downloads
+               WHERE media_chat_id = ? AND media_msg_id = ?
+                 AND attachment_index = ? AND kind = ?
+                 AND reference_kind = ? AND reference_id = ?
+                 AND status IN ('pending', 'retry', 'leased')
+               ORDER BY id ASC
+               LIMIT 1""",
+            (
+                media_chat_id,
+                media_msg_id,
+                attachment_index,
+                kind,
+                reference_kind,
+                reference_id,
+            ),
+        ) as cur:
+            row = await cur.fetchone()
+            return self._pending_media_from_row(row) if row else None
+
     async def enqueue_pending_media(self, job: PendingMediaDownload) -> int:
         now = int(time.time())
         created_at = job.created_at or now

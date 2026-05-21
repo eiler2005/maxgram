@@ -3226,6 +3226,338 @@ class MaxAdapter:
         candidates.sort(key=lambda item: item[0], reverse=True)
         return candidates[0][1]
 
+    def _extract_audio_url(self, value, *, key_hint: Optional[str] = None) -> Optional[str]:
+        """Найти реальный URL голосового/audio в сыром MAX payload."""
+        candidates: list[tuple[int, str]] = []
+
+        def score_url(url: str, key: Optional[str]) -> int:
+            score = 0
+            lowered_url = url.lower()
+            lowered_key = (key or "").lower()
+
+            if lowered_key in {"url", "src", "source", "download"} or lowered_key.isdigit():
+                score += 4
+            if any(marker in lowered_key for marker in ("audio", "voice", "file", "media")):
+                score += 5
+            if any(ext in lowered_key for ext in ("ogg", "opus", "mp3", "m4a", "aac", "wav")):
+                score += 6
+            if any(ext in lowered_url for ext in (".ogg", ".opus", ".mp3", ".m4a", ".aac", ".wav")):
+                score += 6
+            if any(marker in lowered_key for marker in ("thumb", "preview", "image", "photo")):
+                score -= 6
+            if any(ext in lowered_url for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                score -= 8
+            if "video" in lowered_key or any(ext in lowered_url for ext in (".mp4", ".mov", ".m3u8")):
+                score -= 4
+
+            return score
+
+        def walk(node, key: Optional[str] = None):
+            if isinstance(node, str):
+                if node.startswith(("http://", "https://")):
+                    candidates.append((score_url(node, key), node))
+                return
+            if isinstance(node, dict):
+                for nested_key, nested_value in node.items():
+                    walk(nested_value, str(nested_key))
+                return
+            if isinstance(node, (list, tuple, set)):
+                for nested_value in node:
+                    walk(nested_value, key)
+                return
+            url_attr = getattr(node, "url", None)
+            if url_attr is not None and url_attr is not node:
+                walk(url_attr, "url")
+            if hasattr(node, "__dict__"):
+                walk(vars(node), key)
+
+        walk(value, key_hint)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
+    def _safe_payload_error_code(self, payload) -> Optional[str]:
+        if not isinstance(payload, dict):
+            return None
+        error = self._payload_value(payload, "error", "errorCode", "code")
+        if isinstance(error, dict):
+            code = self._payload_value(error, "code", "name", "type", "error")
+            return str(code)[:80] if code is not None else error.__class__.__name__
+        if error is not None:
+            return str(error)[:80]
+        return None
+
+    async def _probe_audio_download_payload(
+        self,
+        *,
+        candidate: str,
+        payload: dict,
+        chat_id: str,
+        msg_id: str,
+        flow_id: Optional[str] = None,
+    ) -> Optional[str]:
+        if not self._client or getattr(self._client, "_send_and_wait", None) is None:
+            return None
+        try:
+            from pymax.static.enum import Opcode
+
+            data = await self._client._send_and_wait(
+                opcode=Opcode.FILE_DOWNLOAD,
+                payload=payload,
+                timeout=5,
+            )
+        except Exception as e:
+            log_event(
+                logger,
+                logging.INFO,
+                "max.attachment.audio_protocol_probe",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="failed",
+                reason="send_failed",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                candidate=candidate,
+                error_class=e.__class__.__name__,
+            )
+            return None
+
+        raw_payload = data.get("payload") if isinstance(data, dict) else None
+        url = self._extract_audio_url(raw_payload)
+        error_code = self._safe_payload_error_code(raw_payload)
+        log_event(
+            logger,
+            logging.INFO,
+            "max.attachment.audio_protocol_probe",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="download",
+            outcome="received" if url else "miss",
+            reason=None if url else (error_code or "url_missing"),
+            max_chat_id=chat_id,
+            max_msg_id=msg_id,
+            candidate=candidate,
+            has_download_url=bool(url),
+            payload_class=raw_payload.__class__.__name__ if raw_payload is not None else None,
+            payload_fields=(
+                sorted(
+                    str(key)
+                    for key in raw_payload.keys()
+                    if self._is_safe_field_name(key)
+                )
+                if isinstance(raw_payload, dict)
+                else []
+            ),
+            payload_shape=self._safe_field_paths(raw_payload) if isinstance(raw_payload, dict) else [],
+        )
+        return url
+
+    async def _fetch_raw_message_payload_by_id(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        flow_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        if not self._client or getattr(self._client, "_send_and_wait", None) is None:
+            return None
+        try:
+            from pymax.static.enum import Opcode
+        except Exception:
+            return None
+
+        try:
+            chat_id_value = int(chat_id)
+        except (TypeError, ValueError):
+            return None
+        msg_values: list[object] = []
+        try:
+            msg_values.append(int(msg_id))
+        except (TypeError, ValueError):
+            pass
+        msg_values.append(str(msg_id))
+
+        payloads = []
+        for msg_value in dict.fromkeys(msg_values):
+            payloads.extend([
+                {"chatId": chat_id_value, "messageId": msg_value},
+                {"chatId": chat_id_value, "messageIds": [msg_value]},
+            ])
+        if msg_values:
+            payloads.append({"chatId": chat_id_value, "ids": [msg_values[0]]})
+
+        for index, payload in enumerate(payloads, start=1):
+            try:
+                data = await self._client._send_and_wait(
+                    opcode=Opcode.MSG_GET,
+                    payload=payload,
+                    timeout=5,
+                )
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.raw.message_get_probe",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="failed",
+                    reason="send_failed",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    candidate=f"msg_get_{index}",
+                    error_class=e.__class__.__name__,
+                )
+                continue
+            raw_payload = data.get("payload") if isinstance(data, dict) else None
+            message, outer_chat_id = self._payload_message_dict(raw_payload or {})
+            if message is None and isinstance(raw_payload, dict):
+                message = self._find_raw_history_message_dict(raw_payload, str(msg_id))
+            if message is not None:
+                return self._normalize_message_dict(message)
+            log_event(
+                logger,
+                logging.INFO,
+                "max.raw.message_get_probe",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="miss",
+                reason="message_missing",
+                max_chat_id=str(outer_chat_id or chat_id),
+                max_msg_id=msg_id,
+                candidate=f"msg_get_{index}",
+                payload_shape=self._safe_field_paths(raw_payload) if isinstance(raw_payload, dict) else [],
+            )
+        return None
+
+    async def _download_audio_by_protocol(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        reference_id: object,
+        reference_kind: str,
+        prefix: str,
+        filename_hint: Optional[str] = None,
+        token: Optional[str] = None,
+        flow_id: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str]]:
+        try:
+            chat_id_int = int(chat_id)
+        except (TypeError, ValueError):
+            return None, None
+
+        reference = str(reference_id)
+        ref_values: list[object] = []
+        try:
+            ref_values.append(int(reference))
+        except (TypeError, ValueError):
+            pass
+        ref_values.append(reference)
+
+        base_messages: list[object] = []
+        try:
+            base_messages.append(int(msg_id))
+        except (TypeError, ValueError):
+            pass
+        base_messages.append(str(msg_id))
+
+        candidates: list[tuple[str, dict]] = []
+        msg_values = list(dict.fromkeys(base_messages))
+        reference_values = list(dict.fromkeys(ref_values))
+        primary_msg = msg_values[0] if msg_values else str(msg_id)
+        primary_ref = reference_values[0] if reference_values else reference
+
+        for msg_value in [primary_msg]:
+            for ref_value in [primary_ref]:
+                candidates.extend([
+                    (
+                        "file_download_file_id",
+                        {"chatId": chat_id_int, "messageId": msg_value, "fileId": ref_value},
+                    ),
+                    (
+                        "file_download_audio_id",
+                        {"chatId": chat_id_int, "messageId": msg_value, "audioId": ref_value},
+                    ),
+                    (
+                        "file_download_media_id",
+                        {"chatId": chat_id_int, "messageId": msg_value, "mediaId": ref_value},
+                    ),
+                    (
+                        "file_download_id",
+                        {"chatId": chat_id_int, "messageId": msg_value, "id": ref_value},
+                    ),
+                ])
+                if token:
+                    candidates.extend([
+                        (
+                            "file_download_audio_token",
+                            {
+                                "chatId": chat_id_int,
+                                "messageId": msg_value,
+                                "audioId": ref_value,
+                                "token": token,
+                            },
+                        ),
+                        (
+                            "file_download_token",
+                            {
+                                "chatId": chat_id_int,
+                                "messageId": msg_value,
+                                "token": token,
+                            },
+                        ),
+                    ])
+
+        for msg_value in msg_values[1:]:
+            candidates.extend([
+                (
+                    "file_download_file_id_string_msg",
+                    {"chatId": chat_id_int, "messageId": msg_value, "fileId": primary_ref},
+                ),
+                (
+                    "file_download_audio_id_string_msg",
+                    {"chatId": chat_id_int, "messageId": msg_value, "audioId": primary_ref},
+                ),
+            ])
+        for ref_value in reference_values[1:]:
+            candidates.append(
+                (
+                    "file_download_audio_id_string_ref",
+                    {"chatId": chat_id_int, "messageId": primary_msg, "audioId": ref_value},
+                )
+            )
+
+        seen_payloads: set[str] = set()
+        for candidate, payload in candidates:
+            signature = json.dumps(payload, sort_keys=True, default=str)
+            if signature in seen_payloads:
+                continue
+            seen_payloads.add(signature)
+            url = await self._probe_audio_download_payload(
+                candidate=candidate,
+                payload=payload,
+                chat_id=chat_id,
+                msg_id=msg_id,
+                flow_id=flow_id,
+            )
+            if not url:
+                continue
+            return await self._download_from_url(
+                url,
+                prefix,
+                filename_hint,
+                ".ogg",
+                expected_kind="audio",
+                flow_id=flow_id,
+                download_source=candidate,
+            )
+
+        return None, None
+
     def _download_client_profile_for_url(self, url: str) -> tuple[dict[str, str], Optional[str], str]:
         src_ag = (
             parse_qs(urlparse(url).query).get("srcAg", [None])[0]
@@ -3789,10 +4121,72 @@ class MaxAdapter:
                         attachment.source_type = source_type or attachment.source_type
                         return attachment
 
+        raw_message = await self._fetch_raw_message_payload_by_id(
+            chat_id=chat_id,
+            msg_id=msg_id,
+            flow_id=flow_id,
+        )
+        if raw_message is not None:
+            normalized = self._normalize_message_dict(raw_message)
+            raw_attaches = self._payload_value(normalized, "attaches", "attachments") or []
+            attach_list = raw_attaches if isinstance(raw_attaches, list) else [raw_attaches]
+            for attach in attach_list:
+                if not isinstance(attach, dict):
+                    continue
+                attach_obj = SimpleNamespace(**self._normalize_message_dict(attach))
+                atype = self._normalize_attachment_type(
+                    self._attachment_type_name(attach_obj)
+                )
+                if atype != "AUDIO":
+                    continue
+                attach_refs = {
+                    str(value)
+                    for value in (
+                        getattr(attach_obj, "audio_id", None),
+                        getattr(attach_obj, "audioId", None),
+                        getattr(attach_obj, "file_id", None),
+                        getattr(attach_obj, "fileId", None),
+                        getattr(attach_obj, "id", None),
+                    )
+                    if value is not None
+                }
+                if str(reference_id) not in attach_refs and len(attach_list) > 1:
+                    continue
+                attachment = await self._download_attachment(
+                    chat_id,
+                    msg_id,
+                    attach_obj,
+                    index=attachment_index,
+                    flow_id=flow_id,
+                )
+                if attachment:
+                    attachment.duration = attachment.duration or duration
+                    attachment.source_type = source_type or attachment.source_type
+                    return attachment
+
         try:
             stable_id = int(reference_id)
         except (TypeError, ValueError):
             return None
+        local_path, filename = await self._download_audio_by_protocol(
+            chat_id=chat_id,
+            msg_id=msg_id,
+            reference_id=stable_id,
+            reference_kind=reference_kind,
+            prefix=f"audio_retry_{chat_id}_{msg_id}{idx}",
+            filename_hint=filename_hint,
+            flow_id=flow_id,
+        )
+        if local_path:
+            return MaxAttachment(
+                kind="audio",
+                local_path=local_path,
+                filename=filename,
+                duration=duration,
+                width=None,
+                height=None,
+                source_type=source_type,
+            )
         local_path, filename = await self._download_file_by_id(
             chat_id,
             msg_id,
@@ -3898,6 +4292,7 @@ class MaxAdapter:
         if "AUDIO" in atype or "VOICE" in atype:
             url = getattr(attach, "url", None)
             audio_id = getattr(attach, "audio_id", None) or getattr(attach, "audioId", None)
+            token = getattr(attach, "token", None)
             file_id = (
                 getattr(attach, "file_id", None)
                 or getattr(attach, "id", None)
@@ -3924,6 +4319,17 @@ class MaxAdapter:
                         max_msg_id=msg_id,
                         attachment_index=index,
                     )
+            if not local_path and file_id:
+                local_path, filename = await self._download_audio_by_protocol(
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                    reference_id=file_id,
+                    reference_kind="audio_id" if audio_id is not None else "file_id",
+                    prefix=f"audio_{chat_id}_{msg_id}{idx}",
+                    filename_hint=filename_hint,
+                    token=str(token) if token is not None else None,
+                    flow_id=flow_id,
+                )
             if not local_path and file_id:
                 local_path, filename = await self._download_file_by_id(
                     chat_id, msg_id, file_id, f"audio_{chat_id}_{msg_id}{idx}",

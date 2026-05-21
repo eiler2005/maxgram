@@ -58,9 +58,49 @@ class DummyRepo:
         self.logged = (args, kwargs)
 
     async def enqueue_pending_media(self, job):
+        for existing in self.pending_media:
+            if (
+                existing.max_chat_id == job.max_chat_id
+                and existing.max_msg_id == job.max_msg_id
+                and existing.attachment_index == job.attachment_index
+                and existing.kind == job.kind
+            ):
+                return existing.id
         job.id = len(self.pending_media) + 1
         self.pending_media.append(job)
         return job.id
+
+    async def find_active_pending_media(self, *, max_chat_id: str, max_msg_id: str,
+                                        attachment_index: int, kind: str):
+        for job in self.pending_media:
+            if (
+                job.max_chat_id == max_chat_id
+                and job.max_msg_id == max_msg_id
+                and job.attachment_index == attachment_index
+                and job.kind == kind
+                and job.status in {"pending", "retry", "leased"}
+            ):
+                return job
+        return None
+
+    async def find_active_pending_media_by_reference(self, *, media_chat_id: str,
+                                                     media_msg_id: str,
+                                                     attachment_index: int,
+                                                     kind: str,
+                                                     reference_kind: str,
+                                                     reference_id: str):
+        for job in self.pending_media:
+            if (
+                job.media_chat_id == media_chat_id
+                and job.media_msg_id == media_msg_id
+                and job.attachment_index == attachment_index
+                and job.kind == kind
+                and job.reference_kind == reference_kind
+                and job.reference_id == reference_id
+                and job.status in {"pending", "retry", "leased"}
+            ):
+                return job
+        return None
 
     async def get_due_pending_media(self, *, now=None, limit=5):
         return [
@@ -840,6 +880,86 @@ async def test_on_max_message_enqueues_retryable_audio_failure():
     assert job.kind == "audio"
     assert job.reference_kind == "audio_id"
     assert job.reference_id == "92"
+
+
+@pytest.mark.asyncio
+async def test_existing_pending_audio_failure_does_not_duplicate_placeholder():
+    repo = DummyRepo()
+    repo.binding_by_chat["200056208"] = SimpleNamespace(
+        max_chat_id="200056208",
+        tg_topic_id=1372,
+        title="Елена",
+        mode="active",
+    )
+    repo.pending_media.append(
+        PendingMediaDownload(
+            id=7,
+            max_chat_id="200056208",
+            max_msg_id="116605799957888782",
+            tg_topic_id=1372,
+            attachment_index=0,
+            kind="audio",
+            source_type="AUDIO",
+            media_chat_id="200056208",
+            media_msg_id="116605799957888782",
+            reference_kind="audio_id",
+            reference_id="92",
+            status="retry",
+        )
+    )
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+    msg = MaxMessage(
+        msg_id="116605799957888782:USER",
+        chat_id="200056208",
+        chat_title=None,
+        sender_id="7001",
+        sender_name="Елена",
+        text="",
+        attachments=[],
+        attachment_types=["AUDIO"],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=True,
+        is_own=False,
+        raw=None,
+        attachment_failures=[
+            MaxAttachmentFailure(
+                kind="audio",
+                source_type="AUDIO",
+                filename=None,
+                index=0,
+                reason="download_failed",
+                retryable=True,
+                media_chat_id="200056208",
+                media_msg_id="116605799957888782",
+                reference_kind="audio_id",
+                reference_id="92",
+                duration=9,
+            )
+        ],
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == []
+    assert len(repo.pending_media) == 1
+    assert repo.pending_media[0].id == 7
+    assert repo.delivery_logs[-1][0][3] == "partial"
+    assert repo.delivery_logs[-1][0][4] == "attachment_download_pending_duplicate"
 
 
 @pytest.mark.asyncio

@@ -338,13 +338,14 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - если CDN не поддерживает `Range` и отвечает `200`, bridge удаляет `*.part` и качает заново;
 - если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
 - если ретриабельное видео или голосовое всё равно не скачалось, bridge отправляет остальные части сообщения сразу, показывает `⏳ Видео MAX #N докачивается...` / `⏳ Голосовое MAX #N докачивается...` и кладёт job в `pending_media_downloads`;
-- retry worker для видео заново получает playable URL через `VIDEO_PLAY`; для голосовых заново читает raw `CHAT_HISTORY`, пытается взять свежий URL из payload, затем fallback через `FILE_DOWNLOAD`; signed URL/token/text не хранятся, медиа досылается в тот же Telegram topic отдельным сообщением.
+- повторный sweep той же voice/media-reference не отправляет второй queued-placeholder: существующий pending job переиспользуется по `media_chat_id/media_msg_id/attachment_index/kind/reference_*`;
+- retry worker для видео заново получает playable URL через `VIDEO_PLAY`; для голосовых заново читает raw `CHAT_HISTORY`, пробует exact `MSG_GET`, dialog cache и несколько `FILE_DOWNLOAD` payload-вариантов (`fileId`, `audioId`, `mediaId`, token-aware candidates), затем legacy pymax `get_file_by_id`; signed URL/token/text не хранятся, медиа досылается в тот же Telegram topic отдельным сообщением.
 
 Что смотреть в логах:
 
 ```bash
 rg 'flow_id=mx:<chat_id>:<msg_id>' data/bridge.log
-rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback|audio_fallback|voice_reference_missing)' data/bridge.log
+rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback|audio_fallback|audio_protocol_probe|voice_reference_missing)' data/bridge.log
 rg 'event=bridge\.media_retry\.(enqueued|attempt_started|retry_scheduled|delivered|failed)' data/bridge.log
 rg 'event=bridge\.inbound\.forward_finished .*outcome=partial' data/bridge.log
 ```
@@ -405,7 +406,8 @@ sqlite3 -header -column data/bridge.db \
 6. Если MAX/history всё ещё отдаёт пустой message без `attaches`, bridge кладёт meta-only retry в `data/pending_empty_recoveries.json` и перечитывает history без лимита по времени. Ищи `reason=durable_history_retry`, `retry_scheduled`, затем при успехе `durable_history_recovered`.
 7. Каждые 120 секунд `bridge.dm_history_sweep.worker_started` перечитывает последние 30 сообщений активных DM за окно 48 часов и досылает пропущенные сообщения через обычный dedup path. При успехе ищи `max.history_sweep.replayed` и `tg.outbound.sent media_type=voice`.
 8. Если voice распознан, но MAX пока не отдаёт скачиваемый файл, bridge ставит `kind=audio` в `pending_media_downloads`. Ищи `bridge.media_retry.enqueued`, `attempt_started`, `retry_scheduled`, затем `bridge.media_retry.delivered` и `tg.outbound.sent media_type=voice`.
-9. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения. Для новых неизвестных форм полезны безопасные поля `element_count`, `element_types`, `element_fields`, `options_fields`.
+9. Для protocol-level audio диагностики смотри `max.attachment.audio_protocol_probe`: там есть только candidate, outcome, error code/class и безопасная форма payload (`payload_fields/payload_shape`), без URL/token/text.
+10. Если Telegram пустой, смотри `max.raw.empty_message`, `max.inbound.empty_message`, `max.inbound.empty_recovery` и `max.attachment.voice_reference_missing`. Эти diagnostics не должны содержать URL, token или текст сообщения. Для новых неизвестных форм полезны безопасные поля `element_count`, `element_types`, `element_fields`, `options_fields`.
 
 ## Phantom topics `Чат 1779...`
 

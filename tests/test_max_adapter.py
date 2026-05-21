@@ -1270,6 +1270,68 @@ async def test_download_audio_reference_uses_dialog_last_message_url(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_download_audio_reference_uses_protocol_audio_id_payload(tmp_path, caplog):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    class ProtocolAudioClient(LookupClient):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        async def _send_and_wait(self, opcode, payload, timeout=10):
+            opcode_name = getattr(opcode, "name", str(opcode))
+            self.calls.append((opcode_name, dict(payload)))
+            if opcode_name == "CHAT_HISTORY":
+                return {"payload": {"messages": []}}
+            if opcode_name == "MSG_GET":
+                return {"payload": {"messages": []}}
+            if "audioId" in payload:
+                return {
+                    "payload": {
+                        "url": "https://audio.example.test/protocol.ogg?token=secret",
+                        "unsafe": False,
+                    }
+                }
+            return {"payload": {"error": {"code": "file.not.found"}}}
+
+    client = ProtocolAudioClient()
+    adapter._client = client
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        attachment = await adapter.download_audio_reference(
+            chat_id="200056208",
+            msg_id="116605799957888782",
+            reference_id="92",
+            reference_kind="audio_id",
+            duration=9,
+            source_type="AUDIO",
+        )
+
+    assert attachment == MaxAttachment("audio", local_path, "voice.ogg", 9, None, None, "AUDIO")
+    assert any(call[0] == "FILE_DOWNLOAD" and "audioId" in call[1] for call in client.calls)
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/protocol.ogg?token=secret",
+            "audio_retry_200056208_116605799957888782",
+            None,
+            ".ogg",
+            "audio",
+            "file_download_audio_id",
+        )
+    ]
+    assert adapter.file_downloads == []
+    assert "https://audio.example.test/protocol.ogg" not in caplog.text
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_replay_recent_history_uses_requested_dm_chat_for_cid_only_payload(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

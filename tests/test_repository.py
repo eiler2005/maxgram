@@ -112,6 +112,24 @@ async def test_pending_media_queue_lifecycle_is_idempotent(tmp_path):
         second_id = await repo.enqueue_pending_media(job)
 
         assert first_id == second_id
+        exact = await repo.find_active_pending_media(
+            max_chat_id="chat-1",
+            max_msg_id="m1",
+            attachment_index=4,
+            kind="video",
+        )
+        assert exact is not None
+        assert exact.id == first_id
+        by_reference = await repo.find_active_pending_media_by_reference(
+            media_chat_id="chat-1",
+            media_msg_id="m1",
+            attachment_index=4,
+            kind="video",
+            reference_kind="video_id",
+            reference_id="555",
+        )
+        assert by_reference is not None
+        assert by_reference.id == first_id
         due = await repo.get_due_pending_media(now=10)
         assert len(due) == 1
         assert due[0].reference_kind == "video_id"

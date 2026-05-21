@@ -230,7 +230,52 @@ class BridgeCore:
             max_msg_id=msg.msg_id,
             tg_topic_id=topic_id,
         )
-        tg_msg_id = await self._forward_to_telegram(msg, topic_id, flow_id=flow_id)
+        enqueued_media = 0
+        display_failures = msg.attachment_failures
+        if msg.attachment_failures:
+            enqueued_media, display_failures = await self._enqueue_retryable_media_failures(
+                msg,
+                topic_id,
+                flow_id=flow_id,
+            )
+
+        if (
+            not msg.text
+            and not msg.attachments
+            and not msg.rendered_texts
+            and msg.attachment_failures
+            and not display_failures
+        ):
+            await self._repo.log_delivery(
+                msg.msg_id,
+                msg.chat_id,
+                "inbound",
+                "partial",
+                "attachment_download_pending_duplicate",
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.forward_finished",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="forward",
+                outcome="skipped",
+                reason="duplicate_pending_media",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+                failed_attachment_count=len(msg.attachment_failures),
+                enqueued_media_count=enqueued_media,
+            )
+            return
+
+        tg_msg_id = await self._forward_to_telegram(
+            msg,
+            topic_id,
+            flow_id=flow_id,
+            attachment_failures=display_failures,
+        )
 
         # Обновляем запись с tg_msg_id
         if tg_msg_id:
@@ -258,13 +303,6 @@ class BridgeCore:
                 delivery_status,
                 delivery_error,
             )
-            enqueued_media = 0
-            if msg.attachment_failures:
-                enqueued_media = await self._enqueue_retryable_media_failures(
-                    msg,
-                    topic_id,
-                    flow_id=flow_id,
-                )
             if msg.attachments or msg.attachment_failures:
                 self._stats["inbound_media"] += 1
             else:
@@ -309,12 +347,35 @@ class BridgeCore:
         topic_id: int,
         *,
         flow_id: Optional[str] = None,
-    ) -> int:
+    ) -> tuple[int, list[MaxAttachmentFailure]]:
         enqueued = 0
+        display_failures: list[MaxAttachmentFailure] = []
         now = int(time.time())
         first_retry_at = now + 60
         for failure in msg.attachment_failures:
             if not self._is_retryable_media_failure(failure):
+                display_failures.append(failure)
+                continue
+
+            existing = await self._find_existing_pending_media_for_failure(msg, failure)
+            if existing is not None:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "bridge.media_retry.enqueued",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="media_retry",
+                    outcome="existing",
+                    reason="pending_media_already_exists",
+                    max_chat_id=msg.chat_id,
+                    max_msg_id=msg.msg_id,
+                    tg_topic_id=topic_id,
+                    pending_media_id=existing.id,
+                    attachment_index=failure.index,
+                    kind=failure.kind,
+                    reference_kind=failure.reference_kind,
+                )
                 continue
 
             job_id = await self._repo.enqueue_pending_media(
@@ -338,6 +399,7 @@ class BridgeCore:
                 )
             )
             enqueued += 1
+            display_failures.append(failure)
             log_event(
                 logger,
                 logging.INFO,
@@ -354,7 +416,41 @@ class BridgeCore:
                 kind=failure.kind,
                 reference_kind=failure.reference_kind,
             )
-        return enqueued
+        return enqueued, display_failures
+
+    async def _find_existing_pending_media_for_failure(
+        self,
+        msg: MaxMessage,
+        failure: MaxAttachmentFailure,
+    ) -> Optional[PendingMediaDownload]:
+        finder = getattr(self._repo, "find_active_pending_media", None)
+        if callable(finder):
+            existing = await finder(
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                attachment_index=failure.index,
+                kind=failure.kind,
+            )
+            if existing is not None:
+                return existing
+
+        ref_finder = getattr(self._repo, "find_active_pending_media_by_reference", None)
+        if (
+            callable(ref_finder)
+            and failure.reference_kind
+            and failure.reference_id
+            and (failure.media_chat_id or msg.chat_id)
+            and (failure.media_msg_id or msg.msg_id)
+        ):
+            return await ref_finder(
+                media_chat_id=failure.media_chat_id or msg.chat_id,
+                media_msg_id=failure.media_msg_id or msg.msg_id,
+                attachment_index=failure.index,
+                kind=failure.kind,
+                reference_kind=failure.reference_kind,
+                reference_id=failure.reference_id,
+            )
+        return None
 
     async def _get_or_create_topic(self, msg: MaxMessage, *,
                                    flow_id: Optional[str] = None) -> Optional[int]:
@@ -685,8 +781,14 @@ class BridgeCore:
             flow_id=flow_id,
         )
 
-    async def _forward_to_telegram(self, msg: MaxMessage, topic_id: int,
-                                   *, flow_id: Optional[str] = None) -> Optional[int]:
+    async def _forward_to_telegram(
+        self,
+        msg: MaxMessage,
+        topic_id: int,
+        *,
+        flow_id: Optional[str] = None,
+        attachment_failures: Optional[list[MaxAttachmentFailure]] = None,
+    ) -> Optional[int]:
         """Отправить сообщение в Telegram топик. Возвращает tg_msg_id."""
 
         # Формируем заголовок отправителя
@@ -730,7 +832,12 @@ class BridgeCore:
                 if tg_msg_id is None:
                     tg_msg_id = sent_id
 
-        failure_text = self._compose_attachment_failure_text(msg.attachment_failures)
+        failures_to_display = (
+            msg.attachment_failures
+            if attachment_failures is None
+            else attachment_failures
+        )
+        failure_text = self._compose_attachment_failure_text(failures_to_display)
         if failure_text:
             text = self._compose_message_text("" if emitted_anything else body_text, failure_text)
             sent_id = await self._tg.send_text(topic_id, text, flow_id=flow_id)
