@@ -61,7 +61,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Unknown MAX message shapes are forwarded with diagnostic metadata (`type`, `link_*`, counts, raw field names) so new formats can be fixed from the next occurrence
 - MAX attachment aliases (`IMAGE`, `VOICE`, `DOCUMENT`, `DOC`) are normalized consistently across dispatch and download stages
 - MAX `VOICE` attachments are delivered as native Telegram voice notes (`send_voice` bubbles)
-- MAX voice retry refreshes raw history/dialog metadata and probes audio download payload variants through the existing userbot socket; repeated sweeps update the same pending job instead of duplicating “докачивается” placeholders
+- MAX voice retry refreshes raw history/dialog metadata and probes conservative audio download payload variants through the existing userbot socket; repeated sweeps update the same pending job instead of duplicating “докачивается” placeholders
 - Control events are rendered in human-friendly text (including `joinbylink` join notifications)
 - Sender name prefix in group chats: `[First Last] message text`
 - Own messages (sent directly in MAX) mirrored to Telegram with `[Вы]` prefix

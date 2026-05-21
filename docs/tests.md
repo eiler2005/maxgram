@@ -69,6 +69,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_download_audio_attachment_uses_direct_url_and_preserves_duration` | `AUDIO` скачивается по прямому `url`; `duration` сохраняется в `MaxAttachment`. |
 | `test_download_audio_attachment_falls_back_to_audio_id` | Если `url` нет и protocol resolver недоступен, `audio_id` используется через legacy download-by-id путь. |
 | `test_download_audio_reference_uses_protocol_audio_id_payload` | Durable voice retry без `url` пробует безопасный protocol probe через текущий MAX socket, скачивает найденный audio URL и не логирует URL/token. |
+| `test_download_audio_reference_stops_protocol_after_socket_error` | Socket-level ошибка на protocol audio probe останавливает текущую попытку, не пробует рискованные payload shapes и не запускает legacy fallback на уже отвалившемся socket. |
 | `test_download_audio_attachment_logs_safe_diagnostic_without_reference` | Voice-вложение без `url/audio_id/id` даёт безопасный diagnostic без раскрытия token/text. |
 
 ### Медиавложения без файла

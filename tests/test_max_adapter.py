@@ -1332,6 +1332,66 @@ async def test_download_audio_reference_uses_protocol_audio_id_payload(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_download_audio_reference_stops_protocol_after_socket_error(tmp_path, caplog):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    class SocketSendError(Exception):
+        pass
+
+    class DisconnectingProtocolClient(LookupClient):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        async def _send_and_wait(self, opcode, payload, timeout=10):
+            opcode_name = getattr(opcode, "name", str(opcode))
+            self.calls.append((opcode_name, dict(payload)))
+            if opcode_name == "CHAT_HISTORY":
+                return {"payload": {"messages": []}}
+            if opcode_name == "MSG_GET":
+                return {"payload": {"messages": []}}
+            if "fileId" in payload:
+                return {"payload": {"error": {"code": "file.not.found"}}}
+            if "audioId" in payload:
+                raise SocketSendError()
+            raise AssertionError(f"unexpected payload shape: {payload!r}")
+
+    client = DisconnectingProtocolClient()
+    adapter._client = client
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        attachment = await adapter.download_audio_reference(
+            chat_id="200056208",
+            msg_id="116605799957888782",
+            reference_id="92",
+            reference_kind="audio_id",
+            duration=9,
+            source_type="AUDIO",
+        )
+
+    assert attachment is None
+    assert adapter.url_downloads == []
+    assert adapter.file_downloads == []
+    file_download_payloads = [
+        payload for opcode_name, payload in client.calls if opcode_name == "FILE_DOWNLOAD"
+    ]
+    assert file_download_payloads == [
+        {"chatId": 200056208, "messageId": 116605799957888782, "fileId": 92},
+        {"chatId": 200056208, "messageId": 116605799957888782, "audioId": 92},
+    ]
+    assert any(
+        getattr(record, "event_fields", {}).get("hard_stop") is True
+        for record in caplog.records
+    )
+    assert "mediaId" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_replay_recent_history_uses_requested_dm_chat_for_cid_only_payload(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

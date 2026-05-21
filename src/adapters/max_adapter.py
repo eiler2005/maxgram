@@ -3288,6 +3288,13 @@ class MaxAdapter:
             return str(error)[:80]
         return None
 
+    def _is_socket_probe_error(self, exc: Exception) -> bool:
+        return exc.__class__.__name__ in {
+            "SocketSendError",
+            "SocketNotConnectedError",
+            "WebSocketNotConnectedError",
+        }
+
     async def _probe_audio_download_payload(
         self,
         *,
@@ -3296,9 +3303,9 @@ class MaxAdapter:
         chat_id: str,
         msg_id: str,
         flow_id: Optional[str] = None,
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], bool]:
         if not self._client or getattr(self._client, "_send_and_wait", None) is None:
-            return None
+            return None, False
         try:
             from pymax.static.enum import Opcode
 
@@ -3308,6 +3315,7 @@ class MaxAdapter:
                 timeout=5,
             )
         except Exception as e:
+            hard_stop = self._is_socket_probe_error(e)
             log_event(
                 logger,
                 logging.INFO,
@@ -3316,13 +3324,14 @@ class MaxAdapter:
                 direction="inbound",
                 stage="download",
                 outcome="failed",
-                reason="send_failed",
+                reason="socket_unavailable" if hard_stop else "send_failed",
                 max_chat_id=chat_id,
                 max_msg_id=msg_id,
                 candidate=candidate,
                 error_class=e.__class__.__name__,
+                hard_stop=hard_stop,
             )
-            return None
+            return None, hard_stop
 
         raw_payload = data.get("payload") if isinstance(data, dict) else None
         url = self._extract_audio_url(raw_payload)
@@ -3352,7 +3361,7 @@ class MaxAdapter:
             ),
             payload_shape=self._safe_field_paths(raw_payload) if isinstance(raw_payload, dict) else [],
         )
-        return url
+        return url, False
 
     async def _fetch_raw_message_payload_by_id(
         self,
@@ -3444,11 +3453,11 @@ class MaxAdapter:
         filename_hint: Optional[str] = None,
         token: Optional[str] = None,
         flow_id: Optional[str] = None,
-    ) -> tuple[Optional[str], Optional[str]]:
+    ) -> tuple[Optional[str], Optional[str], bool]:
         try:
             chat_id_int = int(chat_id)
         except (TypeError, ValueError):
-            return None, None
+            return None, None, False
 
         reference = str(reference_id)
         ref_values: list[object] = []
@@ -3482,14 +3491,6 @@ class MaxAdapter:
                         "file_download_audio_id",
                         {"chatId": chat_id_int, "messageId": msg_value, "audioId": ref_value},
                     ),
-                    (
-                        "file_download_media_id",
-                        {"chatId": chat_id_int, "messageId": msg_value, "mediaId": ref_value},
-                    ),
-                    (
-                        "file_download_id",
-                        {"chatId": chat_id_int, "messageId": msg_value, "id": ref_value},
-                    ),
                 ])
                 if token:
                     candidates.extend([
@@ -3512,41 +3513,24 @@ class MaxAdapter:
                         ),
                     ])
 
-        for msg_value in msg_values[1:]:
-            candidates.extend([
-                (
-                    "file_download_file_id_string_msg",
-                    {"chatId": chat_id_int, "messageId": msg_value, "fileId": primary_ref},
-                ),
-                (
-                    "file_download_audio_id_string_msg",
-                    {"chatId": chat_id_int, "messageId": msg_value, "audioId": primary_ref},
-                ),
-            ])
-        for ref_value in reference_values[1:]:
-            candidates.append(
-                (
-                    "file_download_audio_id_string_ref",
-                    {"chatId": chat_id_int, "messageId": primary_msg, "audioId": ref_value},
-                )
-            )
-
         seen_payloads: set[str] = set()
         for candidate, payload in candidates:
             signature = json.dumps(payload, sort_keys=True, default=str)
             if signature in seen_payloads:
                 continue
             seen_payloads.add(signature)
-            url = await self._probe_audio_download_payload(
+            url, hard_stop = await self._probe_audio_download_payload(
                 candidate=candidate,
                 payload=payload,
                 chat_id=chat_id,
                 msg_id=msg_id,
                 flow_id=flow_id,
             )
+            if hard_stop:
+                return None, None, True
             if not url:
                 continue
-            return await self._download_from_url(
+            local_path, filename = await self._download_from_url(
                 url,
                 prefix,
                 filename_hint,
@@ -3555,8 +3539,9 @@ class MaxAdapter:
                 flow_id=flow_id,
                 download_source=candidate,
             )
+            return local_path, filename, False
 
-        return None, None
+        return None, None, False
 
     def _download_client_profile_for_url(self, url: str) -> tuple[dict[str, str], Optional[str], str]:
         src_ag = (
@@ -4168,7 +4153,7 @@ class MaxAdapter:
             stable_id = int(reference_id)
         except (TypeError, ValueError):
             return None
-        local_path, filename = await self._download_audio_by_protocol(
+        local_path, filename, protocol_hard_stop = await self._download_audio_by_protocol(
             chat_id=chat_id,
             msg_id=msg_id,
             reference_id=stable_id,
@@ -4187,6 +4172,8 @@ class MaxAdapter:
                 height=None,
                 source_type=source_type,
             )
+        if protocol_hard_stop:
+            return None
         local_path, filename = await self._download_file_by_id(
             chat_id,
             msg_id,
@@ -4300,6 +4287,7 @@ class MaxAdapter:
             )
             local_path = None
             filename = None
+            protocol_hard_stop = False
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg",
@@ -4320,7 +4308,7 @@ class MaxAdapter:
                         attachment_index=index,
                     )
             if not local_path and file_id:
-                local_path, filename = await self._download_audio_by_protocol(
+                local_path, filename, protocol_hard_stop = await self._download_audio_by_protocol(
                     chat_id=chat_id,
                     msg_id=msg_id,
                     reference_id=file_id,
@@ -4330,7 +4318,7 @@ class MaxAdapter:
                     token=str(token) if token is not None else None,
                     flow_id=flow_id,
                 )
-            if not local_path and file_id:
+            if not local_path and file_id and not protocol_hard_stop:
                 local_path, filename = await self._download_file_by_id(
                     chat_id, msg_id, file_id, f"audio_{chat_id}_{msg_id}{idx}",
                     filename_hint, ".ogg", expected_kind="audio", flow_id=flow_id,
