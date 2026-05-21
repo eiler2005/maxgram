@@ -3480,6 +3480,8 @@ class MaxAdapter:
         primary_msg = msg_values[0] if msg_values else str(msg_id)
         primary_ref = reference_values[0] if reference_values else reference
 
+        # Userbot FILE_DOWNLOAD is only known safe with pymax's fileId shape.
+        # audioId/token variants returned proto.payload in prod and closed the socket.
         for msg_value in [primary_msg]:
             for ref_value in [primary_ref]:
                 candidates.extend([
@@ -3487,31 +3489,7 @@ class MaxAdapter:
                         "file_download_file_id",
                         {"chatId": chat_id_int, "messageId": msg_value, "fileId": ref_value},
                     ),
-                    (
-                        "file_download_audio_id",
-                        {"chatId": chat_id_int, "messageId": msg_value, "audioId": ref_value},
-                    ),
                 ])
-                if token:
-                    candidates.extend([
-                        (
-                            "file_download_audio_token",
-                            {
-                                "chatId": chat_id_int,
-                                "messageId": msg_value,
-                                "audioId": ref_value,
-                                "token": token,
-                            },
-                        ),
-                        (
-                            "file_download_token",
-                            {
-                                "chatId": chat_id_int,
-                                "messageId": msg_value,
-                                "token": token,
-                            },
-                        ),
-                    ])
 
         seen_payloads: set[str] = set()
         for candidate, payload in candidates:

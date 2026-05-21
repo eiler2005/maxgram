@@ -1270,7 +1270,7 @@ async def test_download_audio_reference_uses_dialog_last_message_url(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_download_audio_reference_uses_protocol_audio_id_payload(tmp_path, caplog):
+async def test_download_audio_reference_uses_protocol_file_id_payload(tmp_path, caplog):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",
         data_dir=str(tmp_path),
@@ -1292,13 +1292,15 @@ async def test_download_audio_reference_uses_protocol_audio_id_payload(tmp_path,
                 return {"payload": {"messages": []}}
             if opcode_name == "MSG_GET":
                 return {"payload": {"messages": []}}
-            if "audioId" in payload:
+            if "fileId" in payload:
                 return {
                     "payload": {
                         "url": "https://audio.example.test/protocol.ogg?token=secret",
                         "unsafe": False,
                     }
                 }
+            if "audioId" in payload:
+                raise AssertionError("audioId FILE_DOWNLOAD probe is unsafe for userbot audio")
             return {"payload": {"error": {"code": "file.not.found"}}}
 
     client = ProtocolAudioClient()
@@ -1315,7 +1317,7 @@ async def test_download_audio_reference_uses_protocol_audio_id_payload(tmp_path,
         )
 
     assert attachment == MaxAttachment("audio", local_path, "voice.ogg", 9, None, None, "AUDIO")
-    assert any(call[0] == "FILE_DOWNLOAD" and "audioId" in call[1] for call in client.calls)
+    assert any(call[0] == "FILE_DOWNLOAD" and "fileId" in call[1] for call in client.calls)
     assert adapter.url_downloads == [
         (
             "https://audio.example.test/protocol.ogg?token=secret",
@@ -1323,12 +1325,72 @@ async def test_download_audio_reference_uses_protocol_audio_id_payload(tmp_path,
             None,
             ".ogg",
             "audio",
-            "file_download_audio_id",
+            "file_download_file_id",
         )
     ]
     assert adapter.file_downloads == []
     assert "https://audio.example.test/protocol.ogg" not in caplog.text
     assert "secret" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_download_audio_reference_skips_unsafe_audio_id_payload(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    class FileIdMissClient(LookupClient):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+
+        async def _send_and_wait(self, opcode, payload, timeout=10):
+            opcode_name = getattr(opcode, "name", str(opcode))
+            self.calls.append((opcode_name, dict(payload)))
+            if opcode_name == "CHAT_HISTORY":
+                return {"payload": {"messages": []}}
+            if opcode_name == "MSG_GET":
+                return {"payload": {"messages": []}}
+            if "fileId" in payload:
+                return {"payload": {"error": {"code": "file.not.found"}}}
+            if "audioId" in payload:
+                raise AssertionError("audioId FILE_DOWNLOAD probe closes MAX socket in prod")
+            raise AssertionError(f"unexpected payload shape: {payload!r}")
+
+    client = FileIdMissClient()
+    adapter._client = client
+
+    attachment = await adapter.download_audio_reference(
+        chat_id="200056208",
+        msg_id="116605799957888782",
+        reference_id="92",
+        reference_kind="audio_id",
+        duration=9,
+        source_type="AUDIO",
+    )
+
+    assert attachment is None
+    assert adapter.url_downloads == []
+    assert adapter.file_downloads == [
+        (
+            "200056208",
+            "116605799957888782",
+            92,
+            "audio_retry_200056208_116605799957888782",
+            None,
+            ".ogg",
+            "audio",
+        )
+    ]
+    file_download_payloads = [
+        payload for opcode_name, payload in client.calls if opcode_name == "FILE_DOWNLOAD"
+    ]
+    assert file_download_payloads == [
+        {"chatId": 200056208, "messageId": 116605799957888782, "fileId": 92},
+    ]
 
 
 @pytest.mark.asyncio
@@ -1356,8 +1418,6 @@ async def test_download_audio_reference_stops_protocol_after_socket_error(tmp_pa
             if opcode_name == "MSG_GET":
                 return {"payload": {"messages": []}}
             if "fileId" in payload:
-                return {"payload": {"error": {"code": "file.not.found"}}}
-            if "audioId" in payload:
                 raise SocketSendError()
             raise AssertionError(f"unexpected payload shape: {payload!r}")
 
@@ -1382,7 +1442,6 @@ async def test_download_audio_reference_stops_protocol_after_socket_error(tmp_pa
     ]
     assert file_download_payloads == [
         {"chatId": 200056208, "messageId": 116605799957888782, "fileId": 92},
-        {"chatId": 200056208, "messageId": 116605799957888782, "audioId": 92},
     ]
     assert any(
         getattr(record, "event_fields", {}).get("hard_stop") is True

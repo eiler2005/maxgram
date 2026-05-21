@@ -339,7 +339,7 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
 - если ретриабельное видео или голосовое всё равно не скачалось, bridge отправляет остальные части сообщения сразу, показывает `⏳ Видео MAX #N докачивается...` / `⏳ Голосовое MAX #N докачивается...` и кладёт job в `pending_media_downloads`;
 - повторный sweep той же voice/media-reference не отправляет второй queued-placeholder: существующий pending job переиспользуется по `media_chat_id/media_msg_id/attachment_index/kind/reference_*`;
-- retry worker для видео заново получает playable URL через `VIDEO_PLAY`; для голосовых заново читает raw `CHAT_HISTORY`, пробует exact `MSG_GET`, dialog cache и только консервативные `FILE_DOWNLOAD` payload-варианты (`fileId`, `audioId`, token-aware candidates), затем legacy pymax `get_file_by_id`; signed URL/token/text не хранятся, медиа досылается в тот же Telegram topic отдельным сообщением. Если protocol probe ловит socket-level ошибку, текущая попытка останавливается и ждёт следующего retry/reconnect, чтобы не ронять MAX-сессию серией неподдержанных payload.
+- retry worker для видео заново получает playable URL через `VIDEO_PLAY`; для голосовых заново читает raw `CHAT_HISTORY`, пробует exact `MSG_GET`, dialog cache и только известный pymax/userbot-safe `FILE_DOWNLOAD` payload (`fileId`), затем legacy pymax `get_file_by_id`; signed URL/token/text не хранятся, медиа досылается в тот же Telegram topic отдельным сообщением. `audioId`/token payload для `FILE_DOWNLOAD` в prod вернул `proto.payload` и закрыл socket, поэтому он отключён до отдельного pymax protocol discovery/fork.
 
 Что смотреть в логах:
 
