@@ -1324,11 +1324,11 @@ async def test_download_audio_reference_uses_audio_get_sources_payload(tmp_path,
             msg_id="116605799957888782",
             reference_id="92",
             reference_kind="audio_id",
-            duration=9,
+            duration=38360,
             source_type="AUDIO",
         )
 
-    assert attachment == MaxAttachment("audio", local_path, "voice.ogg", 9, None, None, "AUDIO")
+    assert attachment == MaxAttachment("audio", local_path, "voice.ogg", 38, None, None, "AUDIO")
     assert any(call[0] == "AUDIO_GET_SOURCES" and "audioId" in call[1] for call in client.calls)
     assert not any(call[0] == "FILE_DOWNLOAD" and "audioId" in call[1] for call in client.calls)
     assert adapter.url_downloads == [
@@ -2310,6 +2310,31 @@ async def test_download_audio_attachment_uses_direct_url_and_preserves_duration(
         )
     ]
     assert adapter.file_downloads == []
+
+
+@pytest.mark.asyncio
+async def test_download_audio_attachment_normalizes_millisecond_duration(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+
+    attachment = await adapter._download_attachment(
+        "28093080",
+        "116562825769007612",
+        SimpleNamespace(
+            type="AUDIO",
+            audio_id=42,
+            url="https://audio.example.test/voice.ogg",
+            duration=38360,
+        ),
+    )
+
+    assert attachment == MaxAttachment("audio", local_path, "voice.ogg", 38, None, None, "AUDIO")
 
 
 @pytest.mark.asyncio

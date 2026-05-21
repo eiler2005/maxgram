@@ -2659,7 +2659,10 @@ class MaxAdapter:
             media_msg_id=str(media_msg_id) if media_msg_id is not None else None,
             reference_kind=reference_kind,
             reference_id=reference_id,
-            duration=getattr(attach, "duration", None),
+            duration=self._duration_seconds(
+                getattr(attach, "duration", None),
+                kind=self._attachment_kind_for_type(atype),
+            ),
             width=getattr(attach, "width", None),
             height=getattr(attach, "height", None),
         )
@@ -3110,6 +3113,26 @@ class MaxAdapter:
     def _attachment_filename(self, attach) -> Optional[str]:
         name = getattr(attach, "filename", None) or getattr(attach, "name", None)
         return self._fix_filename_encoding(name) if name else None
+
+    def _duration_seconds(self, duration, *, kind: Optional[str] = None) -> Optional[int]:
+        """Normalize MAX media duration to Telegram seconds.
+
+        MAX audio payloads observed in prod use milliseconds (for example
+        38360 for a 38 second voice note), while Telegram expects seconds.
+        Keep plausible second values intact.
+        """
+        if duration is None:
+            return None
+        try:
+            value = float(duration)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        normalized_kind = (kind or "").lower()
+        if normalized_kind == "audio" and value > 10 * 60:
+            value = value / 1000
+        return max(1, int(round(value)))
 
     def _safe_attachment_field_names(self, attach) -> list[str]:
         try:
@@ -4010,6 +4033,7 @@ class MaxAdapter:
     ) -> Optional[MaxAttachment]:
         """Retry MAX audio without persisting signed URLs."""
         idx = f"_{attachment_index}" if attachment_index > 0 else ""
+        normalized_duration = self._duration_seconds(duration, kind="audio")
         try:
             chat_id_int = int(chat_id)
         except (TypeError, ValueError):
@@ -4056,7 +4080,7 @@ class MaxAdapter:
                             flow_id=flow_id,
                         )
                         if attachment:
-                            attachment.duration = attachment.duration or duration
+                            attachment.duration = attachment.duration or normalized_duration
                             attachment.source_type = source_type or attachment.source_type
                             return attachment
             except Exception as e:
@@ -4117,7 +4141,7 @@ class MaxAdapter:
                         flow_id=flow_id,
                     )
                     if attachment:
-                        attachment.duration = attachment.duration or duration
+                        attachment.duration = attachment.duration or normalized_duration
                         attachment.source_type = source_type or attachment.source_type
                         return attachment
 
@@ -4160,7 +4184,7 @@ class MaxAdapter:
                     flow_id=flow_id,
                 )
                 if attachment:
-                    attachment.duration = attachment.duration or duration
+                    attachment.duration = attachment.duration or normalized_duration
                     attachment.source_type = source_type or attachment.source_type
                     return attachment
 
@@ -4182,7 +4206,7 @@ class MaxAdapter:
                 kind="audio",
                 local_path=local_path,
                 filename=filename,
-                duration=duration,
+                duration=normalized_duration,
                 width=None,
                 height=None,
                 source_type=source_type,
@@ -4205,7 +4229,7 @@ class MaxAdapter:
             kind="audio",
             local_path=local_path,
             filename=filename,
-            duration=duration,
+            duration=normalized_duration,
             width=None,
             height=None,
             source_type=source_type,
@@ -4284,7 +4308,7 @@ class MaxAdapter:
                     kind="video",
                     local_path=local_path,
                     filename=filename,
-                    duration=getattr(attach, "duration", None),
+                    duration=self._duration_seconds(getattr(attach, "duration", None), kind="video"),
                     width=getattr(attach, "width", None),
                     height=getattr(attach, "height", None),
                     source_type=raw_type,
@@ -4361,7 +4385,7 @@ class MaxAdapter:
                     kind="audio",
                     local_path=local_path,
                     filename=filename,
-                    duration=getattr(attach, "duration", None),
+                    duration=self._duration_seconds(getattr(attach, "duration", None), kind="audio"),
                     width=None,
                     height=None,
                     source_type=raw_type,
