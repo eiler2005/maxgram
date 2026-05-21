@@ -68,8 +68,8 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_handle_raw_receive_logs_top_level_empty_message_diagnostic` | Top-level raw empty payload логируется безопасно, без URL/token/text. |
 | `test_download_audio_attachment_uses_direct_url_and_preserves_duration` | `AUDIO` скачивается по прямому `url`; `duration` сохраняется в `MaxAttachment`. |
 | `test_download_audio_attachment_falls_back_to_audio_id` | Если `url` нет и protocol resolver недоступен, `audio_id` используется через legacy download-by-id путь. |
-| `test_download_audio_reference_uses_protocol_file_id_payload` | Durable voice retry без `url` пробует pymax-compatible `FILE_DOWNLOAD fileId`, скачивает найденный audio URL и не логирует URL/token. |
-| `test_download_audio_reference_skips_unsafe_audio_id_payload` | `FILE_DOWNLOAD audioId` не пробуется: prod вернул `proto.payload` и закрыл MAX socket. |
+| `test_download_audio_reference_uses_audio_get_sources_payload` | Durable voice retry без `url` пробует MAX Web `audioGetSources` (`opcode=301`), скачивает найденный audio URL и не логирует URL/token. |
+| `test_download_audio_reference_falls_back_to_file_download_after_audio_get_miss` | Если `audioGetSources` не вернул URL, bridge пробует только безопасный `FILE_DOWNLOAD fileId`; `FILE_DOWNLOAD audioId` не используется. |
 | `test_download_audio_reference_stops_protocol_after_socket_error` | Socket-level ошибка на protocol audio probe останавливает текущую попытку, не пробует рискованные payload shapes и не запускает legacy fallback на уже отвалившемся socket. |
 | `test_download_audio_attachment_logs_safe_diagnostic_without_reference` | Voice-вложение без `url/audio_id/id` даёт безопасный diagnostic без раскрытия token/text. |
 

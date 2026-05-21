@@ -833,6 +833,7 @@ class MaxAdapter:
                 "image_id",
                 "fileId",
                 "file_id",
+                "token",
                 "url",
                 "baseUrl",
                 "duration",
@@ -3295,9 +3296,14 @@ class MaxAdapter:
             "WebSocketNotConnectedError",
         }
 
+    def _audio_get_sources_opcode(self):
+        """Opcode 301 is used by MAX Web for audioGetSources but is absent in pymax 1.2.5."""
+        return SimpleNamespace(value=301, name="AUDIO_GET_SOURCES")
+
     async def _probe_audio_download_payload(
         self,
         *,
+        opcode,
         candidate: str,
         payload: dict,
         chat_id: str,
@@ -3307,10 +3313,8 @@ class MaxAdapter:
         if not self._client or getattr(self._client, "_send_and_wait", None) is None:
             return None, False
         try:
-            from pymax.static.enum import Opcode
-
             data = await self._client._send_and_wait(
-                opcode=Opcode.FILE_DOWNLOAD,
+                opcode=opcode,
                 payload=payload,
                 timeout=5,
             )
@@ -3480,6 +3484,33 @@ class MaxAdapter:
         primary_msg = msg_values[0] if msg_values else str(msg_id)
         primary_ref = reference_values[0] if reference_values else reference
 
+        audio_get_payload = {
+            "audioId": primary_ref,
+            "chatId": chat_id_int,
+            "messageId": primary_msg,
+        }
+        if token is not None:
+            audio_get_payload["token"] = str(token)
+        candidates.append((
+            "audio_get_sources",
+            audio_get_payload,
+        ))
+        if token is not None:
+            candidates.append((
+                "audio_get_sources_no_token",
+                {
+                    "audioId": primary_ref,
+                    "chatId": chat_id_int,
+                    "messageId": primary_msg,
+                },
+            ))
+
+        try:
+            from pymax.static.enum import Opcode
+            file_download_opcode = Opcode.FILE_DOWNLOAD
+        except Exception:
+            file_download_opcode = SimpleNamespace(value=88, name="FILE_DOWNLOAD")
+
         # Userbot FILE_DOWNLOAD is only known safe with pymax's fileId shape.
         # audioId/token variants returned proto.payload in prod and closed the socket.
         for msg_value in [primary_msg]:
@@ -3497,7 +3528,13 @@ class MaxAdapter:
             if signature in seen_payloads:
                 continue
             seen_payloads.add(signature)
+            opcode = (
+                self._audio_get_sources_opcode()
+                if candidate.startswith("audio_get_sources")
+                else file_download_opcode
+            )
             url, hard_stop = await self._probe_audio_download_payload(
+                opcode=opcode,
                 candidate=candidate,
                 payload=payload,
                 chat_id=chat_id,

@@ -31,5 +31,5 @@
 
 - Нарушение ToS MAX (вероятно) → риск блокировки аккаунта при злоупотреблении
 - При обновлении MAX протокола библиотека может сломаться
-- Для audio/voice protocol discovery не пробуем неподтверждённые `FILE_DOWNLOAD audioId`/token payload в prod: они вернули `proto.payload` и закрыли socket; следующий устойчивый шаг — fork/pin pymax с контролируемыми protocol hooks, когда найден рабочий opcode/payload
+- Для audio/voice используем найденный в MAX Web `audioGetSources` (`opcode=301`) в adapter-слое; `FILE_DOWNLOAD audioId`/token payload не пробуем в prod, потому что он вернул `proto.payload` и закрыл socket. Fork/pin pymax нужен только если таких protocol hooks станет слишком много для локальной обвязки.
 - Нужно мониторить изменения MAX протокола и держать safe diagnostics без текста, URL и token
