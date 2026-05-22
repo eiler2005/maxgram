@@ -11,6 +11,7 @@ MAX Adapter — подключение к MAX через SocketMaxClient (pymax)
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
@@ -170,6 +171,29 @@ class MaxIssue:
         return f"{self.kind}:{self.summary}"
 
 
+@dataclass
+class MaxRecoveryChatSnapshot:
+    max_chat_id: str
+    title: str
+    chat_kind: str
+    access_type: Optional[str] = None
+    invite_link: Optional[str] = None
+    owner_user_id: Optional[str] = None
+    owner_name: Optional[str] = None
+    admin_contacts: list[dict[str, str]] = field(default_factory=list)
+    dm_partner_user_id: Optional[str] = None
+    dm_partner_name: Optional[str] = None
+    participant_count: Optional[int] = None
+
+
+@dataclass
+class MaxRecoverySnapshot:
+    max_user_id: Optional[str]
+    masked_phone: Optional[str]
+    session_fingerprint_hash: Optional[str]
+    chats: list[MaxRecoveryChatSnapshot] = field(default_factory=list)
+
+
 MessageHandler = Callable[[MaxMessage], Awaitable[None]]
 
 
@@ -233,6 +257,215 @@ class MaxAdapter:
 
     def get_last_connected_at(self) -> Optional[int]:
         return self._last_connected_at
+
+    def get_session_fingerprint_hash(self) -> Optional[str]:
+        session_path = Path(self._data_dir) / self._session_name
+        if not session_path.exists():
+            return None
+        digest = hashlib.sha256()
+        try:
+            with session_path.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            return None
+        return digest.hexdigest()
+
+    def _enum_value(self, value) -> Optional[str]:
+        if value is None:
+            return None
+        raw = getattr(value, "value", value)
+        raw = getattr(raw, "name", raw)
+        text = str(raw).strip()
+        return text or None
+
+    def _extract_user_id(self, user_obj) -> Optional[str]:
+        if user_obj is None:
+            return None
+        if isinstance(user_obj, (int, str)):
+            text = str(user_obj).strip()
+            return text or None
+        for attr in ("id", "user_id", "account_id"):
+            value = getattr(user_obj, attr, None)
+            if value is not None:
+                text = str(value).strip()
+                if text:
+                    return text
+        return None
+
+    def _iter_userish(self, value):
+        if value is None:
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if self._extract_user_id(item) or self._extract_user_name(item):
+                    yield item
+                else:
+                    yield key
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                yield item
+            return
+        yield value
+
+    async def _resolve_recovery_user_name(self, user_id: Optional[str], user_obj=None) -> Optional[str]:
+        direct_name = self._extract_user_name(user_obj)
+        if direct_name:
+            return direct_name
+        if not self._client or not user_id:
+            return None
+        try:
+            cached = self._client.get_cached_user(int(user_id))
+            cached_name = self._extract_user_name(cached)
+            if cached_name:
+                return cached_name
+        except Exception:
+            pass
+        return await self.resolve_user_name(str(user_id))
+
+    def _normalize_recovery_chat_kind(self, chat_obj) -> str:
+        raw_type = self._enum_value(getattr(chat_obj, "type", None))
+        if raw_type:
+            lowered = raw_type.lower()
+            if "channel" in lowered:
+                return "channel"
+            if "dialog" in lowered or "dm" in lowered or "private" in lowered:
+                return "dm"
+            if "chat" in lowered or "group" in lowered:
+                return "group"
+
+        try:
+            chat_id_int = int(getattr(chat_obj, "id", 0))
+            if chat_id_int < 0:
+                return "group"
+        except (TypeError, ValueError):
+            pass
+        return "unknown"
+
+    def _chat_title(self, chat_obj, fallback: str) -> str:
+        for attr in ("title", "name"):
+            value = getattr(chat_obj, attr, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return fallback
+
+    async def _recovery_snapshot_for_chat(self, chat_obj) -> Optional[MaxRecoveryChatSnapshot]:
+        chat_id = getattr(chat_obj, "id", None)
+        if chat_id is None:
+            return None
+        chat_id_str = str(chat_id)
+        enriched = chat_obj
+        if self._client:
+            try:
+                enriched_obj = await asyncio.wait_for(self._client.get_chat(int(chat_id)), timeout=5)
+                if enriched_obj is not None:
+                    enriched = enriched_obj
+            except Exception:
+                enriched = chat_obj
+
+        owner_obj = getattr(enriched, "owner", None)
+        owner_user_id = self._extract_user_id(owner_obj)
+        owner_name = await self._resolve_recovery_user_name(owner_user_id, owner_obj)
+
+        admin_contacts: list[dict[str, str]] = []
+        seen_admin_ids: set[str] = set()
+        for source in (
+            owner_obj,
+            getattr(enriched, "admins", None),
+            getattr(enriched, "admin_participants", None),
+        ):
+            for admin_obj in self._iter_userish(source):
+                admin_id = self._extract_user_id(admin_obj)
+                if not admin_id or admin_id in seen_admin_ids:
+                    continue
+                admin_name = await self._resolve_recovery_user_name(admin_id, admin_obj)
+                admin_contacts.append({"user_id": admin_id, "name": admin_name or ""})
+                seen_admin_ids.add(admin_id)
+
+        access_type = self._enum_value(getattr(enriched, "access", None))
+        if access_type is None:
+            access_type = self._enum_value(getattr(enriched, "access_type", None))
+        participant_count = getattr(enriched, "participants_count", None)
+        try:
+            participant_count = int(participant_count) if participant_count is not None else None
+        except (TypeError, ValueError):
+            participant_count = None
+
+        return MaxRecoveryChatSnapshot(
+            max_chat_id=chat_id_str,
+            title=self._chat_title(enriched, f"Чат {chat_id_str}"),
+            chat_kind=self._normalize_recovery_chat_kind(enriched),
+            access_type=access_type,
+            invite_link=getattr(enriched, "link", None) or getattr(enriched, "invite_link", None),
+            owner_user_id=owner_user_id,
+            owner_name=owner_name,
+            admin_contacts=admin_contacts,
+            participant_count=participant_count,
+        )
+
+    async def _recovery_snapshot_for_dialog(
+        self,
+        dialog_obj,
+        own_id: Optional[str],
+    ) -> Optional[MaxRecoveryChatSnapshot]:
+        chat_id = getattr(dialog_obj, "id", None)
+        if chat_id is None:
+            return None
+        chat_id_str = str(chat_id)
+        partner_id = None
+        for participant in self._iter_userish(getattr(dialog_obj, "participants", None)):
+            candidate = self._extract_user_id(participant)
+            if candidate and candidate != own_id:
+                partner_id = candidate
+                break
+        partner_name = await self._resolve_recovery_user_name(partner_id)
+        title = self._chat_title(dialog_obj, partner_name or f"DM {partner_id or chat_id_str}")
+        return MaxRecoveryChatSnapshot(
+            max_chat_id=chat_id_str,
+            title=title,
+            chat_kind="dm",
+            dm_partner_user_id=partner_id,
+            dm_partner_name=partner_name,
+            participant_count=2 if partner_id else None,
+        )
+
+    async def collect_recovery_snapshot(self) -> MaxRecoverySnapshot:
+        """Collect account/chat recovery metadata without message contents."""
+        own_id = self._own_id
+        try:
+            me = getattr(self._client, "me", None) if self._client else None
+            if me is not None:
+                own_id = str(getattr(me, "id", None) or own_id or "") or None
+        except Exception:
+            pass
+
+        snapshot = MaxRecoverySnapshot(
+            max_user_id=own_id,
+            masked_phone=mask_phone(self._phone),
+            session_fingerprint_hash=self.get_session_fingerprint_hash(),
+        )
+        if not self._client:
+            return snapshot
+
+        seen: set[str] = set()
+        chat_sources = [
+            *(getattr(self._client, "chats", None) or []),
+            *(getattr(self._client, "channels", None) or []),
+        ]
+        for chat_obj in chat_sources:
+            item = await self._recovery_snapshot_for_chat(chat_obj)
+            if item and item.max_chat_id not in seen:
+                snapshot.chats.append(item)
+                seen.add(item.max_chat_id)
+
+        for dialog_obj in getattr(self._client, "dialogs", None) or []:
+            item = await self._recovery_snapshot_for_dialog(dialog_obj, own_id)
+            if item and item.max_chat_id not in seen:
+                snapshot.chats.append(item)
+                seen.add(item.max_chat_id)
+
+        return snapshot
 
     def _recover_session_if_needed(self, *, first_connect: bool):
         outcome = self._session_store.recover_if_needed()
@@ -5066,21 +5299,8 @@ class MaxAdapter:
 
                     self._start_pending_empty_recovery_worker()
 
-                    if first_connect:
-                        first_connect = False
-                        for h in self._start_handlers:
-                            try:
-                                await h()
-                            except Exception as e:
-                                log_event(
-                                    logger,
-                                    logging.ERROR,
-                                    "max.adapter.start_handler_failed",
-                                    stage="startup",
-                                    outcome="failed",
-                                    error=str(e),
-                                )
-                    else:
+                    handler_stage = "startup" if first_connect else "runtime"
+                    if not first_connect:
                         log_event(
                             logger,
                             logging.INFO,
@@ -5088,6 +5308,19 @@ class MaxAdapter:
                             stage="runtime",
                             outcome="connected",
                         )
+                    first_connect = False
+                    for h in self._start_handlers:
+                        try:
+                            await h()
+                        except Exception as e:
+                            log_event(
+                                logger,
+                                logging.ERROR,
+                                "max.adapter.start_handler_failed",
+                                stage=handler_stage,
+                                outcome="failed",
+                                error=str(e),
+                            )
 
                 self._client.on_start(_on_start)
                 if hasattr(self._client, "on_raw_receive"):

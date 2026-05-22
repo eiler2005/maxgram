@@ -203,6 +203,43 @@ jq . data/health_heartbeat.json
 - при порче SQLite header у `data/session.db` bridge сначала пробует восстановить текущий token в clean copy; если не выходит — откатывается на свежий валидный snapshot из `data/session_backups/`
 - по умолчанию outbox относится к owner DM; forum-topic fanout участвует только если настроен `ops_topic_id`
 
+## MAX account recovery registry
+
+Recovery registry нужен на случай нового телефона / нового MAX account. Он сохраняет не сообщения, а маршрутную карту восстановления: какие Telegram topics соответствуют MAX чатам, какие чаты требуют invite/admin, где есть invite link, кто owner/admin, и насколько свежий последний snapshot.
+
+Что хранится в `data/bridge.db`:
+
+- `max_account_generations` — поколения MAX аккаунта: `max_user_id`, masked phone, hash fingerprint сессии, статус и first/last seen.
+- `chat_recovery_registry` — topic/chat registry: `tg_topic_id`, старый/текущий `max_chat_id`, тип чата, mode, access, invite link, owner/admin contacts, DM partner, participant count, manual note, recovery status, `last_scan_at`.
+- `chat_recovery_events` — audit событий scan/set/remap/account change без текста сообщений и raw payload.
+
+Команды владельца:
+
+```text
+/recovery scan
+/recovery report
+/recovery export
+/recovery set <topic_id> key=value ...
+/recovery remap <topic_id> <new_max_chat_id>
+```
+
+Полезные поля для `/recovery set`: `priority=9`, `status=manual_admin_required`, `note="попросить инвайт у Анны"`, `link=https://...`, `admin="Анна:12345"`, `owner="Олег:777"`.
+
+Периодичность:
+
+- после успешного MAX connect bridge запускает безопасный recovery scan;
+- дополнительно раз в неделю запускается `weekly_recovery_snapshot`;
+- `/recovery report` показывает `Свежесть snapshot` по `last_scan_at`;
+- `/recovery export` отправляет владельцу JSON в DM, включая invite links/admin notes, поэтому не пересылай export в общие чаты.
+
+Новый телефон / новый MAX account:
+
+1. Сделать reauth с новым номером.
+2. Выполнить `/recovery scan`.
+3. Посмотреть `/recovery report`: `unmapped` — MAX чаты, видимые новому аккаунту, но ещё не привязанные к старым Telegram topics; `есть invite link` / `нужен админ` — ручные шаги доступа.
+4. После invite/join выполнить `/recovery remap <topic_id> <new_max_chat_id>`.
+5. Старый `message_map` остаётся для истории, но reply на старое TG сообщение после remap уходит в MAX без `reply_to`, если исходный MAX message был в старом `max_chat_id`.
+
 ## Сценарии отказов
 
 Ниже короткая operator-матрица: что ломается, что система делает сама и когда нужен ручной шаг.

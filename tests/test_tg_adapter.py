@@ -84,6 +84,52 @@ async def test_dispatch_incoming_message_ignores_non_owner_commands():
     assert handled == []
 
 
+@pytest.mark.asyncio
+async def test_dispatch_incoming_message_allows_public_dm_only_in_general():
+    adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
+    handled = []
+
+    async def fake_handle_command(message):
+        handled.append(message.text)
+
+    adapter.on_arg_command("dm", lambda args: "ok", allow_group_general=True)
+    adapter._handle_command = fake_handle_command
+
+    message = _make_message(
+        user_id=2,
+        group_id=-100,
+        text="/dm Мария привет",
+        topic_id=None,
+    )
+
+    await adapter._dispatch_incoming_message(message)
+
+    assert handled == ["/dm Мария привет"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_incoming_message_keeps_recovery_owner_only_in_general():
+    adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
+    handled = []
+
+    async def fake_handle_command(message):
+        handled.append(message.text)
+
+    adapter.on_arg_command("recovery", lambda args: "ok")
+    adapter._handle_command = fake_handle_command
+
+    message = _make_message(
+        user_id=2,
+        group_id=-100,
+        text="/recovery report",
+        topic_id=None,
+    )
+
+    await adapter._dispatch_incoming_message(message)
+
+    assert handled == []
+
+
 class FakeRetryBot:
     def __init__(self):
         self.calls = 0

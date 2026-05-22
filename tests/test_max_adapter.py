@@ -44,6 +44,54 @@ class LookupClient:
         return [self._users[uid] for uid in user_ids if uid in self._users]
 
 
+class RecoveryClient:
+    def __init__(self):
+        self.me = SimpleNamespace(id=100)
+        self._users = {
+            300: make_user("DM", "Partner"),
+            500: make_user("Group", "Owner"),
+            501: make_user("Group", "Admin"),
+        }
+        self.chats = [
+            SimpleNamespace(
+                id=-1,
+                title="Cached group",
+                type="CHAT",
+                access="LINK",
+            )
+        ]
+        self.channels = [
+            SimpleNamespace(
+                id=-2,
+                title="Channel",
+                type="CHANNEL",
+                participants_count=42,
+            )
+        ]
+        self.dialogs = [SimpleNamespace(id=300, participants={100: None, 300: None})]
+        self._enriched = {
+            -1: SimpleNamespace(
+                id=-1,
+                title="Enriched group",
+                type="CHAT",
+                access="LINK",
+                link="https://max.ru/join/example",
+                owner=500,
+                admins=[501],
+                participants_count=9,
+            )
+        }
+
+    def get_cached_user(self, user_id: int):
+        return self._users.get(user_id)
+
+    async def get_users(self, user_ids: list[int]):
+        return [self._users[uid] for uid in user_ids if uid in self._users]
+
+    async def get_chat(self, chat_id: int):
+        return self._enriched.get(chat_id)
+
+
 class DummyDownloadAdapter(MaxAdapter):
     async def _download_attachment(self, chat_id: str, msg_id: str, attach, index: int = 0, flow_id=None):
         raw_type = self._attachment_type_name(attach)
@@ -121,6 +169,38 @@ class CapturingAttachmentDownloadAdapter(MaxAdapter):
             (chat_id, msg_id, file_id, prefix, filename_hint, default_extension, expected_kind)
         )
         return self.file_result
+
+
+@pytest.mark.asyncio
+async def test_collect_recovery_snapshot_captures_access_metadata_without_messages(tmp_path):
+    (tmp_path / "session").write_bytes(b"session bytes")
+    adapter = MaxAdapter(
+        phone="+79991234567",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = RecoveryClient()
+    adapter._own_id = "100"
+
+    snapshot = await adapter.collect_recovery_snapshot()
+
+    assert snapshot.max_user_id == "100"
+    assert snapshot.masked_phone != "+79991234567"
+    assert snapshot.session_fingerprint_hash is not None
+    by_id = {chat.max_chat_id: chat for chat in snapshot.chats}
+    assert by_id["-1"].title == "Enriched group"
+    assert by_id["-1"].chat_kind == "group"
+    assert by_id["-1"].invite_link == "https://max.ru/join/example"
+    assert by_id["-1"].owner_name == "Group Owner"
+    assert by_id["-1"].admin_contacts == [
+        {"user_id": "500", "name": "Group Owner"},
+        {"user_id": "501", "name": "Group Admin"},
+    ]
+    assert by_id["-2"].chat_kind == "channel"
+    assert by_id["300"].chat_kind == "dm"
+    assert by_id["300"].dm_partner_user_id == "300"
+    assert by_id["300"].dm_partner_name == "DM Partner"
 
 
 @pytest.mark.asyncio

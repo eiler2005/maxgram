@@ -407,6 +407,10 @@ async def run_bridge_worker(cfg,
                 bridge.run_periodic_status(cfg.health.reminder_interval_hours),
                 name="periodic_status",
             )
+            tg.create_task(
+                bridge.run_weekly_recovery_snapshot(),
+                name="weekly_recovery_snapshot",
+            )
     except Exception as e:
         if stage == "storage_connect":
             await health_store.report_issue(

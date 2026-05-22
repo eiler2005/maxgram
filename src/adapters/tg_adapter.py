@@ -55,14 +55,18 @@ class TelegramAdapter:
         self._reply_handlers: list[ReplyHandler] = []
         self._command_handlers: dict[str, Callable] = {}
         self._arg_command_handlers: dict[str, Callable] = {}
+        self._public_group_arg_commands: set[str] = set()
 
     def on_command(self, cmd: str, handler: Callable):
         """Зарегистрировать внешний обработчик команды без аргументов."""
         self._command_handlers[cmd.lstrip("/")] = handler
 
-    def on_arg_command(self, cmd: str, handler: Callable):
+    def on_arg_command(self, cmd: str, handler: Callable, *, allow_group_general: bool = False):
         """Зарегистрировать обработчик команды, принимающий аргументы (строку после команды)."""
-        self._arg_command_handlers[cmd.lstrip("/")] = handler
+        normalized = cmd.lstrip("/").lower()
+        self._arg_command_handlers[normalized] = handler
+        if allow_group_general:
+            self._public_group_arg_commands.add(normalized)
 
     def on_reply(self, handler: ReplyHandler):
         self._reply_handlers.append(handler)
@@ -345,6 +349,20 @@ class TelegramAdapter:
             tg_topic_id=topic_id,
             media_type="document",
         )
+
+    async def send_owner_document(self, path: str, caption: str = "", filename: str = "") -> bool:
+        """Отправить приватный документ владельцу."""
+        msg_id = await self._tg_retry(
+            lambda: self._bot.send_document(
+                chat_id=self._owner_id,
+                document=FSInputFile(path, filename=filename or Path(path).name),
+                caption=caption[:1024] if caption else None,
+            ),
+            f"send_owner_document {Path(path).name}",
+            direction="system",
+            media_type="document",
+        )
+        return msg_id is not None
 
     async def send_video(self, topic_id: int, path: str, caption: str = "",
                          filename: str = "", duration: Optional[int] = None,
@@ -641,8 +659,8 @@ class TelegramAdapter:
         # Команды
         if message.text and message.text.startswith("/"):
             cmd = message.text.split()[0].lstrip("/").lower()
-            # /dm в General топике (без thread_id) — доступна всем участникам группы
-            if cmd in self._arg_command_handlers and is_group and not message.message_thread_id:
+            # Публичные arg-команды в General топике (без thread_id).
+            if cmd in self._public_group_arg_commands and is_group and not message.message_thread_id:
                 await self._handle_command(message)
                 return
             # Остальные команды — только от владельца

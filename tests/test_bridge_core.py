@@ -5,9 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.adapters.max_adapter import MaxAttachment, MaxAttachmentFailure, MaxMessage
+from src.adapters.max_adapter import (
+    MaxAttachment,
+    MaxAttachmentFailure,
+    MaxMessage,
+    MaxRecoveryChatSnapshot,
+    MaxRecoverySnapshot,
+)
 from src.bridge.core import BridgeCore
-from src.db.repository import PendingMediaDownload
+from src.db.repository import ChatBinding, PendingMediaDownload, Repository
 from src.runtime.health import RuntimeHealthStore, Severity
 
 
@@ -32,7 +38,23 @@ class DummyRepo:
         return self.binding_by_chat.get(max_chat_id)
 
     async def get_max_msg_id_by_tg(self, tg_msg_id: int):
-        return self.reply_mappings.get(tg_msg_id, "mx-reply-1")
+        value = self.reply_mappings.get(tg_msg_id, "mx-reply-1")
+        return getattr(value, "max_msg_id", value)
+
+    async def get_tg_reply_mapping(self, tg_msg_id: int):
+        value = self.reply_mappings.get(tg_msg_id, "mx-reply-1")
+        if value is None:
+            return None
+        if hasattr(value, "max_chat_id"):
+            return value
+        return SimpleNamespace(
+            tg_msg_id=tg_msg_id,
+            max_chat_id="-70000000000003",
+            max_msg_id=value,
+            tg_topic_id=99,
+            source="test",
+            created_at=1,
+        )
 
     async def save_message(self, record):
         self.saved_record = record
@@ -221,6 +243,19 @@ class DummyMax:
         return self._last_outbound_attempts
 
 
+class DummyRecoveryMax(DummyMax):
+    def __init__(self, snapshot: MaxRecoverySnapshot):
+        super().__init__()
+        self.snapshot = snapshot
+        self.start_handlers = []
+
+    def on_start(self, handler):
+        self.start_handlers.append(handler)
+
+    async def collect_recovery_snapshot(self):
+        return self.snapshot
+
+
 class DummyTelegram:
     def __init__(self):
         self.calls = []
@@ -236,7 +271,7 @@ class DummyTelegram:
     def on_command(self, cmd: str, handler):
         self.commands[cmd] = handler
 
-    def on_arg_command(self, cmd: str, handler):
+    def on_arg_command(self, cmd: str, handler, **kwargs):
         self.arg_commands[cmd] = handler
 
     async def send_photo(self, topic_id, path, caption="", flow_id=None):
@@ -267,6 +302,10 @@ class DummyTelegram:
 
     async def send_notification(self, text):
         self.calls.append(("notification", text))
+
+    async def send_owner_document(self, path: str, caption: str = "", filename: str = ""):
+        self.calls.append(("owner_document", Path(path).name, caption, filename))
+        return True
 
     async def create_topic(self, title, flow_id=None):
         self.calls.append(("create_topic", title, flow_id))
@@ -1224,6 +1263,48 @@ async def test_on_tg_reply_prefixes_sender_name_for_max():
 
 
 @pytest.mark.asyncio
+async def test_on_tg_reply_after_remap_skips_stale_reply_to_max_id():
+    repo = DummyRepo()
+    repo.reply_mappings[123] = SimpleNamespace(
+        tg_msg_id=123,
+        max_chat_id="-old-chat",
+        max_msg_id="old-max-message",
+        tg_topic_id=99,
+        source="message_map",
+        created_at=1,
+    )
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    await bridge._on_tg_reply(
+        topic_id=99,
+        tg_msg_id=555,
+        text="После remap",
+        reply_to_tg_msg_id=123,
+        sender_name="Мария Иванова",
+    )
+
+    assert max_adapter.sent == (
+        "-70000000000003",
+        "[Мария Иванова]\nПосле remap",
+        None,
+        "tg:99:555",
+    )
+
+
+@pytest.mark.asyncio
 async def test_on_tg_reply_rejects_too_large_media(tmp_path):
     repo = DummyRepo()
     max_adapter = DummyMax()
@@ -1728,6 +1809,78 @@ def _make_bridge(repo=None, max_adapter=None, tg_adapter=None):
         max_adapter=max_adapter or DummyMax(),
         tg_adapter=tg_adapter or DummyTelegram(),
     )
+
+
+@pytest.mark.asyncio
+async def test_cmd_recovery_scan_report_set_remap_and_export(tmp_path, caplog):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    await repo.save_binding(ChatBinding("-old-chat", 77, "Client group", "active", 1))
+    snapshot = MaxRecoverySnapshot(
+        max_user_id="100",
+        masked_phone="+7******1234",
+        session_fingerprint_hash="hash",
+        chats=[
+            MaxRecoveryChatSnapshot(
+                max_chat_id="-old-chat",
+                title="Client group",
+                chat_kind="group",
+                access_type="LINK",
+                invite_link="https://max.ru/join/example",
+                admin_contacts=[{"user_id": "501", "name": "Admin"}],
+                participant_count=7,
+            ),
+            MaxRecoveryChatSnapshot(
+                max_chat_id="-new-chat",
+                title="New visible group",
+                chat_kind="group",
+                participant_count=3,
+            ),
+        ],
+    )
+    max_adapter = DummyRecoveryMax(snapshot)
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=DummyConfig(
+            storage=SimpleNamespace(tmp_dir=tmp_path),
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    try:
+        with caplog.at_level(logging.INFO, logger="src.bridge.core"):
+            scan = await bridge._cmd_recovery("scan")
+        report = await bridge._cmd_recovery("report")
+        set_result = await bridge._cmd_recovery(
+            'set 77 priority=9 note="call admin" status=manual_admin_required admin="Admin:501"'
+        )
+        remap = await bridge._cmd_recovery("remap 77 -new-chat")
+        post_remap_report = await bridge._cmd_recovery("report")
+        export = await bridge._cmd_recovery("export")
+
+        assert "snapshot обновлён" in scan
+        assert "Свежесть snapshot:" in report
+        assert "unmapped MAX: 1" in report
+        assert "https://max.ru/join/example" not in report
+        assert not any(
+            "https://max.ru/join/example" in str(getattr(record, "event_fields", {}))
+            for record in caplog.records
+        )
+        assert "обновлена" in set_result
+        assert "теперь отправляет" in remap
+        assert "unmapped MAX: 0" in post_remap_report
+        assert "Export отправлен" in export
+        assert any(call[0] == "owner_document" for call in tg_adapter.calls)
+        assert (await repo.get_binding_by_topic(77)).max_chat_id == "-new-chat"
+    finally:
+        await repo.close()
 
 
 @pytest.mark.asyncio

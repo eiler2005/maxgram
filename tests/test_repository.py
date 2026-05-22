@@ -67,6 +67,117 @@ async def test_tg_reply_mapping_resolves_delayed_media_message(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_recovery_registry_snapshot_report_and_export_are_idempotent(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        first_account = await repo.upsert_max_account_generation(
+            max_user_id="100",
+            masked_phone="+7******1234",
+            session_fingerprint_hash="hash-a",
+        )
+        second_account = await repo.upsert_max_account_generation(
+            max_user_id="200",
+            masked_phone="+7******5678",
+            session_fingerprint_hash="hash-b",
+        )
+        assert first_account["migration_required"] is False
+        assert second_account["migration_required"] is True
+        assert second_account["previous_max_user_id"] == "100"
+
+        result = await repo.upsert_recovery_snapshot([
+            {
+                "registry_key": "tg_topic:77",
+                "tg_topic_id": 77,
+                "title": "VIP group",
+                "old_max_chat_id": "-old",
+                "current_max_chat_id": "-old",
+                "chat_kind": "group",
+                "mode": "active",
+                "access_type": "LINK",
+                "invite_link": "https://max.ru/join/example",
+                "owner_user_id": "500",
+                "owner_name": "Owner",
+                "admin_contacts": [{"user_id": "501", "name": "Admin"}],
+                "participant_count": 12,
+                "recovery_status": "visible",
+            }
+        ])
+        again = await repo.upsert_recovery_snapshot([
+            {
+                "registry_key": "tg_topic:77",
+                "tg_topic_id": 77,
+                "title": "VIP group",
+                "old_max_chat_id": "-old",
+                "current_max_chat_id": "-old",
+                "chat_kind": "group",
+                "mode": "active",
+                "recovery_status": "visible",
+            }
+        ])
+
+        assert result == {"scanned": 1}
+        assert again == {"scanned": 1}
+
+        report = await repo.get_recovery_report()
+        assert report["stats"]["total"] == 1
+        assert report["stats"]["restored"] == 1
+        assert report["stats"]["last_scan_at"] is not None
+
+        entry = await repo.get_recovery_entry_by_topic(77)
+        assert entry.invite_link == "https://max.ru/join/example"
+        assert "Admin" in entry.admin_contacts_json
+
+        export = await repo.export_recovery_registry()
+        assert export["entries"][0]["admin_contacts"] == [{"name": "Admin", "user_id": "501"}]
+        assert export["entries"][0]["last_scan_at"] is not None
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_remap_preserves_topic_and_updates_binding(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        await repo.save_binding(ChatBinding("old-chat", 77, "Client", "active", 1))
+        await repo.upsert_recovery_snapshot([
+            {
+                "registry_key": "tg_topic:77",
+                "tg_topic_id": 77,
+                "title": "Client",
+                "old_max_chat_id": "old-chat",
+                "current_max_chat_id": "old-chat",
+                "chat_kind": "dm",
+                "mode": "active",
+                "recovery_status": "needs_invite",
+            },
+            {
+                "registry_key": "max_chat:new-chat",
+                "title": "Client",
+                "current_max_chat_id": "new-chat",
+                "chat_kind": "dm",
+                "mode": "active",
+                "recovery_status": "unmapped",
+            },
+        ])
+
+        binding = await repo.remap_recovery_topic(77, "new-chat")
+
+        assert binding.max_chat_id == "new-chat"
+        assert binding.tg_topic_id == 77
+        assert (await repo.get_binding_by_topic(77)).max_chat_id == "new-chat"
+        entry = await repo.get_recovery_entry_by_topic(77)
+        assert entry.current_max_chat_id == "new-chat"
+        assert entry.old_max_chat_id == "old-chat"
+        assert entry.recovery_status == "remapped"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
 async def test_find_phantom_topic_bindings_requires_duplicate_real_delivery(tmp_path):
     repo = Repository(str(tmp_path / "bridge.db"))
     await repo.connect()

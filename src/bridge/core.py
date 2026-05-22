@@ -13,8 +13,11 @@ Telegram reply → MAX message
 """
 
 import asyncio
+import json
 import logging
+import shlex
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
@@ -70,7 +73,13 @@ class BridgeCore:
         self._tg.on_command("status", self._build_status_message)
         self._tg.on_command("chats", self._build_chats_message)
         self._tg.on_command("help", self._build_help_message)
-        self._tg.on_arg_command("dm", self._cmd_dm)
+        self._tg.on_arg_command("dm", self._cmd_dm, allow_group_general=True)
+        self._tg.on_arg_command("recovery", self._cmd_recovery)
+
+        self._recovery_scan_task: Optional[asyncio.Task] = None
+        on_max_start = getattr(self._max, "on_start", None)
+        if callable(on_max_start):
+            on_max_start(self._schedule_recovery_scan_after_connect)
 
     async def _send_ops_notification(self, text: str):
         sender = getattr(self._ops, "send_system_notification", None)
@@ -1001,7 +1010,29 @@ class BridgeCore:
         # Найти max_msg_id для reply (если есть)
         reply_to_max_id = None
         if reply_to_tg_msg_id:
-            reply_to_max_id = await self._repo.get_max_msg_id_by_tg(reply_to_tg_msg_id)
+            get_mapping = getattr(self._repo, "get_tg_reply_mapping", None)
+            if callable(get_mapping):
+                mapping = await get_mapping(reply_to_tg_msg_id)
+                if mapping and mapping.max_chat_id == binding.max_chat_id:
+                    reply_to_max_id = mapping.max_msg_id
+                elif mapping:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "bridge.outbound.reply_resolved",
+                        flow_id=flow_id,
+                        direction="outbound",
+                        stage="routing",
+                        outcome="skipped",
+                        reason="stale_remap_chat",
+                        tg_topic_id=topic_id,
+                        tg_msg_id=tg_msg_id,
+                        reply_to_tg_msg_id=reply_to_tg_msg_id,
+                        max_chat_id=binding.max_chat_id,
+                        mapped_max_chat_id=mapping.max_chat_id,
+                    )
+            else:
+                reply_to_max_id = await self._repo.get_max_msg_id_by_tg(reply_to_tg_msg_id)
         log_event(
             logger,
             logging.INFO,
@@ -1619,6 +1650,383 @@ class BridgeCore:
             "💡 Пример /dm (пишите в General):\n"
             "  /dm Татьяна Геннадиевна Ладина Добрый день!"
         )
+
+    def _schedule_recovery_scan_after_connect(self):
+        if self._recovery_scan_task is not None and not self._recovery_scan_task.done():
+            return
+        self._recovery_scan_task = asyncio.create_task(
+            self._safe_recovery_scan(reason="max_connect"),
+            name="recovery_snapshot_after_connect",
+        )
+
+    def _entry_admin_contacts(self, entry) -> list[dict[str, str]]:
+        if not entry:
+            return []
+        raw = getattr(entry, "admin_contacts_json", None)
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    def _status_for_missing_recovery_chat(self, existing, *, migration_required: bool) -> str:
+        if existing and getattr(existing, "invite_link", None):
+            return "joinable_by_link"
+        if existing and (
+            getattr(existing, "owner_user_id", None) or self._entry_admin_contacts(existing)
+        ):
+            return "manual_admin_required"
+        if migration_required:
+            return "account_migration_required"
+        return "needs_invite"
+
+    def _recovery_snapshot_entry_from_chat(self, chat, *, registry_key: str, tg_topic_id: Optional[int],
+                                           binding: Optional[ChatBinding] = None,
+                                           status: str = "visible") -> dict[str, object]:
+        data = asdict(chat)
+        return {
+            "registry_key": registry_key,
+            "tg_topic_id": tg_topic_id,
+            "title": data.get("title") or (binding.title if binding else registry_key),
+            "old_max_chat_id": binding.max_chat_id if binding else data.get("max_chat_id"),
+            "current_max_chat_id": binding.max_chat_id if binding else data.get("max_chat_id"),
+            "chat_kind": data.get("chat_kind") or "unknown",
+            "mode": binding.mode if binding else "active",
+            "access_type": data.get("access_type"),
+            "invite_link": data.get("invite_link"),
+            "owner_user_id": data.get("owner_user_id"),
+            "owner_name": data.get("owner_name"),
+            "admin_contacts": data.get("admin_contacts") or [],
+            "dm_partner_user_id": data.get("dm_partner_user_id"),
+            "dm_partner_name": data.get("dm_partner_name"),
+            "participant_count": data.get("participant_count"),
+            "recovery_status": status,
+        }
+
+    async def _safe_recovery_scan(self, *, reason: str = "manual") -> dict[str, object]:
+        collect = getattr(self._max, "collect_recovery_snapshot", None)
+        if not callable(collect):
+            return {"scanned": 0, "error": "snapshot_not_supported"}
+
+        snapshot = await collect()
+        account_result = {"migration_required": False, "max_user_id": snapshot.max_user_id}
+        if snapshot.max_user_id:
+            account_result = await self._repo.upsert_max_account_generation(
+                max_user_id=snapshot.max_user_id,
+                masked_phone=snapshot.masked_phone,
+                session_fingerprint_hash=snapshot.session_fingerprint_hash,
+            )
+
+        migration_required = bool(account_result.get("migration_required"))
+        snapshot_by_chat = {str(chat.max_chat_id): chat for chat in snapshot.chats}
+        matched_chat_ids: set[str] = set()
+
+        existing_by_topic = {
+            entry.tg_topic_id: entry
+            for entry in await self._repo.list_recovery_entries()
+            if entry.tg_topic_id is not None
+        }
+
+        entries: list[dict[str, object]] = []
+        bindings = await self._repo.list_bindings()
+        for binding in bindings:
+            chat = snapshot_by_chat.get(str(binding.max_chat_id))
+            existing = existing_by_topic.get(binding.tg_topic_id)
+            if chat:
+                matched_chat_ids.add(chat.max_chat_id)
+                entries.append(
+                    self._recovery_snapshot_entry_from_chat(
+                        chat,
+                        registry_key=f"tg_topic:{binding.tg_topic_id}",
+                        tg_topic_id=binding.tg_topic_id,
+                        binding=binding,
+                        status="visible",
+                    )
+                )
+                continue
+
+            entries.append(
+                {
+                    "registry_key": f"tg_topic:{binding.tg_topic_id}",
+                    "tg_topic_id": binding.tg_topic_id,
+                    "title": binding.title,
+                    "old_max_chat_id": getattr(existing, "old_max_chat_id", None) or binding.max_chat_id,
+                    "current_max_chat_id": binding.max_chat_id,
+                    "chat_kind": getattr(existing, "chat_kind", "unknown") if existing else "unknown",
+                    "mode": binding.mode,
+                    "recovery_status": self._status_for_missing_recovery_chat(
+                        existing,
+                        migration_required=migration_required,
+                    ),
+                }
+            )
+
+        for chat in snapshot.chats:
+            if chat.max_chat_id in matched_chat_ids:
+                continue
+            entries.append(
+                self._recovery_snapshot_entry_from_chat(
+                    chat,
+                    registry_key=f"max_chat:{chat.max_chat_id}",
+                    tg_topic_id=None,
+                    status="unmapped",
+                )
+            )
+
+        result = await self._repo.upsert_recovery_snapshot(entries)
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.recovery.scan_completed",
+            stage="recovery",
+            outcome="completed",
+            reason=reason,
+            scanned=result.get("scanned", 0),
+            topics=len(bindings),
+            visible=len(matched_chat_ids),
+            migration_required=migration_required,
+        )
+        return {
+            **result,
+            "topics": len(bindings),
+            "visible": len(matched_chat_ids),
+            "migration_required": migration_required,
+        }
+
+    async def run_weekly_recovery_snapshot(self, interval_seconds: int = 7 * 24 * 3600):
+        """Periodic recovery registry refresh. Default cadence: weekly."""
+        await asyncio.sleep(max(1, int(interval_seconds)))
+        while True:
+            try:
+                await self._safe_recovery_scan(reason="weekly")
+                if self._health is not None:
+                    await self._health.mark_healthy(
+                        "scheduler",
+                        summary="Weekly MAX recovery snapshot обновляется",
+                        notify=False,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("weekly recovery snapshot failed: %s", e, exc_info=True)
+                if self._health is not None:
+                    await self._health.report_issue(
+                        "scheduler",
+                        code="recovery_snapshot_failed",
+                        summary="Weekly MAX recovery snapshot не обновился",
+                        raw_cause=str(e),
+                        severity=Severity.WARNING,
+                        impact="Recovery registry может устареть до следующей успешной попытки.",
+                        operator_hint="Проверь MAX-сессию и выполни /recovery scan вручную.",
+                        auto_recovery="Scheduler повторит weekly snapshot на следующем цикле.",
+                        notify=False,
+                    )
+            await asyncio.sleep(max(1, int(interval_seconds)))
+
+    def _format_recovery_freshness(self, last_scan_at: Optional[int]) -> str:
+        if not last_scan_at:
+            return "snapshot ещё не собирался"
+        age = self._format_duration_compact(max(0, int(time.time()) - int(last_scan_at)))
+        return f"{format_timestamp(int(last_scan_at))} ({age} назад)"
+
+    def _recovery_status_label(self, status: str) -> str:
+        labels = {
+            "visible": "виден",
+            "remapped": "remap готов",
+            "joinable_by_link": "есть invite link",
+            "manual_admin_required": "нужен админ",
+            "account_migration_required": "нужен перенос",
+            "needs_invite": "нужен invite",
+            "unmapped": "виден, не привязан",
+            "lost": "потерян",
+        }
+        return labels.get(status, status)
+
+    async def _build_recovery_report_message(self) -> str:
+        report = await self._repo.get_recovery_report()
+        stats = report["stats"]
+        entries = report["entries"]
+        lines = [
+            "🧭 MAX Recovery Registry",
+            f"Свежесть snapshot: {self._format_recovery_freshness(stats.get('last_scan_at'))}",
+            f"Всего записей: {stats['total']} · TG topics: {stats['topics']} · unmapped MAX: {stats['unmapped']}",
+            (
+                f"Готово: {stats['restored']} · по ссылке: {stats['joinable_by_link']} · "
+                f"нужен invite: {stats['needs_invite']} · админ/manual: {stats['manual_admin_required']}"
+            ),
+        ]
+
+        attention = [
+            entry for entry in entries
+            if entry.recovery_status != "remapped"
+            and (
+                entry.tg_topic_id is None
+                or entry.recovery_status not in {"visible", "tracked"}
+            )
+        ]
+        if attention:
+            lines.append("")
+            lines.append("Что требует внимания:")
+            for entry in attention[:20]:
+                topic = f"#{entry.tg_topic_id}" if entry.tg_topic_id is not None else "unmapped"
+                title = (entry.title or entry.registry_key)[:44]
+                lines.append(f"  {topic} · {self._recovery_status_label(entry.recovery_status)} · {title}")
+            if len(attention) > 20:
+                lines.append(f"  ... и ещё {len(attention) - 20}")
+        return "\n".join(lines)
+
+    def _parse_recovery_set_fields(self, entry, tokens: list[str]) -> dict[str, object]:
+        updates: dict[str, object] = {}
+        for token in tokens:
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            key = key.strip().lower()
+            value = value.strip()
+            if key == "priority":
+                updates["priority"] = int(value)
+            elif key in {"status", "recovery_status"}:
+                allowed_statuses = {
+                    "visible",
+                    "remapped",
+                    "joinable_by_link",
+                    "manual_admin_required",
+                    "account_migration_required",
+                    "needs_invite",
+                    "unmapped",
+                    "lost",
+                    "tracked",
+                }
+                if value not in allowed_statuses:
+                    raise ValueError(f"unknown status: {value}")
+                updates["recovery_status"] = value
+            elif key in {"note", "manual_note"}:
+                updates["manual_note"] = value
+            elif key in {"link", "invite_link"}:
+                updates["invite_link"] = value
+            elif key == "access":
+                updates["access_type"] = value
+            elif key == "owner":
+                if ":" in value:
+                    owner_name, owner_id = value.rsplit(":", 1)
+                    updates["owner_name"] = owner_name.strip()
+                    updates["owner_user_id"] = owner_id.strip()
+                else:
+                    updates["owner_name"] = value
+            elif key == "admin":
+                contacts = self._entry_admin_contacts(entry)
+                admin_name = value
+                admin_id = ""
+                if ":" in value:
+                    admin_name, admin_id = value.rsplit(":", 1)
+                contact = {"user_id": admin_id.strip(), "name": admin_name.strip()}
+                dedupe_key = contact["user_id"] or contact["name"]
+                contacts = [
+                    item for item in contacts
+                    if (item.get("user_id") or item.get("name")) != dedupe_key
+                ]
+                contacts.append(contact)
+                updates["admin_contacts_json"] = json.dumps(
+                    contacts,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+        return updates
+
+    async def _cmd_recovery(self, args: str) -> str:
+        """Owner-only MAX account migration recovery commands."""
+        try:
+            tokens = shlex.split(args or "")
+        except ValueError as e:
+            return f"⚠️ Не понял аргументы: {e}"
+        if not tokens or tokens[0] in {"help", "?"}:
+            return (
+                "🧭 Recovery команды:\n"
+                "  /recovery scan — обновить snapshot сейчас\n"
+                "  /recovery report — краткий отчёт\n"
+                "  /recovery export — JSON владельцу в DM\n"
+                "  /recovery set <topic_id> key=value ...\n"
+                "  /recovery remap <topic_id> <new_max_chat_id>"
+            )
+
+        action = tokens[0].lower()
+        if action == "scan":
+            result = await self._safe_recovery_scan(reason="manual")
+            report = await self._repo.get_recovery_report()
+            freshness = self._format_recovery_freshness(report["stats"].get("last_scan_at"))
+            return (
+                "✅ Recovery snapshot обновлён\n"
+                f"Скан: {result.get('scanned', 0)} записей · visible topics: {result.get('visible', 0)}"
+                + ("\n⚠️ Обнаружен новый MAX account: нужен migration flow" if result.get("migration_required") else "")
+                + f"\nСвежесть: {freshness}"
+            )
+
+        if action == "report":
+            return await self._build_recovery_report_message()
+
+        if action == "export":
+            export = await self._repo.export_recovery_registry()
+            tmp_dir = Path(getattr(getattr(self._cfg, "storage", None), "tmp_dir", "/tmp"))
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"max_recovery_registry-{int(time.time())}.json"
+            path = tmp_dir / filename
+            path.write_text(json.dumps(export, ensure_ascii=False, indent=2), encoding="utf-8")
+            try:
+                send_owner_document = getattr(self._tg, "send_owner_document", None)
+                if not callable(send_owner_document):
+                    return "⚠️ Telegram adapter не умеет отправлять owner document"
+                sent = await send_owner_document(
+                    str(path),
+                    caption="MAX recovery registry export",
+                    filename=filename,
+                )
+                return "✅ Export отправлен владельцу в DM" if sent else "❌ Не удалось отправить export"
+            finally:
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        if action == "set":
+            if len(tokens) < 3:
+                return "⚠️ Формат: /recovery set <topic_id> key=value ..."
+            try:
+                topic_id = int(tokens[1])
+            except ValueError:
+                return "⚠️ topic_id должен быть числом"
+            entry = await self._repo.get_recovery_entry_by_topic(topic_id)
+            if entry is None:
+                return "⚠️ Запись не найдена. Сначала выполни /recovery scan"
+            try:
+                updates = self._parse_recovery_set_fields(entry, tokens[2:])
+            except (TypeError, ValueError) as e:
+                return f"⚠️ Не удалось обновить: {e}"
+            if not updates:
+                return "⚠️ Нет поддержанных полей для обновления"
+            updated = await self._repo.update_recovery_entry(topic_id, updates)
+            if updated is None:
+                return "⚠️ Запись не найдена"
+            return f"✅ Recovery запись #{topic_id} обновлена: {', '.join(sorted(updates))}"
+
+        if action == "remap":
+            if len(tokens) != 3:
+                return "⚠️ Формат: /recovery remap <topic_id> <new_max_chat_id>"
+            try:
+                topic_id = int(tokens[1])
+            except ValueError:
+                return "⚠️ topic_id должен быть числом"
+            try:
+                binding = await self._repo.remap_recovery_topic(topic_id, tokens[2])
+            except ValueError as e:
+                return f"⚠️ Remap невозможен: {e}"
+            if binding is None:
+                return "⚠️ Binding для topic_id не найден"
+            return f"✅ Топик #{topic_id} теперь отправляет в MAX chat {binding.max_chat_id}"
+
+        return "⚠️ Неизвестная recovery команда. Используй /recovery help"
 
     async def _cmd_dm(self, args: str) -> str:
         """Инициировать новый DM в MAX по имени пользователя.
