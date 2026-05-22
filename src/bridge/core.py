@@ -21,6 +21,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
+from . import delivery as bridge_delivery
+from . import mapping as bridge_mapping
+from . import topics as bridge_topics
 from .contracts import (
     MAX_DM_SWEEP_BACKFILL_SECONDS,
     MaxAttachment,
@@ -32,7 +35,7 @@ from .contracts import (
     is_probable_client_cid,
 )
 from ..config.loader import AppConfig
-from ..db.repository import Repository, ChatBinding, MessageRecord, PendingMediaDownload
+from ..db.repository import Repository, ChatBinding, PendingMediaDownload
 from ..logging_utils import build_max_flow_id, build_tg_flow_id, log_event, sanitize_path
 from ..runtime.health import (
     RuntimeHealthStore,
@@ -202,14 +205,7 @@ class BridgeCore:
             await self._repo.save_user(msg.sender_id, msg.sender_name)
 
         # Сохраняем сразу (idempotency key)
-        await self._repo.save_message(MessageRecord(
-            max_msg_id=msg.msg_id,
-            max_chat_id=msg.chat_id,
-            tg_msg_id=None,
-            tg_topic_id=None,
-            direction="inbound",
-            created_at=int(time.time()),
-        ))
+        await bridge_mapping.save_inbound_idempotency_key(self._repo, msg)
 
         # Получаем или создаём топик
         topic_id = await self._get_or_create_topic(msg, flow_id=flow_id)
@@ -312,14 +308,12 @@ class BridgeCore:
 
         # Обновляем запись с tg_msg_id
         if tg_msg_id:
-            await self._repo.save_message(MessageRecord(
-                max_msg_id=msg.msg_id,
-                max_chat_id=msg.chat_id,
+            await bridge_mapping.save_inbound_delivery_mapping(
+                self._repo,
+                msg,
                 tg_msg_id=tg_msg_id,
                 tg_topic_id=topic_id,
-                direction="inbound",
-                created_at=int(time.time()),
-            ))
+            )
             if msg.attachment_failures:
                 delivery_status = "partial"
                 delivery_error = f"attachment_download_failed:{len(msg.attachment_failures)}"
@@ -487,163 +481,22 @@ class BridgeCore:
 
     async def _get_or_create_topic(self, msg: MaxMessage, *,
                                    flow_id: Optional[str] = None) -> Optional[int]:
-        """Вернуть существующий topic_id или создать новый.
-        Если топик уже есть, но имеет fallback-название — пробуем переименовать.
-        """
-        binding = await self._repo.get_binding(msg.chat_id)
-        if binding:
-            # Если название — fallback (ещё не знали имя), пробуем обновить
-            if binding.title.startswith("Чат "):
-                real_title = await self._resolve_chat_title(msg)
-                if not real_title.startswith("Чат "):
-                    await self._tg.rename_topic(binding.tg_topic_id, real_title, flow_id=flow_id)
-                    await self._repo.update_title(msg.chat_id, real_title)
-                    self._schedule_recovery_event_scan("title_changed")
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "bridge.inbound.topic_resolved",
-                        flow_id=flow_id,
-                        direction="inbound",
-                        stage="routing",
-                        outcome="renamed",
-                        max_chat_id=msg.chat_id,
-                        max_msg_id=msg.msg_id,
-                        tg_topic_id=binding.tg_topic_id,
-                        title=real_title,
-                    )
-                    return binding.tg_topic_id
-            log_event(
-                logger,
-                logging.INFO,
-                "bridge.inbound.topic_resolved",
-                flow_id=flow_id,
-                direction="inbound",
-                stage="routing",
-                outcome="existing",
-                max_chat_id=msg.chat_id,
-                max_msg_id=msg.msg_id,
-                tg_topic_id=binding.tg_topic_id,
-                title=binding.title,
-            )
-            return binding.tg_topic_id
-
-        # Определяем название топика
-        title = await self._resolve_chat_title(msg)
-
-        # Создаём топик в Telegram
-        try:
-            topic_id = await self._tg.create_topic(title, flow_id=flow_id)
-        except Exception as e:
-            log_event(
-                logger,
-                logging.ERROR,
-                "bridge.inbound.topic_resolved",
-                flow_id=flow_id,
-                direction="inbound",
-                stage="routing",
-                outcome="failed",
-                reason="topic_create_failed",
-                max_chat_id=msg.chat_id,
-                max_msg_id=msg.msg_id,
-                title=title,
-                error=str(e),
-            )
-            return None
-
-        # Сохраняем binding
-        mode = self._cfg.get_chat_mode(msg.chat_id)
-        await self._repo.save_binding(ChatBinding(
-            max_chat_id=msg.chat_id,
-            tg_topic_id=topic_id,
-            title=title,
-            mode=mode,
-            created_at=int(time.time()),
-        ))
-        self._schedule_recovery_event_scan("new_binding")
-        log_event(
-            logger,
-            logging.INFO,
-            "bridge.inbound.topic_resolved",
+        return await bridge_topics.get_or_create_topic(
+            cfg=self._cfg,
+            repo=self._repo,
+            tg=self._tg,
+            max_adapter=self._max,
+            msg=msg,
+            schedule_recovery_scan=self._schedule_recovery_event_scan,
             flow_id=flow_id,
-            direction="inbound",
-            stage="routing",
-            outcome="created",
-            max_chat_id=msg.chat_id,
-            max_msg_id=msg.msg_id,
-            tg_topic_id=topic_id,
-            title=title,
-            mode=mode,
         )
-        return topic_id
 
     async def _resolve_chat_title(self, msg: MaxMessage) -> str:
-        """Определить название для топика."""
-        # 1. Из конфига
-        config_title = self._cfg.get_chat_title(msg.chat_id)
-        if config_title:
-            return config_title
-
-        # 2. Из сообщения (группы обычно имеют chat_title)
-        if msg.chat_title:
-            return msg.chat_title
-
-        # 3. Группы: live lookup названия через MAX API, если локальный cache miss
-        if not msg.is_dm:
-            title = await self._max.resolve_chat_title(msg.chat_id)
-            if title:
-                return title
-
-        # 4. DM: резолвим имя СОБЕСЕДНИКА (не нашего аккаунта!) через MAX API.
-        #
-        #    Проблема: chat_id не всегда указывает на собеседника.
-        #    Когда наш аккаунт инициирует чат (is_own=True), MAX может вернуть
-        #    в echo chat_id == own_id, а sender_id тоже == own_id.
-        #    Либо chat_id == Tatyana's ID, но resolve_user_name не возвращает имя
-        #    (новый контакт), и код откатывается к sender_id == own_id.
-        #
-        #    Решение (три уровня):
-        #      a) dialogs кеш pymax — надёжнее всего, явно видит обоих участников
-        #      b) chat_id, если он != own_id (для входящих DM это всегда верно)
-        #      c) sender_id, если != own_id и != chat_id (edge-case)
-        #
-        #    own_id НИКОГДА не попадает в кандидаты — он не может быть собеседником.
-        if msg.is_dm:
-            own_id = self._max.get_own_id()
-            if msg.sender_name and msg.sender_id and msg.sender_id != own_id:
-                return msg.sender_name
-
-            # a) Из кеша dialogs — самый надёжный источник
-            dm_partner_id = self._max.get_dm_partner_id(msg.chat_id)
-
-            # b) chat_id как кандидат — только если не наш ID
-            chat_id_candidate = msg.chat_id if msg.chat_id != own_id else None
-
-            # c) sender_id — для входящих DM обычно надёжнее chat_id:
-            #    chat_id может быть id диалога, а sender_id — реальный user id.
-            sender_candidate = (
-                msg.sender_id
-                if (
-                    msg.sender_id
-                    and msg.sender_id != own_id
-                    and msg.sender_id != dm_partner_id
-                    and msg.sender_id != msg.chat_id
-                )
-                else None
-            )
-
-            candidates = list(dict.fromkeys(filter(None, [
-                dm_partner_id,
-                sender_candidate,
-                chat_id_candidate,
-            ])))
-            for uid in candidates:
-                name = await self._max.resolve_user_name(uid)
-                if name:
-                    return name
-
-        # 5. Fallback
-        return f"Чат {msg.chat_id}"
+        return await bridge_topics.resolve_chat_title(
+            cfg=self._cfg,
+            max_adapter=self._max,
+            msg=msg,
+        )
 
     def _compose_message_text(self, primary: str, secondary: str = "") -> str:
         parts = [part.strip() for part in [primary, secondary] if part and part.strip()]
@@ -697,18 +550,17 @@ class BridgeCore:
         return f"{hours // 24}д"
 
     def _build_failed_outbound_id(self, topic_id: int, tg_msg_id: Optional[int]) -> str:
-        suffix = tg_msg_id if tg_msg_id is not None else int(time.time())
-        return f"out_fail:{topic_id}:{suffix}"
+        return bridge_delivery.build_failed_outbound_id(topic_id, tg_msg_id)
 
     async def _log_outbound_failure(self, *, topic_id: int, tg_msg_id: Optional[int],
                                     max_chat_id: str, error: str, attempts: int = 1):
-        await self._repo.log_delivery(
-            self._build_failed_outbound_id(topic_id, tg_msg_id),
-            max_chat_id,
-            "outbound",
-            "failed",
-            error,
-            attempts=max(attempts, 1),
+        await bridge_delivery.log_outbound_failure(
+            self._repo,
+            topic_id=topic_id,
+            tg_msg_id=tg_msg_id,
+            max_chat_id=max_chat_id,
+            error=error,
+            attempts=attempts,
         )
 
     def _is_file_too_large(self, path: str) -> bool:
@@ -1125,14 +977,12 @@ class BridgeCore:
             )
             return
 
-        await self._repo.save_message(MessageRecord(
+        await bridge_mapping.save_outbound_mapping(
+            self._repo,
             max_msg_id=sent_id,
             max_chat_id=binding.max_chat_id,
-            tg_msg_id=None,
             tg_topic_id=topic_id,
-            direction="outbound",
-            created_at=int(time.time()),
-        ))
+        )
         await self._repo.log_delivery(sent_id, binding.max_chat_id, "outbound", "delivered")
         if media_path:
             self._stats["outbound_media"] += 1
@@ -1342,11 +1192,12 @@ class BridgeCore:
                 )
                 return
 
-            await self._repo.save_tg_reply_mapping(
-                tg_msg_id,
-                job.max_chat_id,
-                job.max_msg_id,
-                job.tg_topic_id,
+            await bridge_mapping.save_tg_reply_mapping(
+                self._repo,
+                tg_msg_id=tg_msg_id,
+                max_chat_id=job.max_chat_id,
+                max_msg_id=job.max_msg_id,
+                tg_topic_id=job.tg_topic_id,
                 source="pending_media",
             )
             await self._repo.mark_pending_media_delivered(
@@ -2428,47 +2279,12 @@ class BridgeCore:
     # ── Startup tasks ─────────────────────────────────────────────────────
 
     async def fix_fallback_titles(self):
-        """При старте переименовать все топики с fallback-названием 'Чат XXXXX'."""
-        bindings = await self._repo.list_bindings()
-        for binding in bindings:
-            if not binding.title.startswith("Чат "):
-                continue
-            # Для DM-чатов пробуем найти собеседника через dialogs кеш,
-            # а не через chat_id напрямую — chat_id может совпадать с own_id
-            # когда чат был инициирован нашим аккаунтом.
-            own_id = self._max.get_own_id()
-            candidate_id = (
-                self._max.get_dm_partner_id(binding.max_chat_id)
-                or (binding.max_chat_id if binding.max_chat_id != own_id else None)
-            )
-            if not candidate_id:
-                continue
-            name = await self._max.resolve_user_name(candidate_id)
-            if name:
-                await self._tg.rename_topic(binding.tg_topic_id, name)
-                await self._repo.update_title(binding.max_chat_id, name)
-                self._schedule_recovery_event_scan("title_changed")
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "bridge.maintenance.fallback_title_fixed",
-                    stage="maintenance",
-                    outcome="renamed",
-                    max_chat_id=binding.max_chat_id,
-                    tg_topic_id=binding.tg_topic_id,
-                    title=name,
-                )
-            else:
-                log_event(
-                    logger,
-                    logging.DEBUG,
-                    "bridge.maintenance.fallback_title_skipped",
-                    stage="maintenance",
-                    outcome="skipped",
-                    reason="name_unresolved",
-                    max_chat_id=binding.max_chat_id,
-                    tg_topic_id=binding.tg_topic_id,
-                )
+        await bridge_topics.fix_fallback_titles(
+            repo=self._repo,
+            tg=self._tg,
+            max_adapter=self._max,
+            schedule_recovery_scan=self._schedule_recovery_event_scan,
+        )
 
     # ── MAX watchdog ──────────────────────────────────────────────────────
 
