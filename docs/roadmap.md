@@ -147,3 +147,4 @@
 |--------|-----------|
 | Per-chat управление из TG | Medium |
 | Более удобный guided UI поверх `/recovery report` для массового remap | Medium |
+| Убрать transition-layer `MaxServiceRegistry` delegation: перевести MAX operation services на явные `*Deps`/state-slices, заменить private test hooks на fake backend/service deps, добавить architecture-test на отсутствие service `__getattr__` | Medium |
