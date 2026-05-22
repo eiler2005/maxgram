@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .deps import ExplicitMaxService
+from .deps import RawPayloadDeps
 from .raw import (
     AttachmentInspectorProxy,
     EmptyRecoveryCandidateBuilder,
@@ -11,11 +11,11 @@ from .raw import (
 )
 
 
-class MaxRawPayloadService(ExplicitMaxService):
+class MaxRawPayloadService:
     """Compatibility facade for raw MAX payload parsing/recovery helpers."""
 
-    def __init__(self, deps):
-        super().__init__(deps)
+    def __init__(self, deps: RawPayloadDeps):
+        self._deps = deps
         attachments = AttachmentInspectorProxy(lambda: self._deps.media)
         self._parser = RawPayloadParser(backend=deps.backend, attachments=attachments)
         self._history = RawHistoryCache(raw_history=deps.raw_history, parser=self._parser)

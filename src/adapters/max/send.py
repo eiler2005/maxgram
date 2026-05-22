@@ -6,14 +6,33 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .deps import ExplicitMaxService
+from .deps import SendDeps
 from .types import PendingOutboundAck
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxSendService(ExplicitMaxService):
+class MaxSendService:
+    def __init__(self, deps: SendDeps):
+        self._deps = deps
+
+    @property
+    def _backend(self):
+        return self._deps.backend
+
+    @property
+    def _client(self):
+        return self._deps.connection.client
+
+    @property
+    def _started(self):
+        return self._deps.connection.started
+
+    @property
+    def _pending_outbound_acks(self):
+        return self._deps.outbound.pending_outbound_acks
+
     async def send_message(self, chat_id: str, text: str,
                            reply_to_msg_id: Optional[str] = None,
                            media_path: Optional[str] = None,
@@ -28,7 +47,7 @@ class MaxSendService(ExplicitMaxService):
           None — ошибка
         """
         # Ждём подключения до 15 секунд (на случай reconnect)
-        self._set_last_outbound_failure(None, attempts=0)
+        self._deps.runtime._set_last_outbound_failure(None, attempts=0)
         if not self._started:
             log_event(
                 logger,
@@ -47,14 +66,20 @@ class MaxSendService(ExplicitMaxService):
                 if self._started:
                     break
             else:
-                self._set_last_outbound_failure("MAX adapter is not connected", attempts=1)
+                self._deps.runtime._set_last_outbound_failure(
+                    "MAX adapter is not connected",
+                    attempts=1,
+                )
                 return None
 
         if not self._client:
-            self._set_last_outbound_failure("MAX client is not initialized", attempts=1)
+            self._deps.runtime._set_last_outbound_failure(
+                "MAX client is not initialized",
+                attempts=1,
+            )
             return None
 
-        normalized_text = self._normalize_outbound_text(text)
+        normalized_text = self._deps.runtime._normalize_outbound_text(text)
         max_attempts = 3
         retry_delays = (1, 2)
 
@@ -101,10 +126,10 @@ class MaxSendService(ExplicitMaxService):
                 if attachment is not None:
                     kwargs["attachment"] = attachment
                 result = await self._client.send_message(**kwargs)
-                msg_id = self._extract_result_msg_id(result)
+                msg_id = self._deps.runtime._extract_result_msg_id(result)
                 if msg_id:
-                    self._remember_expected_outbound_id(chat_id, msg_id)
-                    self._set_last_outbound_failure(None, attempts=attempt)
+                    self._deps.runtime._remember_expected_outbound_id(chat_id, msg_id)
+                    self._deps.runtime._set_last_outbound_failure(None, attempts=attempt)
                     log_event(
                         logger,
                         logging.INFO,
@@ -123,7 +148,7 @@ class MaxSendService(ExplicitMaxService):
 
                 if not normalized_text:
                     error = "MAX send returned no message id"
-                    self._set_last_outbound_failure(error, attempts=attempt)
+                    self._deps.runtime._set_last_outbound_failure(error, attempts=attempt)
                     log_event(
                         logger,
                         logging.ERROR,
@@ -142,7 +167,7 @@ class MaxSendService(ExplicitMaxService):
 
                 try:
                     echoed_id = await asyncio.wait_for(asyncio.shield(pending.future), timeout=10)
-                    self._set_last_outbound_failure(None, attempts=attempt)
+                    self._deps.runtime._set_last_outbound_failure(None, attempts=attempt)
                     log_event(
                         logger,
                         logging.INFO,
@@ -182,7 +207,7 @@ class MaxSendService(ExplicitMaxService):
                         await asyncio.sleep(retry_in_seconds)
                         continue
 
-                    self._set_last_outbound_failure(error, attempts=attempt)
+                    self._deps.runtime._set_last_outbound_failure(error, attempts=attempt)
                     log_event(
                         logger,
                         logging.ERROR,
@@ -200,7 +225,7 @@ class MaxSendService(ExplicitMaxService):
                     return None
             except Exception as e:
                 error = str(e)
-                retryable = self._is_retryable_send_error(e)
+                retryable = self._deps.runtime._is_retryable_send_error(e)
                 if retryable and attempt < max_attempts:
                     retry_in_seconds = retry_delays[attempt - 1]
                     log_event(
@@ -222,7 +247,7 @@ class MaxSendService(ExplicitMaxService):
                     await asyncio.sleep(retry_in_seconds)
                     continue
 
-                self._set_last_outbound_failure(error, attempts=attempt)
+                self._deps.runtime._set_last_outbound_failure(error, attempts=attempt)
                 log_event(
                     logger,
                     logging.ERROR,

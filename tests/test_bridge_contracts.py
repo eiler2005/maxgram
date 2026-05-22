@@ -73,6 +73,8 @@ def test_max_services_use_explicit_dependencies():
     for path in (PROJECT_ROOT / "src/adapters/max").rglob("*.py"):
         relative = path.relative_to(PROJECT_ROOT).as_posix()
         content = path.read_text(encoding="utf-8")
+        if "ExplicitMaxService" in content:
+            offenders.append(f"{relative}: ExplicitMaxService")
         if "MaxServiceRegistry" in content:
             offenders.append(f"{relative}: MaxServiceRegistry")
         if "def __getattr__" in content:
@@ -93,6 +95,30 @@ def test_max_services_use_explicit_dependencies():
             for base in node.bases:
                 if isinstance(base, ast.Name) and base.id in {"MaxAdapter", "RealMaxAdapter"}:
                     offenders.append(f"tests/test_max_adapter.py: {node.name} subclasses {base.id}")
+
+    assert offenders == []
+
+
+def test_max_services_do_not_use_god_base_forwarders():
+    offenders = []
+    for path in (PROJECT_ROOT / "src/adapters/max").rglob("*.py"):
+        relative = path.relative_to(PROJECT_ROOT).as_posix()
+        content = path.read_text(encoding="utf-8")
+        tree = ast.parse(content)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for base in node.bases:
+                base_name = getattr(base, "id", None) or getattr(base, "attr", None)
+                if base_name == "ExplicitMaxService":
+                    offenders.append(f"{relative}: {node.name} inherits ExplicitMaxService")
+            for child in node.body:
+                if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                has_varargs = child.args.vararg is not None or child.args.kwarg is not None
+                body = ast.get_source_segment(content, child) or ""
+                if has_varargs and "return self._deps." in body:
+                    offenders.append(f"{relative}: {node.name}.{child.name} is a deps forwarder")
 
     assert offenders == []
 

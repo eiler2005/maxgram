@@ -295,8 +295,8 @@ src.adapters.max_adapter compatibility alias
 - `backends/base.py` — internal `MaxBackend` protocol: create client, make attachments/messages, opcodes, history/media payloads.
 - `backends/pymax/` — `PymaxBackend`; единственное место с `pymax` imports и `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`.
 - `state.py` — явный mutable state по доменам: connection, outbound, raw history, empty recovery.
-- `deps.py` — explicit dependency objects for operation services; старый service registry / dynamic `__getattr__` не используется.
-- `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Они не импортируют `pymax`, не принимают полный `MaxAdapter`; pymax-specific objects приходят через backend.
+- `deps.py` — explicit dependency objects for operation services; старый service registry / dynamic `__getattr__` и общий base service не используются.
+- `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Каждый сервис владеет собственным typed deps object, не наследуется от god base class, не импортирует `pymax` и не принимает полный `MaxAdapter`; pymax-specific objects приходят через backend.
 - `media/downloader.py`, `media/ua.py`, `payload.py`, `users.py`, `errors.py` — pymax-free helper leaves.
 
 Pymax imports are allowed only inside `src/adapters/max/backends/pymax/*`. Replacing `pymax` later means implementing another `MaxBackend`, not changing `BridgeCore`.

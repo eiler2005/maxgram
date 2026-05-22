@@ -18,7 +18,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_bridge_contracts.py — архитектурная граница (7 тестов)
+## test_bridge_contracts.py — архитектурная граница (8 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -28,6 +28,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_pymax_imports_stay_inside_max_adapter_boundary` | `pymax` imports разрешены только в `src/adapters/max/backends/pymax/*`; bridge/contracts/services остаются transport-neutral. |
 | `test_max_adapter_uses_composition_not_mixins` | `MaxAdapter` собран composition/facade-ом, не через mixin inheritance; сервисы не принимают полный `MaxAdapter`. |
 | `test_max_services_use_explicit_dependencies` | MAX services не используют `MaxServiceRegistry`/service `__getattr__`, не принимают `MaxAdapter`, а adapter tests не subclass-ят real adapter для private overrides. |
+| `test_max_services_do_not_use_god_base_forwarders` | MAX services не наследуются от `ExplicitMaxService` и не возвращают скрытые cross-service deps-forwarders через `*args, **kwargs`. |
 | `test_bridge_core_keeps_heavy_leaf_logic_outside_coordinator` | `BridgeCore` не содержит status/recovery/media-retry command-heavy methods/state, не импортирует recovery reporter напрямую и регистрирует команды через dispatcher. |
 
 ---

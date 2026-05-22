@@ -9,7 +9,7 @@ from typing import Optional
 
 from .. import errors as max_errors
 from .. import payload as max_payload
-from ..deps import ExplicitMaxService
+from ..deps import MediaDeps
 from . import downloader as max_downloader
 from .ua import (
     MAX_CDN_ANDROID_CHROME_USER_AGENT,
@@ -23,13 +23,29 @@ from ....logging_utils import log_event, sanitize_path, sanitize_url
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxMediaService(ExplicitMaxService):
-    def __init__(self, deps):
-        super().__init__(deps)
+class MaxMediaService:
+    def __init__(self, deps: MediaDeps):
+        self._deps = deps
         self._downloader = max_downloader.MaxCdnDownloader(
             tmp_dir=deps.tmp_dir,
             client_session_factory=deps.client_session_factory,
         )
+
+    @property
+    def _backend(self):
+        return self._deps.backend
+
+    @property
+    def _client(self):
+        return self._deps.connection.client
+
+    @property
+    def _tmp_dir(self):
+        return self._deps.tmp_dir
+
+    @property
+    def _raw_payload(self):
+        return self._deps.raw_payload
 
     def _attachment_type_name(self, attach) -> str:
         atype = getattr(attach, "type", None)
@@ -87,7 +103,7 @@ class MaxMediaService(ExplicitMaxService):
         return sorted(
             name
             for name in names
-            if self._is_safe_field_name(name)
+            if max_payload.is_safe_field_name(name)
         )
 
     def _fix_filename_encoding(name: str) -> str:
@@ -192,12 +208,12 @@ class MaxMediaService(ExplicitMaxService):
                 sorted(
                     str(key)
                     for key in raw_payload.keys()
-                    if self._is_safe_field_name(key)
+                    if max_payload.is_safe_field_name(key)
                 )
                 if isinstance(raw_payload, dict)
                 else []
             ),
-            payload_shape=self._safe_field_paths(raw_payload) if isinstance(raw_payload, dict) else [],
+            payload_shape=self._raw_payload._safe_field_paths(raw_payload) if isinstance(raw_payload, dict) else [],
         )
         return url, False
 
@@ -258,11 +274,11 @@ class MaxMediaService(ExplicitMaxService):
                 )
                 continue
             raw_payload = data.get("payload") if isinstance(data, dict) else None
-            message, outer_chat_id = self._payload_message_dict(raw_payload or {})
+            message, outer_chat_id = self._raw_payload._payload_message_dict(raw_payload or {})
             if message is None and isinstance(raw_payload, dict):
-                message = self._find_raw_history_message_dict(raw_payload, str(msg_id))
+                message = self._raw_payload._find_raw_history_message_dict(raw_payload, str(msg_id))
             if message is not None:
-                return self._normalize_message_dict(message)
+                return self._raw_payload._normalize_message_dict(message)
             log_event(
                 logger,
                 logging.INFO,
@@ -275,7 +291,7 @@ class MaxMediaService(ExplicitMaxService):
                 max_chat_id=str(outer_chat_id or chat_id),
                 max_msg_id=msg_id,
                 candidate=f"msg_get_{index}",
-                payload_shape=self._safe_field_paths(raw_payload) if isinstance(raw_payload, dict) else [],
+                payload_shape=self._raw_payload._safe_field_paths(raw_payload) if isinstance(raw_payload, dict) else [],
             )
         return None
 
@@ -657,7 +673,7 @@ class MaxMediaService(ExplicitMaxService):
                     error=str(e),
                 )
 
-        raw_payload = await self._fetch_raw_history_payload(
+        raw_payload = await self._raw_payload._fetch_raw_history_payload(
             chat_id_int=chat_id_int,
             from_time=int(time.time() * 1000) + 60_000,
             forward=0,
@@ -665,15 +681,15 @@ class MaxMediaService(ExplicitMaxService):
             flow_id=flow_id,
         )
         if raw_payload is not None:
-            raw_message = self._find_raw_history_message_dict(raw_payload, str(msg_id))
+            raw_message = self._raw_payload._find_raw_history_message_dict(raw_payload, str(msg_id))
             if raw_message is not None:
-                normalized = self._normalize_message_dict(raw_message)
-                raw_attaches = self._payload_value(normalized, "attaches", "attachments") or []
+                normalized = self._raw_payload._normalize_message_dict(raw_message)
+                raw_attaches = self._raw_payload._payload_value(normalized, "attaches", "attachments") or []
                 attach_list = raw_attaches if isinstance(raw_attaches, list) else [raw_attaches]
                 for attach in attach_list:
                     if not isinstance(attach, dict):
                         continue
-                    attach_obj = SimpleNamespace(**self._normalize_message_dict(attach))
+                    attach_obj = SimpleNamespace(**self._raw_payload._normalize_message_dict(attach))
                     atype = self._normalize_attachment_type(
                         self._attachment_type_name(attach_obj)
                     )
@@ -710,13 +726,13 @@ class MaxMediaService(ExplicitMaxService):
             flow_id=flow_id,
         )
         if raw_message is not None:
-            normalized = self._normalize_message_dict(raw_message)
-            raw_attaches = self._payload_value(normalized, "attaches", "attachments") or []
+            normalized = self._raw_payload._normalize_message_dict(raw_message)
+            raw_attaches = self._raw_payload._payload_value(normalized, "attaches", "attachments") or []
             attach_list = raw_attaches if isinstance(raw_attaches, list) else [raw_attaches]
             for attach in attach_list:
                 if not isinstance(attach, dict):
                     continue
-                attach_obj = SimpleNamespace(**self._normalize_message_dict(attach))
+                attach_obj = SimpleNamespace(**self._raw_payload._normalize_message_dict(attach))
                 atype = self._normalize_attachment_type(
                     self._attachment_type_name(attach_obj)
                 )

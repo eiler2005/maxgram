@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import users as max_users
-from .deps import ExplicitMaxService
+from .deps import RecoveryDeps
 from ...bridge.contracts import (
     MaxRecoveryChatSnapshot,
     MaxRecoveryContactSnapshot,
@@ -18,7 +18,38 @@ from ...logging_utils import log_event, mask_phone, sanitize_path
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxRecoveryService(ExplicitMaxService):
+class MaxRecoveryService:
+    def __init__(self, deps: RecoveryDeps):
+        self._deps = deps
+
+    @property
+    def _client(self):
+        return self._deps.connection.client
+
+    @property
+    def _own_id(self):
+        return self._deps.connection.own_id
+
+    @property
+    def _phone(self):
+        return self._deps.phone
+
+    @property
+    def _data_dir(self):
+        return self._deps.data_dir
+
+    @property
+    def _session_name(self):
+        return self._deps.session_name
+
+    @property
+    def _session_store(self):
+        return self._deps.session_store
+
+    @property
+    def _resolver(self):
+        return self._deps.resolver
+
     def get_session_fingerprint_hash(self) -> Optional[str]:
         session_path = Path(self._data_dir) / self._session_name
         if not session_path.exists():
@@ -41,23 +72,23 @@ class MaxRecoveryService(ExplicitMaxService):
     def _iter_userish(self, value):
         yield from max_users.iter_userish(
             value,
-            extract_user_name=self._extract_user_name,
+            extract_user_name=self._resolver._extract_user_name,
         )
 
     async def _resolve_recovery_user_name(self, user_id: Optional[str], user_obj=None) -> Optional[str]:
-        direct_name = self._extract_user_name(user_obj)
+        direct_name = self._resolver._extract_user_name(user_obj)
         if direct_name:
             return direct_name
         if not self._client or not user_id:
             return None
         try:
             cached = self._client.get_cached_user(int(user_id))
-            cached_name = self._extract_user_name(cached)
+            cached_name = self._resolver._extract_user_name(cached)
             if cached_name:
                 return cached_name
         except Exception:
             pass
-        return await self.resolve_user_name(str(user_id))
+        return await self._resolver.resolve_user_name(str(user_id))
 
     def _normalize_recovery_chat_kind(self, chat_obj) -> str:
         return max_users.normalize_recovery_chat_kind(chat_obj)
@@ -69,7 +100,7 @@ class MaxRecoveryService(ExplicitMaxService):
         return max_users.dialog_partner_id(
             dialog_obj,
             own_id,
-            extract_user_name=self._extract_user_name,
+            extract_user_name=self._resolver._extract_user_name,
         )
 
     async def _recovery_snapshot_for_chat(self, chat_obj) -> Optional[MaxRecoveryChatSnapshot]:

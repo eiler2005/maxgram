@@ -12,13 +12,52 @@ from ...bridge.contracts import (
     MaxMessage,
     is_probable_client_cid,
 )
-from .deps import ExplicitMaxService
+from .deps import EventsDeps
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxEventsService(ExplicitMaxService):
+class MaxEventsService:
+    def __init__(self, deps: EventsDeps):
+        self._deps = deps
+
+    @property
+    def _backend(self):
+        return self._deps.backend
+
+    @property
+    def _client(self):
+        return self._deps.connection.client
+
+    @property
+    def _own_id(self):
+        return self._deps.connection.own_id
+
+    @property
+    def _handlers(self):
+        return self._deps.handlers
+
+    @property
+    def _raw_payload(self):
+        return self._deps.raw_payload
+
+    @property
+    def _media(self):
+        return self._deps.media
+
+    @property
+    def _resolver(self):
+        return self._deps.resolver
+
+    @property
+    def _runtime(self):
+        return self._deps.runtime
+
+    @property
+    def _voice_recovery(self):
+        return self._deps.voice_recovery
+
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""
         notif_message_opcode = self._backend.opcode_value("NOTIF_MESSAGE", 128)
@@ -30,35 +69,35 @@ class MaxEventsService(ExplicitMaxService):
             return
         if opcode_value != notif_message_opcode:
             if opcode_value == chat_history_opcode:
-                self._cache_raw_history_payload(data.get("payload") or {})
-            self._log_raw_auxiliary_event(data)
+                self._raw_payload._cache_raw_history_payload(data.get("payload") or {})
+            self._raw_payload._log_raw_auxiliary_event(data)
             return
 
         payload = data.get("payload") or {}
-        identity = self._raw_payload_message_identity(payload)
-        if identity and self._is_raw_processed_message(*identity):
+        identity = self._raw_payload._raw_payload_message_identity(payload)
+        if identity and self._raw_payload._is_raw_processed_message(*identity):
             return
         if identity:
-            self._mark_raw_processed_message(*identity)
+            self._raw_payload._mark_raw_processed_message(*identity)
 
-        unwrapped = self._build_unwrapped_channel_message(payload)
+        unwrapped = self._raw_payload._build_unwrapped_channel_message(payload)
         if unwrapped is None:
-            regular = self._build_raw_regular_message(payload)
+            regular = self._raw_payload._build_raw_regular_message(payload)
             if regular is None:
-                message, _outer_chat_id = self._payload_message_dict(payload)
+                message, _outer_chat_id = self._raw_payload._payload_message_dict(payload)
                 if message:
-                    if self._message_dict_has_content(message):
-                        self._log_raw_message_missing_chat_id(payload)
+                    if self._raw_payload._message_dict_has_content(message):
+                        self._raw_payload._log_raw_message_missing_chat_id(payload)
                     else:
-                        self._log_raw_empty_message(payload)
+                        self._raw_payload._log_raw_empty_message(payload)
                 else:
-                    self._log_raw_unhandled_message_payload(payload)
+                    self._raw_payload._log_raw_unhandled_message_payload(payload)
                 return
 
             chat_id = str(getattr(regular, "chat_id", "") or "")
             msg_id = str(getattr(regular, "id", "") or "")
             if chat_id and msg_id:
-                self._mark_raw_unwrapped_message(chat_id, msg_id)
+                self._raw_payload._mark_raw_unwrapped_message(chat_id, msg_id)
 
             await self._handle_raw_message(regular)
             return
@@ -66,7 +105,7 @@ class MaxEventsService(ExplicitMaxService):
         chat_id = str(getattr(unwrapped, "chat_id", "") or "")
         msg_id = str(getattr(unwrapped, "id", "") or "")
         if chat_id and msg_id:
-            self._mark_raw_unwrapped_message(chat_id, msg_id)
+            self._raw_payload._mark_raw_unwrapped_message(chat_id, msg_id)
 
         await self._handle_raw_message(unwrapped)
 
@@ -129,7 +168,7 @@ class MaxEventsService(ExplicitMaxService):
         names: list[str] = []
         unresolved = 0
         for uid in user_ids:
-            name = await self.resolve_user_name(uid)
+            name = await self._resolver.resolve_user_name(uid)
             if name:
                 names.append(name)
             else:
@@ -162,7 +201,7 @@ class MaxEventsService(ExplicitMaxService):
                 # Имя присоединившегося может прийти через sender
                 name = actor
                 if not name and sender_id:
-                    name = await self.resolve_user_name(sender_id)
+                    name = await self._resolver.resolve_user_name(sender_id)
                 if name:
                     return f"Присоединился по ссылке: {name}"
                 return "Участник присоединился по ссылке"
@@ -174,7 +213,7 @@ class MaxEventsService(ExplicitMaxService):
             if actor:
                 return f"{actor} вышел(а) из чата"
             if sender_id:
-                resolved_actor = await self.resolve_user_name(sender_id)
+                resolved_actor = await self._resolver.resolve_user_name(sender_id)
                 if resolved_actor:
                     return f"{resolved_actor} вышел(а) из чата"
             return "Участник вышел из чата"
@@ -313,7 +352,7 @@ class MaxEventsService(ExplicitMaxService):
             media_msg_id=str(media_msg_id) if media_msg_id is not None else None,
             reference_kind=reference_kind,
             reference_id=reference_id,
-            duration=self._duration_seconds(
+            duration=self._media._duration_seconds(
                 getattr(attach, "duration", None),
                 kind=self._attachment_kind_for_type(atype),
             ),
@@ -351,7 +390,7 @@ class MaxEventsService(ExplicitMaxService):
                 raw_msg_id
                 and chat_id
                 and not getattr(message, "_from_raw_unwrapped", False)
-                and self._consume_raw_unwrapped_message(chat_id, raw_msg_id)
+                and self._raw_payload._consume_raw_unwrapped_message(chat_id, raw_msg_id)
             ):
                 log_event(
                     logger,
@@ -366,7 +405,7 @@ class MaxEventsService(ExplicitMaxService):
                 )
                 return
 
-            forwarded = self._extract_forwarded_payload(message)
+            forwarded = self._raw_payload._extract_forwarded_payload(message)
             content_message = forwarded.message if forwarded else message
 
             text = (
@@ -403,7 +442,7 @@ class MaxEventsService(ExplicitMaxService):
             # Отправитель: message.sender — это int
             sender_int = getattr(message, "sender", None)
             sender_id  = str(sender_int) if sender_int is not None else None
-            reply_to_msg_id = self._extract_reply_to_msg_id(message)
+            reply_to_msg_id = self._raw_payload._extract_reply_to_msg_id(message)
             flow_id = build_max_flow_id(chat_id, msg_id or raw_msg_id)
 
             if not raw_msg_id or not chat_id:
@@ -429,15 +468,15 @@ class MaxEventsService(ExplicitMaxService):
                     reason="probable_client_cid_chat_id",
                     max_msg_id=msg_id,
                     message_type=message_type,
-                    message_fields=self._safe_attachment_field_names(message),
-                    content_fields=self._safe_attachment_field_names(content_message),
-                    **self._safe_message_structure_summary(content_message),
+                    message_fields=self._media._safe_attachment_field_names(message),
+                    content_fields=self._media._safe_attachment_field_names(content_message),
+                    **self._raw_payload._safe_message_structure_summary(content_message),
                 )
                 return
 
             is_own = bool(self._own_id and sender_id == self._own_id)
             if is_own:
-                if self._consume_expected_outbound_id(chat_id, raw_msg_id):
+                if self._runtime._consume_expected_outbound_id(chat_id, raw_msg_id):
                     log_event(
                         logger,
                         logging.DEBUG,
@@ -451,7 +490,7 @@ class MaxEventsService(ExplicitMaxService):
                         max_msg_id=raw_msg_id,
                     )
                     return
-                pending = self._claim_pending_outbound_ack(chat_id, text, reply_to_msg_id)
+                pending = self._runtime._claim_pending_outbound_ack(chat_id, text, reply_to_msg_id)
                 if pending:
                     if not pending.future.done():
                         pending.future.set_result(raw_msg_id)
@@ -491,12 +530,12 @@ class MaxEventsService(ExplicitMaxService):
             attaches = getattr(content_message, "attaches", None) or []
             attach_list = attaches if isinstance(attaches, list) else [attaches]
             raw_attachment_types = [
-                self._attachment_type_name(attach)
+                self._media._attachment_type_name(attach)
                 for attach in attach_list
                 if attach is not None
             ]
             attachment_types = [
-                self._normalize_attachment_type(atype)
+                self._media._normalize_attachment_type(atype)
                 for atype in raw_attachment_types
                 if atype
             ]
@@ -529,7 +568,7 @@ class MaxEventsService(ExplicitMaxService):
                 and recoverable_empty_type
                 and not getattr(message, "_from_empty_recovery", False)
             ):
-                self._log_typed_empty_message(
+                self._raw_payload._log_typed_empty_message(
                     flow_id=flow_id,
                     message=message,
                     content_message=content_message,
@@ -538,7 +577,7 @@ class MaxEventsService(ExplicitMaxService):
                     message_type=message_type,
                     reaction_info=reaction_info,
                 )
-                recovered = await self._recover_empty_message_from_recent_history(
+                recovered = await self._voice_recovery._recover_empty_message_from_recent_history(
                     chat_id=chat_id,
                     raw_msg_id=raw_msg_id,
                     flow_id=flow_id,
@@ -546,7 +585,7 @@ class MaxEventsService(ExplicitMaxService):
                 if recovered is not None:
                     await self._handle_raw_message(recovered)
                     return
-                if self._schedule_empty_recovery_cache_wait(
+                if self._voice_recovery._schedule_empty_recovery_cache_wait(
                     chat_id=chat_id,
                     raw_msg_id=raw_msg_id,
                     msg_id=msg_id,
@@ -571,7 +610,7 @@ class MaxEventsService(ExplicitMaxService):
                 return
 
             if text or has_raw_attachments:
-                self._forget_pending_empty_recovery(
+                self._voice_recovery._forget_pending_empty_recovery(
                     chat_id,
                     raw_msg_id,
                     flow_id=flow_id,
@@ -583,7 +622,7 @@ class MaxEventsService(ExplicitMaxService):
             # активный MAX socket на CONTACT_INFO перед CHAT_HISTORY.
             sender_name = None
             if sender_id:
-                sender_name = await self.resolve_user_name(sender_id)
+                sender_name = await self._resolver.resolve_user_name(sender_id)
 
             # own_id сохраняем в msg для фильтрации в BridgeCore
             # (не фильтруем здесь — bridge решает сам)
@@ -596,11 +635,11 @@ class MaxEventsService(ExplicitMaxService):
             for attach in attach_list:
                 if attach is None:
                     continue
-                raw_type = self._attachment_type_name(attach)
-                atype = self._normalize_attachment_type(raw_type)
+                raw_type = self._media._attachment_type_name(attach)
+                atype = self._media._normalize_attachment_type(raw_type)
                 if atype in {"PHOTO", "VIDEO", "AUDIO", "FILE"}:
-                    filename_hint = self._attachment_filename(attach)
-                    attachment = await self._download_attachment(
+                    filename_hint = self._media._attachment_filename(attach)
+                    attachment = await self._media._download_attachment(
                         media_chat_id,
                         media_msg_id,
                         attach,
@@ -649,7 +688,7 @@ class MaxEventsService(ExplicitMaxService):
                 reaction_info,
                 attachment_failures,
             ):
-                self._log_typed_empty_message(
+                self._raw_payload._log_typed_empty_message(
                     flow_id=flow_id,
                     message=message,
                     content_message=content_message,
@@ -662,7 +701,7 @@ class MaxEventsService(ExplicitMaxService):
                     not reaction_info
                     and not getattr(message, "_from_empty_recovery", False)
                 ):
-                    recovered = await self._recover_empty_message_from_recent_history(
+                    recovered = await self._voice_recovery._recover_empty_message_from_recent_history(
                         chat_id=chat_id,
                         raw_msg_id=raw_msg_id,
                         flow_id=flow_id,
@@ -689,7 +728,7 @@ class MaxEventsService(ExplicitMaxService):
             if not text and not attachments and not rendered_texts and message_type:
                 if message_type.upper() not in {"TEXT", "USER"}:
                     rendered_texts.append(
-                        self._render_unknown_message_details(
+                        self._raw_payload._render_unknown_message_details(
                             message=message,
                             content_message=content_message,
                             message_type=message_type,

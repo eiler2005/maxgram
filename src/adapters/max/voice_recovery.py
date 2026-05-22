@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import constants as max_constants
-from .deps import ExplicitMaxService
+from .deps import VoiceRecoveryDeps
 from ...bridge.contracts import (
     MAX_DM_SWEEP_BACKFILL_SECONDS,
     MaxAttachment,
@@ -20,7 +20,50 @@ from ...logging_utils import build_max_flow_id, log_event
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxVoiceRecoveryService(ExplicitMaxService):
+class MaxVoiceRecoveryService:
+    def __init__(self, deps: VoiceRecoveryDeps):
+        self._deps = deps
+
+    @property
+    def _client(self):
+        return self._deps.connection.client
+
+    @property
+    def _data_dir(self):
+        return self._deps.data_dir
+
+    @property
+    def _raw_payload(self):
+        return self._deps.raw_payload
+
+    @property
+    def _events(self):
+        return self._deps.events
+
+    @property
+    def _pending_empty_recovery_tasks(self):
+        return self._deps.empty_recovery.pending_empty_recovery_tasks
+
+    @property
+    def _pending_empty_recoveries(self):
+        return self._deps.empty_recovery.pending_empty_recoveries
+
+    @_pending_empty_recoveries.setter
+    def _pending_empty_recoveries(self, value):
+        self._deps.empty_recovery.pending_empty_recoveries = value
+
+    @property
+    def _pending_empty_recovery_worker(self):
+        return self._deps.empty_recovery.pending_empty_recovery_worker
+
+    @_pending_empty_recovery_worker.setter
+    def _pending_empty_recovery_worker(self, value):
+        self._deps.empty_recovery.pending_empty_recovery_worker = value
+
+    @property
+    def _history_sweep_diagnostic_log_until(self):
+        return self._deps.empty_recovery.history_sweep_diagnostic_log_until
+
     async def _recover_empty_message_from_recent_history(
         self,
         *,
@@ -34,9 +77,9 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
         except (TypeError, ValueError):
             return None
 
-        cached = self._get_cached_raw_history_message(chat_id, raw_msg_id_str)
+        cached = self._raw_payload._get_cached_raw_history_message(chat_id, raw_msg_id_str)
         if cached is not None:
-            recovered = self._prepare_empty_recovery_candidate(
+            recovered = self._raw_payload._prepare_empty_recovery_candidate(
                 cached,
                 chat_id=chat_id,
                 chat_id_int=chat_id_int,
@@ -50,9 +93,9 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
         if not self._client:
             return None
 
-        self._remember_expected_raw_history_message(chat_id, raw_msg_id_str)
+        self._raw_payload._remember_expected_raw_history_message(chat_id, raw_msg_id_str)
         history_from_time = int(time.time() * 1000) + 60_000
-        raw_payload = await self._fetch_raw_history_payload(
+        raw_payload = await self._raw_payload._fetch_raw_history_payload(
             chat_id_int=chat_id_int,
             from_time=history_from_time,
             forward=0,
@@ -60,9 +103,9 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
             flow_id=flow_id,
         )
         if raw_payload is not None:
-            raw_candidate = self._find_raw_history_message_dict(raw_payload, raw_msg_id_str)
+            raw_candidate = self._raw_payload._find_raw_history_message_dict(raw_payload, raw_msg_id_str)
             if raw_candidate is not None:
-                recovered = self._prepare_empty_recovery_candidate(
+                recovered = self._raw_payload._prepare_empty_recovery_candidate(
                     raw_candidate,
                     chat_id=chat_id,
                     chat_id_int=chat_id_int,
@@ -85,9 +128,9 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
             )
         except Exception as e:
             await asyncio.sleep(0.2)
-            cached = self._get_cached_raw_history_message(chat_id, raw_msg_id_str)
+            cached = self._raw_payload._get_cached_raw_history_message(chat_id, raw_msg_id_str)
             if cached is not None:
-                recovered = self._prepare_empty_recovery_candidate(
+                recovered = self._raw_payload._prepare_empty_recovery_candidate(
                     cached,
                     chat_id=chat_id,
                     chat_id_int=chat_id_int,
@@ -115,7 +158,7 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
 
         for candidate in messages or []:
             if isinstance(candidate, dict):
-                candidate_id = self._payload_value(
+                candidate_id = self._raw_payload._payload_value(
                     candidate,
                     "id",
                     "messageId",
@@ -126,7 +169,7 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
                 candidate_id = getattr(candidate, "id", None)
             if str(candidate_id) != raw_msg_id_str:
                 continue
-            return self._prepare_empty_recovery_candidate(
+            return self._raw_payload._prepare_empty_recovery_candidate(
                 candidate,
                 chat_id=chat_id,
                 chat_id_int=chat_id_int,
@@ -165,7 +208,7 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
 
     def _history_message_time_seconds(self, message) -> Optional[int]:
         value = (
-            self._payload_value(message, "time")
+            self._raw_payload._payload_value(message, "time")
             if isinstance(message, dict)
             else getattr(message, "time", None)
         )
@@ -215,10 +258,10 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
             fields.update(
                 {
                     "message_type": str(
-                        self._payload_value(message, "type", "_type") or ""
+                        self._raw_payload._payload_value(message, "type", "_type") or ""
                     ) or None,
-                    "message_fields": self._safe_field_paths(message),
-                    "raw_attachment_types": self._raw_attachment_types_from_message_dict(
+                    "message_fields": self._raw_payload._safe_field_paths(message),
+                    "raw_attachment_types": self._raw_payload._raw_attachment_types_from_message_dict(
                         message
                     ),
                 }
@@ -246,7 +289,7 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
             return 0
 
         from_time = int(time.time() * 1000) + 60_000
-        raw_payload = await self._fetch_raw_history_payload(
+        raw_payload = await self._raw_payload._fetch_raw_history_payload(
             chat_id_int=chat_id_int,
             from_time=from_time,
             forward=0,
@@ -257,9 +300,9 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
         if raw_payload is not None:
             pending_ids = self._pending_empty_recovery_ids_for_chat(str(chat_id))
             seen_pending_ids: set[str] = set()
-            raw_messages = self._raw_history_message_dicts(raw_payload)
+            raw_messages = self._raw_payload._raw_history_message_dicts(raw_payload)
             for message in raw_messages:
-                raw_history_msg_id = self._payload_value(
+                raw_history_msg_id = self._raw_payload._payload_value(
                     message,
                     "id",
                     "messageId",
@@ -272,12 +315,12 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
                 if raw_history_msg_id_str in pending_ids:
                     seen_pending_ids.add(raw_history_msg_id_str)
                 candidate_chat_id = (
-                    self._payload_value(message, "chatId", "chat_id")
+                    self._raw_payload._payload_value(message, "chatId", "chat_id")
                     or chat_id
                 )
                 if is_probable_client_cid(candidate_chat_id):
                     candidate_chat_id = chat_id
-                if not self._message_dict_has_content(message):
+                if not self._raw_payload._message_dict_has_content(message):
                     if raw_history_msg_id_str in pending_ids:
                         self._log_history_sweep_pending_diagnostic(
                             chat_id=str(chat_id),
@@ -289,7 +332,7 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
                         )
                     continue
                 candidates.append(
-                    self._message_object_from_dict(
+                    self._raw_payload._message_object_from_dict(
                         message,
                         str(candidate_chat_id),
                         prefer_raw=True,
@@ -339,9 +382,9 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
             candidate_chat_id = str(getattr(candidate, "chat_id", None) or chat_id)
             if is_probable_client_cid(candidate_chat_id):
                 setattr(candidate, "chat_id", chat_id_int)
-            if not self._message_object_has_content(candidate):
+            if not self._raw_payload._message_object_has_content(candidate):
                 continue
-            await self._handle_raw_message(candidate)
+            await self._events._handle_raw_message(candidate)
             replayed += 1
 
         if replayed:
@@ -607,7 +650,7 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
                 flow_id=flow_id,
                 reason="durable_history_recovered",
             )
-            await self._handle_raw_message(recovered)
+            await self._events._handle_raw_message(recovered)
             return
 
         delay = self._empty_recovery_retry_delay(attempts)
@@ -699,9 +742,9 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
 
         try:
             while time.monotonic() < deadline:
-                cached = self._get_cached_raw_history_message(chat_id, raw_msg_id_str)
+                cached = self._raw_payload._get_cached_raw_history_message(chat_id, raw_msg_id_str)
                 if cached is not None:
-                    recovered = self._prepare_empty_recovery_candidate(
+                    recovered = self._raw_payload._prepare_empty_recovery_candidate(
                         cached,
                         chat_id=chat_id,
                         chat_id_int=chat_id_int,
@@ -716,7 +759,7 @@ class MaxVoiceRecoveryService(ExplicitMaxService):
                             flow_id=flow_id,
                             reason="raw_history_cache_delayed_match",
                         )
-                        await self._handle_raw_message(recovered)
+                        await self._events._handle_raw_message(recovered)
                         return
 
                 await asyncio.sleep(max_constants.get("MAX_EMPTY_RECOVERY_CACHE_POLL_SECONDS"))

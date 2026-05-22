@@ -4,13 +4,72 @@ import asyncio
 import logging
 import time
 
-from .deps import ExplicitMaxService
+from .deps import LifecycleDeps
 from ...logging_utils import log_event, mask_phone, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxLifecycleService(ExplicitMaxService):
+class MaxLifecycleService:
+    def __init__(self, deps: LifecycleDeps):
+        self._deps = deps
+
+    @property
+    def _backend(self):
+        return self._deps.backend
+
+    @property
+    def _phone(self):
+        return self._deps.phone
+
+    @property
+    def _start_handlers(self):
+        return self._deps.start_handlers
+
+    @property
+    def _interactive_ping_failure_limit(self):
+        return self._deps.interactive_ping_failure_limit
+
+    @property
+    def _client(self):
+        return self._deps.connection.client
+
+    @_client.setter
+    def _client(self, value):
+        self._deps.connection.client = value
+
+    @property
+    def _started(self):
+        return self._deps.connection.started
+
+    @_started.setter
+    def _started(self, value):
+        self._deps.connection.started = value
+
+    @property
+    def _own_id(self):
+        return self._deps.connection.own_id
+
+    @_own_id.setter
+    def _own_id(self, value):
+        self._deps.connection.own_id = value
+
+    @property
+    def _last_start_error(self):
+        return self._deps.connection.last_start_error
+
+    @property
+    def _last_issue(self):
+        return self._deps.connection.last_issue
+
+    @property
+    def _last_connected_at(self):
+        return self._deps.connection.last_connected_at
+
+    @_last_connected_at.setter
+    def _last_connected_at(self, value):
+        self._deps.connection.last_connected_at = value
+
     def _build_failfast_interactive_ping(self, client, *, ping_interval: float,
                                          failure_limit: int, ping_opcode,
                                          disconnect_error):
@@ -98,9 +157,9 @@ class MaxLifecycleService(ExplicitMaxService):
     async def _make_client(self):
         """Создать свежий SocketMaxClient (без накопленного кеша)."""
         client = self._backend.create_client()
-        self._wrap_client_stage(client, "_sync")
-        self._wrap_client_stage(client, "_login")
-        client = self._install_raw_message_interceptor(client)
+        self._deps.runtime._wrap_client_stage(client, "_sync")
+        self._deps.runtime._wrap_client_stage(client, "_login")
+        client = self._deps.events._install_raw_message_interceptor(client)
         return self._install_failfast_interactive_ping(client)
 
     async def start(self):
@@ -115,15 +174,15 @@ class MaxLifecycleService(ExplicitMaxService):
         while True:
             failure_logged = False
             try:
-                self._recover_session_if_needed(first_connect=first_connect)
+                self._deps.recovery._recover_session_if_needed(first_connect=first_connect)
                 self._client = await self._make_client()
 
                 async def _on_start():
                     nonlocal first_connect
                     self._started = True
                     self._last_connected_at = int(time.time())
-                    self._clear_runtime_issue()
-                    self._backup_session_snapshot(first_connect=first_connect)
+                    self._deps.runtime._clear_runtime_issue()
+                    self._deps.recovery._backup_session_snapshot(first_connect=first_connect)
                     log_event(
                         logger,
                         logging.INFO,
@@ -154,7 +213,7 @@ class MaxLifecycleService(ExplicitMaxService):
                             error=str(e),
                         )
 
-                    self._start_pending_empty_recovery_worker()
+                    self._deps.voice_recovery._start_pending_empty_recovery_worker()
 
                     handler_stage = "startup" if first_connect else "runtime"
                     if not first_connect:
@@ -181,7 +240,7 @@ class MaxLifecycleService(ExplicitMaxService):
 
                 self._client.on_start(_on_start)
                 if hasattr(self._client, "on_raw_receive"):
-                    self._client.on_raw_receive(self._handle_raw_receive)
+                    self._client.on_raw_receive(self._deps.events._handle_raw_receive)
                     log_event(
                         logger,
                         logging.INFO,
@@ -190,9 +249,9 @@ class MaxLifecycleService(ExplicitMaxService):
                         outcome="registered",
                         raw_handler_count=len(getattr(self._client, "_on_raw_receive_handlers", []) or []),
                     )
-                self._client.on_message()(self._handle_raw_message)
-                self._client.on_message_edit()(self._handle_raw_message)
-                self._client.on_message_delete()(self._handle_raw_message)
+                self._client.on_message()(self._deps.events._handle_raw_message)
+                self._client.on_message_edit()(self._deps.events._handle_raw_message)
+                self._client.on_message_delete()(self._deps.events._handle_raw_message)
 
                 log_event(
                     logger,
@@ -220,7 +279,7 @@ class MaxLifecycleService(ExplicitMaxService):
                     failure_logged = True
             except Exception as e:
                 if self._last_start_error != (str(e).strip() or e.__class__.__name__):
-                    await self._capture_runtime_error(e)
+                    await self._deps.runtime._capture_runtime_error(e)
                 issue = self._last_issue
                 log_event(
                     logger,

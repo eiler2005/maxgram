@@ -5,12 +5,23 @@ import logging
 from typing import Optional
 
 from . import users as max_users
-from .deps import ExplicitMaxService
+from .deps import ResolveDeps
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxResolveService(ExplicitMaxService):
+class MaxResolveService:
+    def __init__(self, deps: ResolveDeps):
+        self._deps = deps
+
+    @property
+    def _client(self):
+        return self._deps.connection.client
+
+    @property
+    def _own_id(self):
+        return self._deps.connection.own_id
+
     async def resolve_user_name(self, user_id: str) -> Optional[str]:
         """Получить имя пользователя по ID (для DM чатов без названия).
         Сначала пробует кеш (не требует сокета), затем live-запрос.

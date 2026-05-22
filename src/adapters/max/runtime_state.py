@@ -6,7 +6,7 @@ import time
 from typing import Optional
 
 from . import errors as max_errors
-from .deps import ExplicitMaxService
+from .deps import RuntimeDeps
 from .types import OutboundFailureState, PendingOutboundAck
 from ...bridge.contracts import MaxIssue
 from ...logging_utils import log_event
@@ -14,7 +14,66 @@ from ...logging_utils import log_event
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxRuntimeService(ExplicitMaxService):
+class MaxRuntimeService:
+    def __init__(self, deps: RuntimeDeps):
+        self._deps = deps
+
+    @property
+    def _last_outbound_failure(self):
+        return self._deps.outbound.last_outbound_failure
+
+    @_last_outbound_failure.setter
+    def _last_outbound_failure(self, value):
+        self._deps.outbound.last_outbound_failure = value
+
+    @property
+    def _last_start_error(self):
+        return self._deps.connection.last_start_error
+
+    @_last_start_error.setter
+    def _last_start_error(self, value):
+        self._deps.connection.last_start_error = value
+
+    @property
+    def _last_issue(self):
+        return self._deps.connection.last_issue
+
+    @_last_issue.setter
+    def _last_issue(self, value):
+        self._deps.connection.last_issue = value
+
+    @property
+    def _last_issue_notification_signature(self):
+        return self._deps.connection.last_issue_notification_signature
+
+    @_last_issue_notification_signature.setter
+    def _last_issue_notification_signature(self, value):
+        self._deps.connection.last_issue_notification_signature = value
+
+    @property
+    def _last_connected_at(self):
+        return self._deps.connection.last_connected_at
+
+    @property
+    def _issue_handlers(self):
+        return self._deps.issue_handlers
+
+    @property
+    def _pending_outbound_acks(self):
+        return self._deps.outbound.pending_outbound_acks
+
+    @_pending_outbound_acks.setter
+    def _pending_outbound_acks(self, value):
+        self._deps.outbound.pending_outbound_acks = value
+
+    @property
+    def _expected_outbound_ids(self):
+        return self._deps.outbound.expected_outbound_ids
+
+    @_expected_outbound_ids.setter
+    def _expected_outbound_ids(self, value):
+        self._deps.outbound.expected_outbound_ids = value
+
     def _normalize_outbound_text(self, text: Optional[str]) -> str:
         return (text or "").strip()
 
