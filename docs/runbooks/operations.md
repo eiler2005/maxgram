@@ -183,6 +183,7 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 - `data/health_events.jsonl` — история переходов `healthy/degraded/recovering/recovered`
 - `data/alert_outbox.jsonl` — системные алерты, которые не удалось отправить в Telegram сразу
 - `data/health_heartbeat.json` — heartbeat для Docker healthcheck
+- `data/session_backups/` — ring-buffer валидных MAX `session.db` snapshots; содержит auth token, права должны оставаться `0700/0600`
 
 Быстрая диагностика:
 
@@ -199,6 +200,7 @@ jq . data/health_heartbeat.json
 - контейнер `Up` + healthcheck `healthy` + `health_state.json` с `overall_status=degraded` означает: supervisor жив, но одна из подсистем сломана
 - если `alert_outbox.jsonl` не пустой, Telegram ops-уведомления не ушли сразу и ждут автоматической досылки
 - если проблема в MAX session, `/status` и `health_state.json` должны явно показывать `requires_reauth` / подсказку про SMS reauth
+- при порче SQLite header у `data/session.db` bridge сначала пробует восстановить текущий token в clean copy; если не выходит — откатывается на свежий валидный snapshot из `data/session_backups/`
 - по умолчанию outbox относится к owner DM; forum-topic fanout участвует только если настроен `ops_topic_id`
 
 ## Сценарии отказов
@@ -209,7 +211,8 @@ jq . data/health_heartbeat.json
 |---------|----------------------------------|------------|---------------------|
 | `MAX disconnected` / краткий сетевой обрыв | MAX adapter держит reconnect-loop, supervisor не даёт контейнеру упасть, health переходит в `degraded`, после восстановления фиксируется `recovered` | owner DM, `health_state.json`, `health_events.jsonl` | Обычно нет |
 | MAX reconnect длится слишком долго | bridge остаётся `Up`, watchdog и health snapshot показывают деградацию, периодический `/status` и 4h status отражают active issue | owner DM, `/status`, `health_state.json` | Иногда да, если внешний MAX реально недоступен долго |
-| `Invalid token` / битая MAX session / нужен `reauth` | runtime не падает, проблема классифицируется как issue MAX-сессии, оператор получает подсказку про SMS reauth | owner DM, `/status`, `health_state.json`, `health_events.jsonl` | Да, нужен `/reauth` и SMS-код |
+| Битый SQLite header у `data/session.db` | перед стартом MAX-клиента runtime пробует пересобрать clean `session.db` из текущего token; при успехе сохраняет битый файл в `data/session_backups/` и продолжает старт | logs, `data/session_backups/`, затем recovered health event | Обычно нет |
+| `Invalid token` / нечитаемая MAX session без валидного snapshot / нужен `reauth` | runtime не падает, проблема классифицируется как issue MAX-сессии, оператор получает подсказку про SMS reauth | owner DM, `/status`, `health_state.json`, `health_events.jsonl` | Да, нужен `/reauth` и SMS-код |
 | Telegram Bot API временно недоступен | `TelegramAdapter` делает retry, неотправленные системные alert-сообщения кладутся в `alert_outbox.jsonl`, после восстановления Telegram идёт automatic flush | owner DM после восстановления, `alert_outbox.jsonl`, `health_state.json` | Обычно нет |
 | Падает сам bridge worker | supervisor перезапускает worker с backoff, контейнер остаётся `Up`, restart counter и причина попадают в health-state | owner DM, `health_state.json`, `health_events.jsonl` | Обычно нет, если crash разовый |
 | Падает или зависает сам supervisor | Docker healthcheck перестаёт видеть heartbeat, контейнер получает `unhealthy`, дальше помогает `restart: always` и ручная проверка compose/logs | `docker ps`, `docker inspect`, `health_heartbeat.json` | Да, это уже runtime-level авария |

@@ -24,6 +24,7 @@ from urllib.parse import parse_qs
 
 from aiohttp import ClientResponseError, ClientSession
 
+from .max_session_store import MaxSessionStore
 from ..logging_utils import (
     build_max_flow_id,
     log_event,
@@ -177,6 +178,7 @@ class MaxAdapter:
         self._phone = phone
         self._data_dir = data_dir
         self._session_name = Path(session_name).name
+        self._session_store = MaxSessionStore(data_dir, self._session_name)
         self._tmp_dir = Path(tmp_dir)
         self._client = None
         self._handlers: list[MessageHandler] = []
@@ -231,6 +233,47 @@ class MaxAdapter:
 
     def get_last_connected_at(self) -> Optional[int]:
         return self._last_connected_at
+
+    def _recover_session_if_needed(self, *, first_connect: bool):
+        outcome = self._session_store.recover_if_needed()
+        if outcome.action in {"ok", "missing", "failed"}:
+            if outcome.action == "failed":
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "max.session.recovery_unavailable",
+                    stage="startup" if first_connect else "runtime",
+                    outcome="skipped",
+                    reason=outcome.reason,
+                )
+            return outcome
+
+        log_event(
+            logger,
+            logging.INFO,
+            "max.session.recovered",
+            stage="startup" if first_connect else "runtime",
+            outcome=outcome.action,
+            reason=outcome.reason,
+            backup_path=sanitize_path(str(outcome.backup_path)) if outcome.backup_path else None,
+            source_path=sanitize_path(str(outcome.source_path)) if outcome.source_path else None,
+        )
+        return outcome
+
+    def _backup_session_snapshot(self, *, first_connect: bool):
+        outcome = self._session_store.backup_current(reason="connected")
+        if outcome.action != "backed_up":
+            return outcome
+
+        log_event(
+            logger,
+            logging.INFO,
+            "max.session.backed_up",
+            stage="startup" if first_connect else "runtime",
+            outcome="backed_up",
+            backup_path=sanitize_path(str(outcome.backup_path)) if outcome.backup_path else None,
+        )
+        return outcome
 
     def _clear_runtime_issue(self):
         self._last_start_error = None
@@ -4982,6 +5025,7 @@ class MaxAdapter:
         while True:
             failure_logged = False
             try:
+                self._recover_session_if_needed(first_connect=first_connect)
                 self._client = await self._make_client()
 
                 async def _on_start():
@@ -4989,6 +5033,7 @@ class MaxAdapter:
                     self._started = True
                     self._last_connected_at = int(time.time())
                     self._clear_runtime_issue()
+                    self._backup_session_snapshot(first_connect=first_connect)
                     log_event(
                         logger,
                         logging.INFO,
