@@ -93,7 +93,8 @@ src/
 │   │   ├── deps.py           explicit service dependency objects
 │   │   ├── lifecycle.py      start/reconnect/readiness lifecycle service
 │   │   ├── events.py         backend events -> MaxMessage normalization
-│   │   ├── raw_payload.py    raw payload hooks/history fetch service
+│   │   ├── raw_payload.py    compatibility facade for raw payload helpers
+│   │   ├── raw/              parser, raw-history cache/fetch, empty recovery candidates, telemetry
 │   │   ├── send.py           outbound send with reconnect wait/ack service
 │   │   ├── media/
 │   │   │   ├── attachments.py attachment extraction/download service

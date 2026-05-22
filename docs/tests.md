@@ -88,6 +88,8 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 |------|--------------|
 | `test_handle_raw_receive_forwards_regular_audio_before_pymax_can_drop_it` | Raw `AUDIO` voice payload из MAX DM нормализуется и скачивается по `url` до того, как pymax может отдать пустой `USER` event. |
 | `test_handle_raw_receive_forwards_top_level_audio_payload` | Raw notification, где `payload` сам является сообщением, а медиа лежит в `attachments`, нормализуется и доставляется как `AUDIO`. |
+
+Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: parser/normalizer, raw `CHAT_HISTORY` cache/fetch, empty-message candidate building and diagnostic telemetry live in `src/adapters/max/raw/*`. Tests above intentionally exercise the public `MaxAdapter` path, not those helper classes directly.
 | `test_typed_empty_message_recovers_audio_from_recent_history` | Если typed pymax message пустой, adapter пробует добрать ровно этот свежий `msg_id` из recent history и пересылает найденный `AUDIO`. |
 | `test_typed_empty_message_recovers_audio_from_raw_history_cache` | Raw `CHAT_HISTORY` с `messages[].cid/id/attaches[]` кешируется на короткое время, и последующий пустой typed `USER` восстанавливается как `AUDIO` без логирования URL/token/text. |
 | `test_typed_empty_message_uses_raw_history_after_fetch_socket_error` | Если `fetch_history` падает с `Send and wait failed (socket)`, но raw `CHAT_HISTORY` уже пришёл, adapter восстанавливает голосовое из cache вместо `empty_event`. |
