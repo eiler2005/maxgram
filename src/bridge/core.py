@@ -1676,7 +1676,7 @@ class BridgeCore:
             "  /dm Татьяна Геннадиевна Ладина Добрый день!"
         )
 
-    def _schedule_recovery_scan_after_connect(self):
+    async def _schedule_recovery_scan_after_connect(self):
         if self._recovery_scan_task is not None and not self._recovery_scan_task.done():
             return
         self._recovery_scan_task = asyncio.create_task(

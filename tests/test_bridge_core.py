@@ -1858,6 +1858,7 @@ async def test_cmd_recovery_scan_report_set_remap_and_export(tmp_path, caplog):
         max_adapter=max_adapter,
         tg_adapter=tg_adapter,
     )
+    assert asyncio.iscoroutinefunction(max_adapter.start_handlers[0])
 
     try:
         with caplog.at_level(logging.INFO, logger="src.bridge.core"):
