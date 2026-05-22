@@ -46,7 +46,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Supervisor runtime shell** — PID1 is now a supervisor that keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
 - **Resilient delivery** — Telegram API calls retry with exponential backoff; temporary TG→MAX transport failures retry automatically; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; retryable MAX video downloads are persisted until delivered; `/status` gives live health snapshot on demand
 - **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
-- **Account migration recovery registry** — hybrid MAX account snapshots preserve Telegram topic routing, invite/admin metadata, DM partner ids, and snapshot freshness for guided recovery after a phone/account loss
+- **Account migration recovery registry** — hybrid MAX account snapshots preserve Telegram topic routing, invite/admin metadata, DM partner ids, DM contact snapshots from real dialogs only, and snapshot freshness for guided recovery after a phone/account loss
 
 ---
 
@@ -75,6 +75,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Periodic 4-hour status report — automatic delivery stats sent to owner DM, with optional fanout to a dedicated forum topic
 - MAX account recovery snapshots — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, and `/recovery remap` help migrate existing Telegram topics to a new MAX phone/account without storing message contents
 - Hybrid recovery refresh: scan after successful MAX connect/reconnect, weekly safety-net scan, and event-driven scans after new topic bindings, title changes, and MAX control events; reports include `last_scan_at` freshness
+- DM contact recovery snapshot — stores only personal contacts that have real MAX DM dialogs or bound DM topics, never the full MAX address book
 - Important-only recovery notifications — automatic scans notify owner/ops only on meaningful recovery changes and include counts/statuses only, with details behind `/recovery report`
 - MAX offline watchdog — alert if MAX unreachable > 60 seconds
 - Reconnect gap warning — after recovery, owner gets a reminder about possible missed messages during downtime
@@ -113,6 +114,7 @@ Maxgram cannot clone a MAX account or restore MAX-side message history. Instead,
 - Telegram topic bindings: stable `tg_topic:<topic_id>` keys, old/current `max_chat_id`, title, mode, and recovery status
 - MAX account generations: `max_user_id`, masked phone, session fingerprint hash, active/retired/lost status, first/last seen timestamps
 - Chat access metadata: chat kind, invite link, owner/admin ids and names, DM partner id/name, participant count, manual notes
+- DM contact recovery metadata: `max_user_id`, display name, old/current DM chat id, linked Telegram topic, status, and `last_scan_at` for people with real MAX DM conversations only
 - Freshness metadata: every registry row has `last_scan_at`; `/recovery report` shows how old the latest snapshot is
 - Audit trail: scan, note, account-change, and remap events are appended without message text or raw MAX payloads
 
@@ -126,11 +128,11 @@ Owner-only commands:
 /recovery remap <topic_id> <new_max_chat_id>
 ```
 
-Normal operation runs a safe registry scan after successful MAX connect/reconnect and then once a week. It also refreshes snapshots asynchronously when important MAX-side changes are observed: new Telegram topic binding, fallback title update, or MAX `CONTROL` event. These event-driven scans are debounced in `BridgeCore`, run in background tasks, and never block message forwarding or topic creation. If an automatic scan finds new/unmapped chats, invite/admin-required states, or account migration, owner/ops gets an aggregate notification that points to `/recovery report`.
+Normal operation runs a safe registry scan after successful MAX connect/reconnect and then once a week. It also refreshes snapshots asynchronously when important MAX-side changes are observed: new Telegram topic binding, fallback title update, or MAX `CONTROL` event. These event-driven scans are debounced in `BridgeCore`, run in background tasks, and never block message forwarding or topic creation. The same scan updates DM contact recovery from `client.dialogs` only; `client.contacts` and `known_users` are not copied into the recovery contact registry. If an automatic scan finds new/unmapped chats, invite/admin-required states, account migration, or DM contact status changes, owner/ops gets an aggregate notification that points to `/recovery report`.
 
 If you lose the old MAX account, reauthorize with the new phone, run `/recovery scan`, inspect `/recovery report`, ask admins for invites where needed, and then use `/recovery remap <topic_id> <new_max_chat_id>` to keep the existing Telegram topic while routing replies to the new MAX chat.
 
-Privacy rule: the registry stores recovery metadata only. It does not store message contents, media URLs, signed tokens, or raw MAX payloads. Group-visible reports, logs, health state, and automatic notifications do not include invite links, manual notes, phone numbers, message text, or raw MAX fields. `/recovery export` may include invite links and admin notes, so it is sent only to the owner DM.
+Privacy rule: the registry stores recovery metadata only. It does not store message contents, media URLs, signed tokens, phone numbers, raw MAX payloads, or the full MAX address book. Group-visible reports, logs, health state, and automatic notifications do not include invite links, manual notes, DM contact names, phone numbers, message text, or raw MAX fields. `/recovery export` may include invite links, admin notes, and the DM contact recovery list, so it is sent only to the owner DM.
 
 Full runbook: [docs/runbooks/operations.md#max-account-recovery-registry](docs/runbooks/operations.md#max-account-recovery-registry)
 

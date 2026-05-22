@@ -127,6 +127,21 @@ CREATE TABLE IF NOT EXISTS chat_recovery_registry (
     last_scan_at        INTEGER
 );
 
+-- DM-only contact recovery registry.
+-- Source of truth: real MAX dialogs and already bound DM topics, not full address book.
+CREATE TABLE IF NOT EXISTS dm_contact_recovery_registry (
+    max_user_id        TEXT PRIMARY KEY,
+    display_name       TEXT NOT NULL,
+    old_dm_chat_id     TEXT,
+    current_dm_chat_id TEXT,
+    tg_topic_id        INTEGER,
+    source             TEXT NOT NULL DEFAULT 'dialog',
+    recovery_status    TEXT NOT NULL DEFAULT 'visible',
+    first_seen_at      INTEGER NOT NULL,
+    last_seen_at       INTEGER NOT NULL,
+    last_scan_at       INTEGER
+);
+
 -- Append-only audit по recovery registry; без текста сообщений и raw payload.
 CREATE TABLE IF NOT EXISTS chat_recovery_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,4 +166,6 @@ CREATE INDEX IF NOT EXISTS idx_pending_media_source
 CREATE INDEX IF NOT EXISTS idx_chat_recovery_status ON chat_recovery_registry(recovery_status);
 CREATE INDEX IF NOT EXISTS idx_chat_recovery_current ON chat_recovery_registry(current_max_chat_id);
 CREATE INDEX IF NOT EXISTS idx_chat_recovery_events_topic ON chat_recovery_events(tg_topic_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_dm_contact_recovery_topic ON dm_contact_recovery_registry(tg_topic_id);
+CREATE INDEX IF NOT EXISTS idx_dm_contact_recovery_status ON dm_contact_recovery_registry(recovery_status);
 """

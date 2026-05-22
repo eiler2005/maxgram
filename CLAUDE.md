@@ -46,15 +46,17 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `known_users` — справочник имён MAX для `/dm`
 - `max_account_generations` — поколения MAX account; новый телефон = новый account
 - `chat_recovery_registry` — recovery metadata для переноса Telegram topics на новый MAX account (`last_scan_at`, invite/admin/DM metadata, manual notes)
+- `dm_contact_recovery_registry` — DM-only recovery contacts из реальных `client.dialogs`/привязанных DM topics; не `client.contacts` и не весь `known_users`
 - `chat_recovery_events` — append-only audit recovery lifecycle без message text/raw payload
 
 ## Recovery registry / новый телефон
 
 - MAX phone migration трактуется как новый MAX account.
 - Bridge сохраняет Telegram continuity, но не клонирует MAX account и не возвращает закрытые чаты без invite/admin approval.
+- DM contacts для восстановления — только люди из реальных личных MAX dialogs; полная address book и group writers из `known_users` не копируются.
 - Safe recovery scan запускается после MAX connect/reconnect, раз в неделю и event-driven при `new_binding`, `title_changed`, MAX `CONTROL`.
 - Event-driven scans ставятся через `asyncio.create_task`, debounce/cooldown и не должны задерживать forwarding, topic creation или rename.
-- Auto notifications — important-only: только counts/statuses для new/unmapped/needs-invite/manual-admin/account-migration; без invite links, notes, phones, message text, titles или raw MAX fields.
+- Auto notifications — important-only: только counts/statuses для new/unmapped/needs-invite/manual-admin/account-migration/DM-contact status changes; без invite links, notes, phones, contact names, message text, titles или raw MAX fields.
 - Команды владельца: `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set <topic_id> key=value ...`, `/recovery remap <topic_id> <new_max_chat_id>`.
 - `/recovery export` уходит только owner DM и может содержать invite links/admin notes.
 - После remap reply на старое TG сообщение отправляется без `reply_to_msg_id`, если mapped MAX message принадлежит старому `max_chat_id`.

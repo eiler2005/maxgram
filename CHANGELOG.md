@@ -8,6 +8,7 @@ All notable changes to Maxgram are documented here.
 
 ### Added
 - **MAX account migration recovery registry** — new-phone/new-account recovery is now a first-class subsystem. SQLite stores MAX account generations, topic recovery registry rows, snapshot freshness (`last_scan_at`), and append-only recovery events without message text or raw MAX payloads.
+- **DM contact recovery snapshot** — recovery now stores personal contacts only from real MAX DM dialogs or already bound DM topics, with old/current DM chat ids, linked topic, status, and freshness; it does not copy the full MAX address book or `known_users`.
 - **Owner-only `/recovery` commands** — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, and `/recovery remap` support guided migration of existing Telegram topics to newly visible MAX chats.
 - **Hybrid recovery snapshots** — bridge scans recovery metadata after successful MAX connect/reconnect, weekly as a safety net, and asynchronously after important MAX-side events: new bindings, title changes, and `CONTROL` events.
 - **Important-only recovery notifications** — automatic recovery scans notify owner/ops only on meaningful changes such as new/unmapped chats, invite/admin-required states, or account migration; notifications contain aggregate counts only and point to `/recovery report`.
@@ -17,6 +18,7 @@ All notable changes to Maxgram are documented here.
 - **Telegram command access model** — `/dm` remains public only in General via an explicit allowlist; `/recovery ...` and other arg commands remain owner-only even in General.
 - **Remap-safe reply routing** — after `/recovery remap`, replies to old Telegram messages no longer send stale MAX `reply_to_msg_id` values when the mapped MAX message belongs to the old chat id.
 - **Recovery snapshot upsert deltas** — `upsert_recovery_snapshot()` now returns `inserted`, `status_changed`, `unmapped`, `needs_invite`, and `manual_admin_required`, and stores a redacted scan reason in recovery events.
+- **Recovery reports and exports** — `/recovery report` now includes aggregate DM contact counts/freshness, while owner-only export includes the full DM contact recovery list.
 - **MAX video CDN User-Agent matching** — signed MAX/OK CDN downloads now distinguish `CHROME_IPHONE` from desktop Chrome and use an iOS Chrome `User-Agent`, preventing `400 Bad Request` failures when MAX issues iPhone Chrome video URLs.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
 
@@ -28,7 +30,7 @@ All notable changes to Maxgram are documented here.
 
 ### Tests
 - Added coverage for DM title resolution order, cached contact name lookup, raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
-- Added coverage for SQLite recovery migrations/idempotency/deltas, recovery report/export/remap, MAX recovery snapshot collection, async event-driven recovery scans, important-only notification privacy/deduplication, owner-only `/recovery`, command allowlist privacy, stale reply routing after remap, and privacy of recovery reports/logs.
+- Added coverage for SQLite recovery migrations/idempotency/deltas, DM contact recovery upsert/export/privacy, recovery report/export/remap, MAX recovery snapshot collection, async event-driven recovery scans, important-only notification privacy/deduplication, owner-only `/recovery`, command allowlist privacy, stale reply routing after remap, and privacy of recovery reports/logs.
 
 ---
 

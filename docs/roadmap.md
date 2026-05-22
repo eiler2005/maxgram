@@ -114,9 +114,10 @@
 
 - [x] **Account generations** — `max_account_generations` хранит `max_user_id`, masked phone, session fingerprint hash, статус `active|retired|lost`, first/last seen
 - [x] **Chat recovery registry** — `chat_recovery_registry` хранит stable key `tg_topic:<topic_id>`, old/current `max_chat_id`, chat kind, mode, access, invite link, owner/admin contacts, DM partner metadata, participant count, manual note, recovery status
+- [x] **DM contact recovery registry** — `dm_contact_recovery_registry` хранит личных собеседников только из реальных MAX dialogs/DM topics, не всю address book и не group writers из `known_users`
 - [x] **Snapshot freshness** — у каждой registry row есть `last_scan_at`; `/recovery report` показывает возраст последнего snapshot
 - [x] **Append-only recovery events** — scan/set/remap/account-change пишутся в `chat_recovery_events`, без message text/raw payload
-- [x] **MAX snapshot collector** — `MaxAdapter.collect_recovery_snapshot()` собирает `client.chats`, `client.channels`, `client.dialogs`, enrich через `get_chat()`
+- [x] **MAX snapshot collector** — `MaxAdapter.collect_recovery_snapshot()` собирает `client.chats`, `client.channels`, `client.dialogs`, enrich через `get_chat()`, плюс DM contact snapshot из dialogs only
 - [x] **Owner-only recovery commands** — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, `/recovery remap`
 - [x] **Hybrid snapshot triggers** — safe scan после MAX connect/reconnect, weekly safety-net и event-driven scans на `new_binding`, `title_changed`, MAX `CONTROL`
 - [x] **Async debounced scheduler** — event-driven scans выполняются background task'ом, схлопывают повторные события и не задерживают forwarding/topic creation

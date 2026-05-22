@@ -187,11 +187,23 @@ class MaxRecoveryChatSnapshot:
 
 
 @dataclass
+class MaxRecoveryContactSnapshot:
+    max_user_id: str
+    display_name: str
+    old_dm_chat_id: Optional[str] = None
+    current_dm_chat_id: Optional[str] = None
+    tg_topic_id: Optional[int] = None
+    source: str = "dialog"
+    recovery_status: str = "visible"
+
+
+@dataclass
 class MaxRecoverySnapshot:
     max_user_id: Optional[str]
     masked_phone: Optional[str]
     session_fingerprint_hash: Optional[str]
     chats: list[MaxRecoveryChatSnapshot] = field(default_factory=list)
+    contacts: list[MaxRecoveryContactSnapshot] = field(default_factory=list)
 
 
 MessageHandler = Callable[[MaxMessage], Awaitable[None]]
@@ -350,6 +362,13 @@ class MaxAdapter:
                 return value.strip()
         return fallback
 
+    def _dialog_partner_id(self, dialog_obj, own_id: Optional[str]) -> Optional[str]:
+        for participant in self._iter_userish(getattr(dialog_obj, "participants", None)):
+            candidate = self._extract_user_id(participant)
+            if candidate and candidate != own_id:
+                return candidate
+        return None
+
     async def _recovery_snapshot_for_chat(self, chat_obj) -> Optional[MaxRecoveryChatSnapshot]:
         chat_id = getattr(chat_obj, "id", None)
         if chat_id is None:
@@ -413,12 +432,7 @@ class MaxAdapter:
         if chat_id is None:
             return None
         chat_id_str = str(chat_id)
-        partner_id = None
-        for participant in self._iter_userish(getattr(dialog_obj, "participants", None)):
-            candidate = self._extract_user_id(participant)
-            if candidate and candidate != own_id:
-                partner_id = candidate
-                break
+        partner_id = self._dialog_partner_id(dialog_obj, own_id)
         partner_name = await self._resolve_recovery_user_name(partner_id)
         title = self._chat_title(dialog_obj, partner_name or f"DM {partner_id or chat_id_str}")
         return MaxRecoveryChatSnapshot(
@@ -428,6 +442,26 @@ class MaxAdapter:
             dm_partner_user_id=partner_id,
             dm_partner_name=partner_name,
             participant_count=2 if partner_id else None,
+        )
+
+    async def _recovery_contact_snapshot_for_dialog(
+        self,
+        dialog_obj,
+        own_id: Optional[str],
+    ) -> Optional[MaxRecoveryContactSnapshot]:
+        chat_id = getattr(dialog_obj, "id", None)
+        partner_id = self._dialog_partner_id(dialog_obj, own_id)
+        if chat_id is None or not partner_id:
+            return None
+        partner_name = await self._resolve_recovery_user_name(partner_id)
+        display_name = self._chat_title(dialog_obj, partner_name or f"DM {partner_id}")
+        return MaxRecoveryContactSnapshot(
+            max_user_id=partner_id,
+            display_name=display_name,
+            old_dm_chat_id=str(chat_id),
+            current_dm_chat_id=str(chat_id),
+            source="dialog",
+            recovery_status="visible",
         )
 
     async def collect_recovery_snapshot(self) -> MaxRecoverySnapshot:
@@ -459,11 +493,16 @@ class MaxAdapter:
                 snapshot.chats.append(item)
                 seen.add(item.max_chat_id)
 
+        seen_contacts: set[str] = set()
         for dialog_obj in getattr(self._client, "dialogs", None) or []:
             item = await self._recovery_snapshot_for_dialog(dialog_obj, own_id)
             if item and item.max_chat_id not in seen:
                 snapshot.chats.append(item)
                 seen.add(item.max_chat_id)
+            contact = await self._recovery_contact_snapshot_for_dialog(dialog_obj, own_id)
+            if contact and contact.max_user_id not in seen_contacts:
+                snapshot.contacts.append(contact)
+                seen_contacts.add(contact.max_user_id)
 
         return snapshot
 

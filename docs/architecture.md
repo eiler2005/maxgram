@@ -112,7 +112,7 @@ Telegram Update (reply в топике форум-группы)
 - Парсингом входящих сообщений → `MaxMessage` dataclass
 - Скачиванием медиавложений в `data/tmp/`
 - Отправкой сообщений с retry при reconnect
-- `collect_recovery_snapshot()` — сбор meta-only recovery snapshot из `client.chats`, `client.channels`, `client.dialogs` + `get_chat()`: chat kind, invite link, owner/admin, DM partner, participant count, session fingerprint hash
+- `collect_recovery_snapshot()` — сбор meta-only recovery snapshot из `client.chats`, `client.channels`, `client.dialogs` + `get_chat()`: chat kind, invite link, owner/admin, DM partner, participant count, session fingerprint hash, DM contact snapshot из реальных dialogs only
 - `get_dm_partner_id(chat_id)` — поиск реального собеседника в DM через `client.dialogs`, фильтруя собственный `own_id`
 - `find_user_by_name(name)` — поиск user_id по имени в `contacts`, `dialogs` и `_users` кеше pymax
 
@@ -159,7 +159,7 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 - Персистирование отправителей входящих сообщений в `known_users`
 - Команды: `/status`, `/chats`, `/help`, `/dm Имя текст`, `/recovery scan|report|export|set|remap`
 - Health-aware `/status`, periodic status и watchdog: все они читают один и тот же persisted health snapshot
-- Recovery registry: scan после MAX connect/reconnect, weekly snapshot, event-driven snapshots, freshness `last_scan_at`, owner-only export и ручной remap topic → new MAX chat
+- Recovery registry: scan после MAX connect/reconnect, weekly snapshot, event-driven snapshots, freshness `last_scan_at`, owner-only export, DM contact recovery из реальных dialogs и ручной remap topic → new MAX chat
 
 **`/dm` — инициация нового DM в MAX из Telegram:**
 Алгоритм longest-prefix matching (до 4 слов для имени, минимум 1 слово сообщение).
@@ -167,8 +167,8 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 
 **`/recovery` — миграция MAX аккаунта / нового телефона:**
 - `/recovery scan` обновляет registry из текущего MAX аккаунта
-- `/recovery report` показывает totals и свежесть snapshot
-- `/recovery export` отправляет owner DM JSON с invite/admin/manual metadata
+- `/recovery report` показывает totals, DM contact aggregates и свежесть snapshot
+- `/recovery export` отправляет owner DM JSON с invite/admin/manual metadata и DM contact recovery list
 - `/recovery set <topic_id> key=value ...` сохраняет ручные notes/link/admin/status
 - `/recovery remap <topic_id> <new_max_chat_id>` сохраняет Telegram topic и меняет routing на новый MAX chat
 
@@ -179,9 +179,9 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 - `max_connect` и `weekly` остаются safety net: scan после успешного connect/reconnect и weekly background scan.
 - `manual` (`/recovery scan`) выполняется сразу и возвращает видимый оператору результат со свежестью.
 
-Планировщик в `BridgeCore` использует `asyncio.create_task`: message forwarding, topic creation и rename не ждут snapshot. Несколько событий схлопываются в один scan task; snapshot errors логируются безопасно, без raw payload и без invite links.
+Планировщик в `BridgeCore` использует `asyncio.create_task`: message forwarding, topic creation и rename не ждут snapshot. Несколько событий схлопываются в один scan task; snapshot errors логируются безопасно, без raw payload и без invite links. Этот же scan обновляет `dm_contact_recovery_registry` из `MaxRecoverySnapshot.contacts`; источником являются только `client.dialogs` и уже привязанные DM topics, не `client.contacts` и не `known_users`.
 
-Important-only уведомления отправляются owner/ops только если auto scan нашёл meaningful change: новые registry rows, unmapped MAX chats, `needs_invite`, `manual_admin_required` или `account_migration_required`. Текст уведомления содержит только counts/statuses и подсказку открыть `/recovery report`; invite links, manual notes, phone numbers, message text, titles и raw MAX fields не попадают в notification/log/health.
+Important-only уведомления отправляются owner/ops только если auto scan нашёл meaningful change: новые registry rows, unmapped MAX chats, `needs_invite`, `manual_admin_required`, `account_migration_required` или изменение статуса DM contacts. Текст уведомления содержит только counts/statuses и подсказку открыть `/recovery report`; invite links, manual notes, phone numbers, message text, titles, DM contact names и raw MAX fields не попадают в notification/log/health.
 
 ### Repository (`src/db/repository.py`)
 
@@ -376,6 +376,21 @@ chat_recovery_registry (
     last_scan_at             INTEGER
 )
 
+-- DM-only контакты для восстановления после нового телефона.
+-- Источник: реальные client.dialogs и уже привязанные DM topics, не полная address book.
+dm_contact_recovery_registry (
+    max_user_id              TEXT PK,
+    display_name             TEXT,
+    old_dm_chat_id           TEXT,
+    current_dm_chat_id       TEXT,
+    tg_topic_id              INTEGER,
+    source                   TEXT, -- dialog | dm_topic
+    recovery_status          TEXT, -- visible | needs_contact | needs_remap | account_migration_required | remapped
+    first_seen_at            INTEGER,
+    last_seen_at             INTEGER,
+    last_scan_at             INTEGER
+)
+
 -- Append-only audit по recovery lifecycle; details_json без текста сообщений/raw payload
 chat_recovery_events (
     registry_key             TEXT,
@@ -411,6 +426,7 @@ config.local.yaml           ← НЕ в git (локальные chat bindings / 
 | delivery_log | Да | 7 дней |
 | chat_bindings | Да | Бессрочно |
 | recovery registry | Да | Бессрочно, в `data/bridge.db` |
+| DM contact recovery registry | Да, только реальные DM dialogs | Бессрочно, в `data/bridge.db` |
 | recovery export JSON | Временно | удаляется после отправки owner DM |
 
 Фоновая очистка запускается каждые 30 минут (`Bridge.run_cleanup()`).

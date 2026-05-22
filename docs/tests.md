@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 ```
 
-Всего: **156 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **158 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -20,7 +20,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_repository.py — работа с SQLite (12 тестов)
+## test_repository.py — работа с SQLite (13 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -32,6 +32,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_find_user_returns_none_when_not_found` | Возвращает `None` для имени, которого нет в таблице. |
 | `test_recovery_registry_snapshot_report_and_export_are_idempotent` | Проверяет `max_account_generations`, migration detection, idempotent recovery snapshot upsert, сохранение invite/admin metadata, `last_scan_at`, report и JSON export. |
 | `test_recovery_remap_preserves_topic_and_updates_binding` | `/recovery remap` сохраняет Telegram topic, меняет `chat_bindings.max_chat_id`, фиксирует `old_max_chat_id/current_max_chat_id` и статус `remapped`. |
+| `test_dm_contact_recovery_snapshot_upsert_export_and_privacy` | Проверяет создание `dm_contact_recovery_registry`, idempotent upsert, обновление `last_scan_at`, агрегаты report, owner-only export и отсутствие phone/message/raw payload в событиях/export. |
 | `test_recovery_snapshot_reports_status_change_deltas` | `upsert_recovery_snapshot()` возвращает deltas `inserted/status_changed/needs_invite` и пишет scan reason без чувствительных полей. |
 
 ---
@@ -109,7 +110,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 |------|--------------|
 | `test_resolve_user_name_uses_contacts_cache_before_live_lookup` | Имя пользователя берётся из локального `contacts` cache без live `CONTACT_INFO`. |
 | `test_resolve_user_name_live_lookup_has_short_timeout` | Live lookup имени имеет короткий timeout и не блокирует routing надолго при socket timeout. |
-| `test_collect_recovery_snapshot_captures_access_metadata_without_messages` | `MaxAdapter.collect_recovery_snapshot()` собирает group/channel/DM metadata: chat kind, invite link, owner/admin contacts, DM partner, participant count, masked phone и session fingerprint hash без message text/raw payload. |
+| `test_collect_recovery_snapshot_captures_access_metadata_without_messages` | `MaxAdapter.collect_recovery_snapshot()` собирает group/channel/DM metadata и DM contact snapshot только из `client.dialogs`: chat kind, invite link, owner/admin contacts, DM partner, participant count, masked phone и session fingerprint hash без message text/raw payload; `client.contacts` без dialog не попадает в snapshot. |
 
 ### Устойчивость reconnect и video CDN
 
@@ -132,7 +133,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (43 теста)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (44 теста)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -191,9 +192,10 @@ PYTHONPATH=. .venv/bin/pytest -q
 | Тест | Что проверяет |
 |------|--------------|
 | `test_cmd_recovery_scan_report_set_remap_and_export` | Owner-only recovery flow: scan, report со свежестью snapshot, отсутствие invite link в report/logs, ручной `set`, `remap`, owner-DM export и обновление binding. |
-| `test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding` | Новый `ChatBinding` ставит recovery scan в background task; Telegram topic/message создаются сразу и не ждут snapshot. |
+| `test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding` | Новый `ChatBinding` ставит recovery scan в background task; Telegram topic/message создаются сразу и не ждут snapshot, а auto scan обновляет DM contact registry асинхронно. |
 | `test_control_events_debounce_into_one_recovery_scan` | Повторные MAX `CONTROL` события схлопываются в один recovery scan. |
 | `test_recovery_auto_notification_is_important_only_redacted_and_deduped` | Important-only notification отправляет только агрегаты, не раскрывает invite/title/phone/raw payload и дедупится в памяти. |
+| `test_recovery_scan_updates_dm_contact_registry_and_report` | `/recovery scan` обновляет chat registry и DM contact registry вместе; `/recovery report` показывает только агрегаты DM contacts, а owner-only export содержит контактный snapshot. |
 
 ### Персистирование пользователей
 
@@ -268,7 +270,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 - `run_max_watchdog` покрыт базовым reconnect-сценарием, но full production-поведение также проверяется вручную
 - `run_weekly_recovery_snapshot` как бесконечный scheduler-loop проверяется через командный scan/repo tests и вручную в production
 - Реальные сетевые вызовы (MAX WebSocket, Telegram Bot API)
-- Полный live MAX recovery snapshot зависит от реального `pymax` cache/API; unit tests покрывают fake chat/dialog/channel objects
+- Полный live MAX recovery snapshot зависит от реального `pymax` cache/API; unit tests покрывают fake chat/dialog/channel objects и DM contacts из `client.dialogs`
 
 Смоук-проверка по реальной БД:
 ```bash

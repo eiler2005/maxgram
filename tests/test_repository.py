@@ -197,6 +197,72 @@ async def test_recovery_remap_preserves_topic_and_updates_binding(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_dm_contact_recovery_snapshot_upsert_export_and_privacy(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        async with repo._db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dm_contact_recovery_registry'"
+        ) as cur:
+            table = await cur.fetchone()
+        assert table["name"] == "dm_contact_recovery_registry"
+
+        contact = {
+            "max_user_id": "300",
+            "display_name": "DM Partner",
+            "old_dm_chat_id": "300",
+            "current_dm_chat_id": "300",
+            "tg_topic_id": 77,
+            "source": "dialog",
+            "recovery_status": "visible",
+            "phone": "+79990000000",
+            "message_text": "secret",
+            "raw_payload": {"token": "raw"},
+        }
+        first = await repo.upsert_dm_contact_recovery_snapshot([contact], reason="unit_test")
+        again = await repo.upsert_dm_contact_recovery_snapshot([contact], reason="unit_test")
+
+        assert first == {"scanned": 1, "inserted": 1, "status_changed": 0}
+        assert again == {"scanned": 1, "inserted": 0, "status_changed": 0}
+
+        entries = await repo.list_dm_contact_recovery_entries()
+        assert len(entries) == 1
+        assert entries[0].max_user_id == "300"
+        assert entries[0].display_name == "DM Partner"
+        assert entries[0].last_scan_at is not None
+
+        report = await repo.get_recovery_report()
+        assert report["stats"]["dm_contacts"] == 1
+        assert report["stats"]["dm_contacts_linked"] == 1
+        assert report["stats"]["dm_contacts_needs_remap"] == 0
+        assert report["stats"]["dm_contacts_last_scan_at"] is not None
+
+        export = await repo.export_recovery_registry()
+        assert export["dm_contacts"][0]["max_user_id"] == "300"
+        assert export["dm_contacts"][0]["display_name"] == "DM Partner"
+        serialized = json.dumps(export, ensure_ascii=False)
+        assert "+79990000000" not in serialized
+        assert "secret" not in serialized
+        assert "raw" not in serialized
+
+        async with repo._db.execute(
+            "SELECT details_json FROM chat_recovery_events WHERE event_type = 'dm_contact_scan' ORDER BY id ASC LIMIT 1"
+        ) as cur:
+            event = await cur.fetchone()
+        assert "DM Partner" not in event["details_json"]
+        details = json.loads(event["details_json"])
+        assert details == {
+            "has_tg_topic": True,
+            "reason": "unit_test",
+            "source": "dialog",
+            "status": "visible",
+        }
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
 async def test_recovery_snapshot_reports_status_change_deltas(tmp_path):
     repo = Repository(str(tmp_path / "bridge.db"))
     await repo.connect()

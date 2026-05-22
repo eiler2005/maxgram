@@ -1828,6 +1828,59 @@ class BridgeCore:
             "recovery_status": status,
         }
 
+    def _recovery_contact_as_dict(self, contact) -> dict[str, object]:
+        if hasattr(contact, "__dataclass_fields__"):
+            return asdict(contact)
+        return dict(getattr(contact, "__dict__", {}))
+
+    def _status_for_missing_dm_contact(self, *, migration_required: bool) -> str:
+        return "account_migration_required" if migration_required else "needs_contact"
+
+    def _recovery_snapshot_entry_from_contact(
+        self,
+        contact,
+        *,
+        binding: Optional[ChatBinding],
+        existing=None,
+    ) -> dict[str, object]:
+        data = self._recovery_contact_as_dict(contact)
+        max_user_id = str(data.get("max_user_id") or "").strip()
+        current_dm_chat_id = data.get("current_dm_chat_id") or data.get("old_dm_chat_id")
+        current_dm_chat_id = str(current_dm_chat_id) if current_dm_chat_id is not None else None
+        old_dm_chat_id = getattr(existing, "old_dm_chat_id", None) if existing else data.get("old_dm_chat_id")
+        tg_topic_id = binding.tg_topic_id if binding else data.get("tg_topic_id")
+        if tg_topic_id is None and existing is not None:
+            tg_topic_id = getattr(existing, "tg_topic_id", None)
+
+        recovery_status = str(data.get("recovery_status") or "visible")
+        existing_current = getattr(existing, "current_dm_chat_id", None) if existing else None
+        if existing_current and current_dm_chat_id and existing_current != current_dm_chat_id and tg_topic_id is not None:
+            recovery_status = "needs_remap"
+            old_dm_chat_id = old_dm_chat_id or existing_current
+
+        return {
+            "max_user_id": max_user_id,
+            "display_name": data.get("display_name") or max_user_id,
+            "old_dm_chat_id": old_dm_chat_id or current_dm_chat_id,
+            "current_dm_chat_id": current_dm_chat_id,
+            "tg_topic_id": tg_topic_id,
+            "source": data.get("source") or "dialog",
+            "recovery_status": recovery_status,
+        }
+
+    def _missing_dm_contact_entry(self, existing, *, migration_required: bool) -> dict[str, object]:
+        return {
+            "max_user_id": existing.max_user_id,
+            "display_name": existing.display_name,
+            "old_dm_chat_id": existing.old_dm_chat_id or existing.current_dm_chat_id,
+            "current_dm_chat_id": existing.current_dm_chat_id,
+            "tg_topic_id": existing.tg_topic_id,
+            "source": existing.source,
+            "recovery_status": self._status_for_missing_dm_contact(
+                migration_required=migration_required,
+            ),
+        }
+
     async def _safe_recovery_scan(self, *, reason: str = "manual", notify: bool = False) -> dict[str, object]:
         collect = getattr(self._max, "collect_recovery_snapshot", None)
         if not callable(collect):
@@ -1855,6 +1908,7 @@ class BridgeCore:
 
             entries: list[dict[str, object]] = []
             bindings = await self._repo.list_bindings()
+            bindings_by_chat = {str(binding.max_chat_id): binding for binding in bindings}
             for binding in bindings:
                 chat = snapshot_by_chat.get(str(binding.max_chat_id))
                 existing = existing_by_topic.get(binding.tg_topic_id)
@@ -1899,12 +1953,51 @@ class BridgeCore:
                     )
                 )
 
+            existing_contacts_by_user = {
+                entry.max_user_id: entry
+                for entry in await self._repo.list_dm_contact_recovery_entries()
+            }
+            contact_entries: list[dict[str, object]] = []
+            seen_contact_ids: set[str] = set()
+            for contact in getattr(snapshot, "contacts", []) or []:
+                data = self._recovery_contact_as_dict(contact)
+                max_user_id = str(data.get("max_user_id") or "").strip()
+                if not max_user_id:
+                    continue
+                current_dm_chat_id = data.get("current_dm_chat_id") or data.get("old_dm_chat_id")
+                binding = bindings_by_chat.get(str(current_dm_chat_id)) if current_dm_chat_id else None
+                existing = existing_contacts_by_user.get(max_user_id)
+                contact_entries.append(
+                    self._recovery_snapshot_entry_from_contact(
+                        contact,
+                        binding=binding,
+                        existing=existing,
+                    )
+                )
+                seen_contact_ids.add(max_user_id)
+            for max_user_id, existing in existing_contacts_by_user.items():
+                if max_user_id in seen_contact_ids:
+                    continue
+                contact_entries.append(
+                    self._missing_dm_contact_entry(
+                        existing,
+                        migration_required=migration_required,
+                    )
+                )
+
             result = await self._repo.upsert_recovery_snapshot(entries, reason=reason)
+            contact_result = await self._repo.upsert_dm_contact_recovery_snapshot(
+                contact_entries,
+                reason=reason,
+            )
             result = {
                 **result,
                 "topics": len(bindings),
                 "visible": len(matched_chat_ids),
                 "migration_required": migration_required,
+                "dm_contacts_scanned": contact_result.get("scanned", 0),
+                "dm_contacts_inserted": contact_result.get("inserted", 0),
+                "dm_contacts_status_changed": contact_result.get("status_changed", 0),
             }
             log_event(
                 logger,
@@ -1919,6 +2012,9 @@ class BridgeCore:
                 unmapped=result.get("unmapped", 0),
                 needs_invite=result.get("needs_invite", 0),
                 manual_admin_required=result.get("manual_admin_required", 0),
+                dm_contacts_scanned=result.get("dm_contacts_scanned", 0),
+                dm_contacts_inserted=result.get("dm_contacts_inserted", 0),
+                dm_contacts_status_changed=result.get("dm_contacts_status_changed", 0),
                 topics=len(bindings),
                 visible=len(matched_chat_ids),
                 migration_required=migration_required,
@@ -1929,6 +2025,8 @@ class BridgeCore:
 
     def _recovery_changes_are_important(self, result: dict[str, object]) -> bool:
         if bool(result.get("migration_required")):
+            return True
+        if int(result.get("dm_contacts_status_changed") or 0) > 0:
             return True
         for key in ("inserted", "unmapped", "needs_invite", "manual_admin_required"):
             if int(result.get(key) or 0) > 0:
@@ -1941,6 +2039,7 @@ class BridgeCore:
             "unmapped": int(result.get("unmapped") or 0),
             "needs_invite": int(result.get("needs_invite") or 0),
             "manual_admin_required": int(result.get("manual_admin_required") or 0),
+            "dm_contacts_status_changed": int(result.get("dm_contacts_status_changed") or 0),
             "migration_required": bool(result.get("migration_required")),
         }
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -1973,6 +2072,7 @@ class BridgeCore:
             f"unmapped: {int(result.get('unmapped') or 0)}",
             f"needs invite: {int(result.get('needs_invite') or 0)}",
             f"admin/manual: {int(result.get('manual_admin_required') or 0)}",
+            f"DM contacts changed: {int(result.get('dm_contacts_status_changed') or 0)}",
         ]
         if result.get("migration_required"):
             parts.append("account migration: required")
@@ -2041,6 +2141,8 @@ class BridgeCore:
             "manual_admin_required": "нужен админ",
             "account_migration_required": "нужен перенос",
             "needs_invite": "нужен invite",
+            "needs_contact": "нужен контакт",
+            "needs_remap": "нужен remap",
             "unmapped": "виден, не привязан",
             "lost": "потерян",
         }
@@ -2057,6 +2159,11 @@ class BridgeCore:
             (
                 f"Готово: {stats['restored']} · по ссылке: {stats['joinable_by_link']} · "
                 f"нужен invite: {stats['needs_invite']} · админ/manual: {stats['manual_admin_required']}"
+            ),
+            (
+                f"DM contacts: {stats['dm_contacts']} · linked topics: {stats['dm_contacts_linked']} · "
+                f"needs contact/remap: {stats['dm_contacts_needs_remap']} · "
+                f"свежесть: {self._format_recovery_freshness(stats.get('dm_contacts_last_scan_at'))}"
             ),
         ]
 
@@ -2166,6 +2273,7 @@ class BridgeCore:
             return (
                 "✅ Recovery snapshot обновлён\n"
                 f"Скан: {result.get('scanned', 0)} записей · visible topics: {result.get('visible', 0)}"
+                f" · DM contacts: {result.get('dm_contacts_scanned', 0)}"
                 + ("\n⚠️ Обнаружен новый MAX account: нужен migration flow" if result.get("migration_required") else "")
                 + f"\nСвежесть: {freshness}"
             )

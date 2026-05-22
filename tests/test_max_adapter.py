@@ -69,6 +69,7 @@ class RecoveryClient:
             )
         ]
         self.dialogs = [SimpleNamespace(id=300, participants={100: None, 300: None})]
+        self.contacts = [SimpleNamespace(id=999, names=[SimpleNamespace(name="Address Book Only")])]
         self._enriched = {
             -1: SimpleNamespace(
                 id=-1,
@@ -201,6 +202,13 @@ async def test_collect_recovery_snapshot_captures_access_metadata_without_messag
     assert by_id["300"].chat_kind == "dm"
     assert by_id["300"].dm_partner_user_id == "300"
     assert by_id["300"].dm_partner_name == "DM Partner"
+    by_user = {contact.max_user_id: contact for contact in snapshot.contacts}
+    assert list(by_user) == ["300"]
+    assert by_user["300"].display_name == "DM Partner"
+    assert by_user["300"].current_dm_chat_id == "300"
+    assert by_user["300"].source == "dialog"
+    assert "100" not in by_user
+    assert "999" not in by_user
 
 
 @pytest.mark.asyncio

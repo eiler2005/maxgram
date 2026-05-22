@@ -10,6 +10,7 @@ from src.adapters.max_adapter import (
     MaxAttachmentFailure,
     MaxMessage,
     MaxRecoveryChatSnapshot,
+    MaxRecoveryContactSnapshot,
     MaxRecoverySnapshot,
 )
 from src.bridge.core import BridgeCore
@@ -1904,6 +1905,14 @@ async def test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding(
                 chat_kind="group",
             ),
         ],
+        contacts=[
+            MaxRecoveryContactSnapshot(
+                max_user_id="300",
+                display_name="DM Partner",
+                old_dm_chat_id="300",
+                current_dm_chat_id="300",
+            ),
+        ],
     )
     max_adapter = DummyRecoveryMax(snapshot, snapshot_delay=0.05)
     tg_adapter = DummyTelegram()
@@ -1938,6 +1947,7 @@ async def test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding(
         assert max_adapter.snapshot_calls == 1
         report = await repo.get_recovery_report()
         assert report["stats"]["total"] == 1
+        assert report["stats"]["dm_contacts"] == 1
     finally:
         task = bridge._recovery_event_scan_task
         if task is not None and not task.done():
@@ -2044,6 +2054,65 @@ async def test_recovery_auto_notification_is_important_only_redacted_and_deduped
         assert secret_link not in logged
         assert "Secret Client Room" not in logged
         assert "raw payload" not in logged
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_updates_dm_contact_registry_and_report(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    await repo.save_binding(ChatBinding("300", 77, "DM Partner", "active", 1))
+    snapshot = MaxRecoverySnapshot(
+        max_user_id="100",
+        masked_phone="+7******1234",
+        session_fingerprint_hash="hash",
+        chats=[
+            MaxRecoveryChatSnapshot(
+                max_chat_id="300",
+                title="DM Partner",
+                chat_kind="dm",
+                dm_partner_user_id="300",
+                dm_partner_name="DM Partner",
+            ),
+        ],
+        contacts=[
+            MaxRecoveryContactSnapshot(
+                max_user_id="300",
+                display_name="DM Partner",
+                old_dm_chat_id="300",
+                current_dm_chat_id="300",
+            ),
+        ],
+    )
+    bridge = make_bridge(
+        repo=repo,
+        max_adapter=DummyRecoveryMax(snapshot),
+        tg_adapter=DummyTelegram(),
+    )
+
+    try:
+        scan = await bridge._cmd_recovery("scan")
+        report = await bridge._cmd_recovery("report")
+        export = await repo.export_recovery_registry()
+
+        assert "DM contacts: 1" in scan
+        assert "DM contacts: 1 · linked topics: 1 · needs contact/remap: 0" in report
+        assert "DM Partner" not in report
+        assert export["dm_contacts"] == [
+            {
+                "max_user_id": "300",
+                "display_name": "DM Partner",
+                "old_dm_chat_id": "300",
+                "current_dm_chat_id": "300",
+                "tg_topic_id": 77,
+                "source": "dialog",
+                "recovery_status": "visible",
+                "first_seen_at": export["dm_contacts"][0]["first_seen_at"],
+                "last_seen_at": export["dm_contacts"][0]["last_seen_at"],
+                "last_scan_at": export["dm_contacts"][0]["last_scan_at"],
+            }
+        ]
     finally:
         await repo.close()
 

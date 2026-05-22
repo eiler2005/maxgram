@@ -91,6 +91,20 @@ class ChatRecoveryEntry:
 
 
 @dataclass
+class DmContactRecoveryEntry:
+    max_user_id: str
+    display_name: str
+    old_dm_chat_id: Optional[str]
+    current_dm_chat_id: Optional[str]
+    tg_topic_id: Optional[int]
+    source: str
+    recovery_status: str
+    first_seen_at: int
+    last_seen_at: int
+    last_scan_at: Optional[int]
+
+
+@dataclass
 class PendingMediaDownload:
     max_chat_id: str
     max_msg_id: str
@@ -371,6 +385,9 @@ class Repository:
     def _recovery_entry_from_row(self, row) -> ChatRecoveryEntry:
         return ChatRecoveryEntry(**dict(row))
 
+    def _dm_contact_entry_from_row(self, row) -> DmContactRecoveryEntry:
+        return DmContactRecoveryEntry(**dict(row))
+
     async def _log_recovery_event(
         self,
         *,
@@ -525,6 +542,104 @@ class Repository:
             rows = await cur.fetchall()
         return [self._recovery_entry_from_row(row) for row in rows]
 
+    async def upsert_dm_contact_recovery_snapshot(
+        self,
+        contacts: list[dict[str, object]],
+        *,
+        reason: str = "scan",
+    ) -> dict[str, int]:
+        now = int(time.time())
+        scanned = 0
+        inserted = 0
+        status_changed = 0
+        for contact in contacts:
+            max_user_id = str(contact.get("max_user_id") or "").strip()
+            if not max_user_id:
+                continue
+            display_name = str(contact.get("display_name") or max_user_id).strip() or max_user_id
+            recovery_status = str(contact.get("recovery_status") or "visible")
+            tg_topic_id = contact.get("tg_topic_id")
+            if tg_topic_id is not None:
+                tg_topic_id = int(tg_topic_id)
+
+            async with self._db.execute(
+                "SELECT recovery_status FROM dm_contact_recovery_registry WHERE max_user_id = ?",
+                (max_user_id,),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing is None:
+                inserted += 1
+            elif existing["recovery_status"] != recovery_status:
+                status_changed += 1
+
+            await self._db.execute(
+                """INSERT INTO dm_contact_recovery_registry
+                   (max_user_id, display_name, old_dm_chat_id, current_dm_chat_id,
+                    tg_topic_id, source, recovery_status, first_seen_at, last_seen_at,
+                    last_scan_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(max_user_id) DO UPDATE SET
+                     display_name = excluded.display_name,
+                     old_dm_chat_id = COALESCE(
+                       dm_contact_recovery_registry.old_dm_chat_id,
+                       dm_contact_recovery_registry.current_dm_chat_id,
+                       excluded.old_dm_chat_id,
+                       excluded.current_dm_chat_id
+                     ),
+                     current_dm_chat_id = COALESCE(
+                       excluded.current_dm_chat_id,
+                       dm_contact_recovery_registry.current_dm_chat_id
+                     ),
+                     tg_topic_id = COALESCE(
+                       excluded.tg_topic_id,
+                       dm_contact_recovery_registry.tg_topic_id
+                     ),
+                     source = excluded.source,
+                     recovery_status = excluded.recovery_status,
+                     last_seen_at = excluded.last_seen_at,
+                     last_scan_at = excluded.last_scan_at""",
+                (
+                    max_user_id,
+                    display_name,
+                    contact.get("old_dm_chat_id"),
+                    contact.get("current_dm_chat_id"),
+                    tg_topic_id,
+                    str(contact.get("source") or "dialog"),
+                    recovery_status,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            await self._log_recovery_event(
+                registry_key=f"dm_contact:{max_user_id}",
+                tg_topic_id=tg_topic_id,
+                event_type="dm_contact_scan",
+                details={
+                    "reason": reason,
+                    "source": str(contact.get("source") or "dialog"),
+                    "status": recovery_status,
+                    "has_tg_topic": tg_topic_id is not None,
+                },
+                commit=False,
+            )
+            scanned += 1
+
+        await self._db.commit()
+        return {
+            "scanned": scanned,
+            "inserted": inserted,
+            "status_changed": status_changed,
+        }
+
+    async def list_dm_contact_recovery_entries(self) -> list[DmContactRecoveryEntry]:
+        async with self._db.execute(
+            """SELECT * FROM dm_contact_recovery_registry
+               ORDER BY COALESCE(tg_topic_id, 999999999), display_name COLLATE NOCASE"""
+        ) as cur:
+            rows = await cur.fetchall()
+        return [self._dm_contact_entry_from_row(row) for row in rows]
+
     async def get_recovery_entry_by_topic(self, tg_topic_id: int) -> Optional[ChatRecoveryEntry]:
         async with self._db.execute(
             "SELECT * FROM chat_recovery_registry WHERE tg_topic_id = ?",
@@ -587,6 +702,15 @@ class Repository:
                WHERE registry_key = ?""",
             (f"max_chat:{new_max_chat_id}",),
         )
+        await self._db.execute(
+            """UPDATE dm_contact_recovery_registry
+               SET old_dm_chat_id = COALESCE(old_dm_chat_id, current_dm_chat_id),
+                   current_dm_chat_id = ?,
+                   recovery_status = 'remapped',
+                   last_seen_at = ?
+               WHERE tg_topic_id = ?""",
+            (new_max_chat_id, int(time.time()), tg_topic_id),
+        )
         await self._log_recovery_event(
             registry_key=f"tg_topic:{tg_topic_id}",
             tg_topic_id=tg_topic_id,
@@ -602,6 +726,12 @@ class Repository:
 
     async def get_recovery_report(self) -> dict[str, object]:
         entries = await self.list_recovery_entries()
+        dm_contacts = await self.list_dm_contact_recovery_entries()
+        chat_last_scan_at = max((entry.last_scan_at or 0 for entry in entries), default=0) or None
+        dm_contacts_last_scan_at = max(
+            (entry.last_scan_at or 0 for entry in dm_contacts),
+            default=0,
+        ) or None
         stats = {
             "total": len(entries),
             "topics": sum(1 for entry in entries if entry.tg_topic_id is not None),
@@ -610,7 +740,25 @@ class Repository:
             "joinable_by_link": 0,
             "manual_admin_required": 0,
             "unmapped": 0,
-            "last_scan_at": max((entry.last_scan_at or 0 for entry in entries), default=0) or None,
+            "last_scan_at": max(
+                timestamp or 0
+                for timestamp in (chat_last_scan_at, dm_contacts_last_scan_at)
+            ) or None,
+            "dm_contacts": len(dm_contacts),
+            "dm_contacts_linked": sum(
+                1 for entry in dm_contacts if entry.tg_topic_id is not None
+            ),
+            "dm_contacts_needs_remap": sum(
+                1
+                for entry in dm_contacts
+                if entry.recovery_status in {
+                    "needs_contact",
+                    "needs_remap",
+                    "account_migration_required",
+                }
+                or not entry.current_dm_chat_id
+            ),
+            "dm_contacts_last_scan_at": dm_contacts_last_scan_at,
         }
         for entry in entries:
             status = entry.recovery_status
@@ -625,7 +773,7 @@ class Repository:
                 stats["manual_admin_required"] += 1
             if status in {"needs_invite", "account_migration_required"}:
                 stats["needs_invite"] += 1
-        return {"stats": stats, "entries": entries}
+        return {"stats": stats, "entries": entries, "dm_contacts": dm_contacts}
 
     async def export_recovery_registry(self) -> dict[str, object]:
         async with self._db.execute(
@@ -649,6 +797,10 @@ class Repository:
             "exported_at": int(time.time()),
             "accounts": accounts,
             "entries": entries,
+            "dm_contacts": [
+                dict(entry.__dict__)
+                for entry in await self.list_dm_contact_recovery_entries()
+            ],
             "events": events,
         }
 
