@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from src.adapters.max import errors as max_errors
 from src.adapters.max import payload as max_payload
 from src.adapters.max import users as max_users
@@ -7,6 +9,9 @@ from src.adapters.max.adapter import MaxAdapter
 from src.adapters.max.client_factory import create_socket_client
 from src.adapters.max.media import downloader as max_downloader
 from src.adapters.max.media import ua as max_ua
+
+
+pytestmark = pytest.mark.architecture
 
 
 def test_max_ua_mapping_selects_chrome_android_profile():

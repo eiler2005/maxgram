@@ -1,8 +1,11 @@
 import ast
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.architecture
 
 
 def _import_targets(relative_path: str) -> set[str]:

@@ -5,6 +5,8 @@
 ```bash
 pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
+PYTHONPATH=. .venv/bin/pytest -q -m "not architecture"  # business/functional regression only
+PYTHONPATH=. .venv/bin/pytest -q -m architecture        # service-boundary/refactor guards
 PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/ruff check .
 .venv/bin/ruff check src/bridge --select E9,F63,F7,F82,F401,F841,B,C4,SIM,RET
@@ -15,6 +17,8 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 Всего: **177 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
+
+Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`). Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
 
 ---
 
