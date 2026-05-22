@@ -286,20 +286,23 @@ src.adapters.max_adapter compatibility alias
         │    resolve.py         user/chat title and DM partner lookup
         │    voice_recovery.py  empty voice/raw history recovery
         │
+        ├─ ports.py             internal typed MAX client ports + DTO
         ├─ deps.py              RuntimeDeps/SendDeps/EventsDeps/...
         ├─ state.py             connection/outbound/raw-history/empty-recovery
         └─ MaxBackend
-              └─► PymaxBackend  only pymax imports, SocketMaxClient, payloads/files
+              └─► PymaxBackend/PymaxClientAdapter
+                    only pymax imports, SocketMaxClient, payloads/files/client shape
 ```
 
-- `backends/base.py` — internal `MaxBackend` protocol: create client, make attachments/messages, opcodes, history/media payloads.
-- `backends/pymax/` — `PymaxBackend`; единственное место с `pymax` imports и `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`.
+- `ports.py` — internal role-based `MaxClientPort` and DTO (`MaxClientMessage`, attachments, users, chats, dialogs, send/interceptor results). Operation services depend on these views instead of the concrete client object shape.
+- `backends/base.py` — internal `MaxBackend` protocol: create a typed MAX client port; legacy helper methods remain for compatibility only.
+- `backends/pymax/` — `PymaxBackend` + `PymaxClientAdapter`; единственное место с `pymax` imports, `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`, private pymax calls, pymax payload/file construction and conversion into our DTO.
 - `state.py` — явный mutable state по доменам: connection, outbound, raw history, empty recovery.
 - `deps.py` — explicit dependency objects for operation services; старый service registry / dynamic `__getattr__` и общий base service не используются.
-- `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Каждый сервис владеет собственным typed deps object, не наследуется от god base class, не импортирует `pymax` и не принимает полный `MaxAdapter`; pymax-specific objects приходят через backend.
+- `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Каждый сервис владеет собственным typed deps object, не наследуется от god base class, не импортирует `pymax`, не принимает полный `MaxAdapter` и не обращается к pymax-private/client-shape methods directly.
 - `media/downloader.py`, `media/ua.py`, `payload.py`, `users.py`, `errors.py` — pymax-free helper leaves.
 
-Pymax imports are allowed only inside `src/adapters/max/backends/pymax/*`. Replacing `pymax` later means implementing another `MaxBackend`, not changing `BridgeCore`.
+Pymax imports and knowledge of pymax client shape are allowed only inside `src/adapters/max/backends/pymax/*`. Replacing `pymax` later means implementing another `MaxBackend`/client port adapter, not changing `BridgeCore` or MAX operation services.
 
 The adapter facade manages:
 - Соединением и аутентификацией (сессия в `data/session.db`)
@@ -307,9 +310,9 @@ The adapter facade manages:
 - Парсингом входящих сообщений → `MaxMessage` dataclass из `src.bridge.contracts`
 - Скачиванием медиавложений в `data/tmp/`
 - Отправкой сообщений с retry при reconnect
-- `collect_recovery_snapshot()` — сбор meta-only recovery snapshot из `client.chats`, `client.channels`, `client.dialogs` + `get_chat()`: chat kind, invite link, owner/admin, DM partner, participant count, session fingerprint hash, DM contact snapshot из реальных dialogs only
-- `get_dm_partner_id(chat_id)` — поиск реального собеседника в DM через `client.dialogs`, фильтруя собственный `own_id`
-- `find_user_by_name(name)` — поиск user_id по имени в `contacts`, `dialogs` и `_users` кеше pymax
+- `collect_recovery_snapshot()` — сбор meta-only recovery snapshot из typed chat/channel/dialog views + live chat lookup: chat kind, invite link, owner/admin, DM partner, participant count, session fingerprint hash, DM contact snapshot из реальных dialogs only
+- `get_dm_partner_id(chat_id)` — поиск реального собеседника в DM через typed dialog views, фильтруя собственный `own_id`
+- `find_user_by_name(name)` — поиск user_id по имени в typed contacts/dialog/user-cache snapshots
 
 Используемая библиотека:
 - GitHub: `https://github.com/MaxApiTeam/PyMax`

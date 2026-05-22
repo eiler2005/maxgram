@@ -8,4 +8,4 @@ def create_socket_client(*, phone: str, data_dir: str, session_name: str):
         phone=phone,
         data_dir=data_dir,
         session_name=session_name,
-    ).create_client()
+    ).create_raw_client()

@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 from pymax import SocketMaxClient
 from pymax.exceptions import SocketNotConnectedError
-from pymax.files import File, Photo, Video
-from pymax.payloads import FetchHistoryPayload, GetVideoPayload
 from pymax.static.constant import DEFAULT_PING_INTERVAL
 from pymax.static.enum import Opcode
 from pymax.types import Message
+
+from .client_adapter import PymaxClientAdapter
 
 
 class PymaxBackend:
@@ -17,7 +17,7 @@ class PymaxBackend:
         self._data_dir = data_dir
         self._session_name = session_name
 
-    def create_client(self):
+    def create_raw_client(self):
         return SocketMaxClient(
             phone=self._phone,
             work_dir=self._data_dir,
@@ -25,6 +25,9 @@ class PymaxBackend:
             reconnect=False,
             send_fake_telemetry=False,
         )
+
+    def create_client(self):
+        return PymaxClientAdapter(self.create_raw_client())
 
     def failfast_ping_config(self) -> dict[str, object]:
         return {
@@ -34,12 +37,18 @@ class PymaxBackend:
         }
 
     def make_file_attachment(self, path: str):
+        from pymax.files import File
+
         return File(path=path)
 
     def make_photo_attachment(self, path: str):
+        from pymax.files import Photo
+
         return Photo(path=path)
 
     def make_video_attachment(self, path: str):
+        from pymax.files import Video
+
         return Video(path=path)
 
     def make_message_from_dict(self, payload: dict):
@@ -72,6 +81,8 @@ class PymaxBackend:
         forward: int,
         backward: int,
     ) -> dict:
+        from pymax.payloads import FetchHistoryPayload
+
         return FetchHistoryPayload(
             chat_id=chat_id,
             from_time=from_time,
@@ -80,6 +91,8 @@ class PymaxBackend:
         ).model_dump(by_alias=True)
 
     def get_video_payload(self, *, chat_id: int, message_id: int, video_id: int) -> dict:
+        from pymax.payloads import GetVideoPayload
+
         return GetVideoPayload(
             chat_id=chat_id,
             message_id=message_id,

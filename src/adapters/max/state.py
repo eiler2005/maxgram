@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 from aiohttp import ClientSession
 
 from .context import MaxAdapterContext
+from .ports import MaxClientPort
 from .types import OutboundFailureState, PendingOutboundAck
 from ..max_session_store import MaxSessionStore
 from ...bridge.contracts import IssueHandler, MaxIssue, MessageHandler
@@ -15,7 +16,7 @@ from ...bridge.contracts import IssueHandler, MaxIssue, MessageHandler
 
 @dataclass
 class ConnectionState:
-    client: object | None = None
+    client: MaxClientPort | None = None
     started: bool = False
     own_id: Optional[str] = None
     last_start_error: Optional[str] = None

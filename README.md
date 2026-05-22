@@ -39,7 +39,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 ## Engineering Highlights
 
 - **Unofficial WebSocket API** — reverse-engineered `pymax` userbot with a custom reconnect loop that fixes an OOM bug in the upstream library (`reconnect=False` + outer `while True`)
-- **Explicit adapter/backend boundary** — `BridgeCore` depends on transport-neutral contracts; `MaxAdapter` is a facade over operation services with explicit deps and `pymax` is isolated to `src/adapters/max/backends/pymax/`, with regression tests guarding the boundary
+- **Explicit adapter/backend boundary** — `BridgeCore` depends on transport-neutral contracts; MAX operation services depend on typed client ports/DTO, and `pymax` imports plus pymax client shape are isolated to `src/adapters/max/backends/pymax/`, with regression tests guarding the boundary
 - **Idempotent message deduplication** — `max_msg_id` is written to SQLite *before* forwarding to Telegram, making the system safe to restart at any point without duplicates
 - **Privacy-first design** — no message text or media is ever stored; SQLite only holds routing metadata (chat bindings, message ID map, delivery log)
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
@@ -95,8 +95,9 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 MAX WebSocket
   └─► MaxAdapter facade
         ├─► operation services: lifecycle/events/send/media/recovery/resolve
-        ├─► explicit deps + state slices
-        └─► MaxBackend ──► PymaxBackend (only pymax imports)
+        ├─► typed MAX client ports + explicit deps/state slices
+        └─► MaxBackend ──► PymaxBackend/PymaxClientAdapter
+              (only pymax imports and pymax client shape)
               │
               ▼
 Bridge Core (contracts) ──► TG Adapter (aiogram) ──► Telegram Topics

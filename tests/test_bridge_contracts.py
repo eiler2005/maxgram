@@ -126,6 +126,52 @@ def test_max_services_do_not_use_god_base_forwarders():
     assert offenders == []
 
 
+def test_max_operation_services_do_not_use_pymax_client_shape_directly():
+    service_paths = [
+        "src/adapters/max/lifecycle.py",
+        "src/adapters/max/events.py",
+        "src/adapters/max/send.py",
+        "src/adapters/max/resolve.py",
+        "src/adapters/max/recovery.py",
+        "src/adapters/max/media/attachments.py",
+        "src/adapters/max/raw/history.py",
+        "src/adapters/max/voice_recovery.py",
+    ]
+    forbidden_attrs = {
+        "_send_and_wait",
+        "_handle_message_notifications",
+        "fetch_history",
+        "get_file_by_id",
+        "contacts",
+        "dialogs",
+        "chats",
+        "channels",
+        "_users",
+        "me",
+        "get_cached_user",
+        "get_users",
+        "get_chat",
+        "send_message",
+        "on_start",
+        "on_raw_receive",
+        "on_message",
+        "on_message_edit",
+        "on_message_delete",
+    }
+    offenders = []
+    for relative in service_paths:
+        content = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+        tree = ast.parse(content)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Attribute) or node.attr not in forbidden_attrs:
+                continue
+            owner = ast.unparse(node.value)
+            if "_client" in owner or owner == "client":
+                offenders.append(f"{relative}: .{node.attr}")
+
+    assert offenders == []
+
+
 def test_bridge_core_keeps_heavy_leaf_logic_outside_coordinator():
     source = (PROJECT_ROOT / "src/bridge/core.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

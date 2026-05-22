@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Optional
 
 from .. import payload as max_payload
+from ..ports import MaxClientAttachment, MaxClientMessage
 from ..types import ForwardedPayload
 from ....bridge.contracts import is_probable_client_cid
 from .inspection import AttachmentInspector
 
 
 class RawPayloadParser:
-    def __init__(self, *, backend, attachments: AttachmentInspector):
-        self._backend = backend
+    def __init__(self, *, attachments: AttachmentInspector):
         self._attachments = attachments
 
     def _extract_reply_to_msg_id(self, message) -> Optional[str]:
@@ -493,18 +492,13 @@ class RawPayloadParser:
             ),
             "message": self._normalize_message_dict(message),
         }
-        if not prefer_raw:
-            try:
-                return self._backend.make_message_from_dict(payload)
-            except Exception:
-                pass
         normalized_message = payload["message"]
         attaches = [
-            SimpleNamespace(**self._normalize_message_dict(attach))
+            MaxClientAttachment.from_object(self._normalize_message_dict(attach))
             for attach in (normalized_message.get("attaches") or [])
             if isinstance(attach, dict)
         ]
-        return SimpleNamespace(
+        return MaxClientMessage(
             id=normalized_message.get("id"),
             chat_id=chat_id,
             sender=normalized_message.get("sender"),
@@ -588,7 +582,7 @@ class RawPayloadParser:
             str(source_chat_id) if source_chat_id else None,
         )
 
-        return SimpleNamespace(
+        return MaxClientMessage(
             id=outer_msg_id,
             chat_id=outer_chat_id or source_chat_id,
             sender=(

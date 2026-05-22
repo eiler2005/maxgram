@@ -86,10 +86,16 @@ class MaxLifecycleService:
         async def _send_interactive_ping() -> None:
             consecutive_failures = 0
 
-            while getattr(client, "is_connected", False):
+            while client.is_connected:
                 try:
-                    await client._send_and_wait(
-                        opcode=ping_opcode,
+                    ping_opcode_value = getattr(ping_opcode, "value", ping_opcode)
+                    try:
+                        default_ping_opcode = int(ping_opcode_value)
+                    except (TypeError, ValueError):
+                        default_ping_opcode = None
+                    await client.raw_request(
+                        opcode_name="PING",
+                        default_opcode=default_ping_opcode,
                         payload={"interactive": True},
                         cmd=0,
                     )
@@ -140,13 +146,13 @@ class MaxLifecycleService:
         if not config:
             return client
 
-        client._send_interactive_ping = self._build_failfast_interactive_ping(
+        client.install_interactive_ping(self._build_failfast_interactive_ping(
             client,
             ping_interval=float(config["ping_interval"]),
             failure_limit=self._interactive_ping_failure_limit,
             ping_opcode=config["ping_opcode"],
             disconnect_error=config["disconnect_error"],
-        )
+        ))
         logger.debug(
             "Installed fail-fast interactive ping loop failure_limit=%s interval=%ss",
             self._interactive_ping_failure_limit,
@@ -155,10 +161,9 @@ class MaxLifecycleService:
         return client
 
     async def _make_client(self):
-        """Создать свежий SocketMaxClient (без накопленного кеша)."""
+        """Создать свежий MAX client port (без накопленного кеша)."""
         client = self._backend.create_client()
-        self._deps.runtime._wrap_client_stage(client, "_sync")
-        self._deps.runtime._wrap_client_stage(client, "_login")
+        client.prepare_startup(self._deps.runtime._capture_runtime_error)
         client = self._deps.events._install_raw_message_interceptor(client)
         return self._install_failfast_interactive_ping(client)
 
@@ -192,9 +197,9 @@ class MaxLifecycleService:
                     )
                     # Получаем ID собственного аккаунта для фильтрации эхо
                     try:
-                        me = self._client.me
-                        if me:
-                            self._own_id = str(getattr(me, "id", None) or "")
+                        own_id = self._client.own_user_id() if self._client else None
+                        if own_id:
+                            self._own_id = own_id
                         else:
                             log_event(
                                 logger,
@@ -238,20 +243,22 @@ class MaxLifecycleService:
                                 error=str(e),
                             )
 
-                self._client.on_start(_on_start)
-                if hasattr(self._client, "on_raw_receive"):
-                    self._client.on_raw_receive(self._deps.events._handle_raw_receive)
+                self._client.register_start_handler(_on_start)
+                raw_handler_count = self._client.register_raw_receive_handler(
+                    self._deps.events._handle_raw_receive
+                )
+                if raw_handler_count is not None:
                     log_event(
                         logger,
                         logging.INFO,
                         "max.raw.handler_registered",
                         stage="startup" if first_connect else "runtime",
                         outcome="registered",
-                        raw_handler_count=len(getattr(self._client, "_on_raw_receive_handlers", []) or []),
+                        raw_handler_count=raw_handler_count,
                     )
-                self._client.on_message()(self._deps.events._handle_raw_message)
-                self._client.on_message_edit()(self._deps.events._handle_raw_message)
-                self._client.on_message_delete()(self._deps.events._handle_raw_message)
+                self._client.register_message_handler(self._deps.events._handle_raw_message)
+                self._client.register_message_edit_handler(self._deps.events._handle_raw_message)
+                self._client.register_message_delete_handler(self._deps.events._handle_raw_message)
 
                 log_event(
                     logger,

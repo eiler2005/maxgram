@@ -16,6 +16,14 @@ from src.adapters.max_adapter import (
     MaxAttachment,
     MaxAdapter as RealMaxAdapter,
 )
+from src.adapters.max.ports import (
+    MaxChatView,
+    MaxClientMessage,
+    MaxDialogView,
+    MaxRawInterceptorResult,
+    MaxSendResult,
+    MaxUserView,
+)
 
 
 def make_user(first_name: str, last_name: str = ""):
@@ -43,8 +51,179 @@ class LookupClient:
     async def get_users(self, user_ids: list[int]):
         return [self._users[uid] for uid in user_ids if uid in self._users]
 
+    def cached_user(self, user_id: int):
+        return MaxUserView.from_object(self.get_cached_user(user_id))
 
-class RecoveryClient:
+    async def load_users(self, user_ids: list[int]):
+        return [
+            item
+            for user in await self.get_users(user_ids)
+            if (item := MaxUserView.from_object(user))
+        ]
+
+    def contacts_snapshot(self):
+        return [
+            item
+            for contact in self.contacts
+            if (item := MaxUserView.from_object(contact))
+        ]
+
+    def users_cache_snapshot(self):
+        return {
+            key: item
+            for key, user in self._users.items()
+            if (item := MaxUserView.from_object(user))
+        }
+
+    def dialogs_snapshot(self):
+        return [
+            item
+            for dialog in getattr(self, "dialogs", [])
+            if (item := MaxDialogView.from_object(dialog))
+        ]
+
+    def group_chats_snapshot(self):
+        return [
+            item
+            for chat in self.chats
+            if (item := MaxChatView.from_object(chat))
+        ]
+
+    def channels_snapshot(self):
+        return [
+            item
+            for channel in getattr(self, "channels", [])
+            if (item := MaxChatView.from_object(channel))
+        ]
+
+    async def chat(self, chat_id: int):
+        get_chat = getattr(self, "get_chat", None)
+        if get_chat is None:
+            return None
+        return MaxChatView.from_object(await get_chat(chat_id))
+
+    def own_user_id(self):
+        value = getattr(getattr(self, "me", None), "id", None)
+        return str(value) if value is not None else None
+
+    def dialog_last_message(self, chat_id: int):
+        for dialog in self.dialogs_snapshot():
+            if getattr(dialog, "id", None) == chat_id:
+                return dialog.last_message
+        return None
+
+    async def send_outbound_message(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        reply_to: int | None = None,
+        media_path: str | None = None,
+        media_type: str | None = None,
+    ):
+        kwargs = {"chat_id": chat_id, "text": text}
+        if reply_to is not None:
+            kwargs["reply_to"] = reply_to
+        if media_path:
+            kwargs["attachment"] = SimpleNamespace(path=media_path, media_type=media_type)
+        result = await self.send_message(**kwargs)
+        return MaxSendResult(message_id=self._extract_result_msg_id(result), raw=result)
+
+    async def raw_request(
+        self,
+        *,
+        opcode_name: str,
+        payload: dict,
+        default_opcode: int | None = None,
+        timeout=None,
+        cmd=None,
+    ):
+        send = getattr(self, "_send_and_wait", None)
+        if send is None:
+            return None
+        opcode = SimpleNamespace(name=opcode_name, value=default_opcode)
+        kwargs = {"opcode": opcode, "payload": payload}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if cmd is not None:
+            kwargs["cmd"] = cmd
+        return await send(**kwargs)
+
+    async def file_url(self, *, chat_id: int, message_id: int, file_id: int):
+        get_file = getattr(self, "get_file_by_id", None)
+        if get_file is None:
+            return None
+        file_obj = await get_file(chat_id=chat_id, message_id=message_id, file_id=file_id)
+        return getattr(file_obj, "url", None)
+
+    async def video_payload(self, *, chat_id: int, message_id: int, video_id: int):
+        data = await self.raw_request(
+            opcode_name="VIDEO_PLAY",
+            payload={"chatId": chat_id, "messageId": message_id, "videoId": video_id},
+        )
+        payload = data.get("payload") if isinstance(data, dict) else None
+        return payload if isinstance(payload, dict) else None
+
+    async def raw_history_payload(self, *, chat_id: int, from_time: int, forward: int, backward: int):
+        data = await self.raw_request(
+            opcode_name="CHAT_HISTORY",
+            default_opcode=49,
+            payload={
+                "chatId": chat_id,
+                "from": from_time,
+                "forward": forward,
+                "backward": backward,
+            },
+            timeout=10,
+        )
+        payload = data.get("payload") if isinstance(data, dict) else None
+        return payload if isinstance(payload, dict) else None
+
+    async def history_messages(self, *, chat_id: int, from_time: int, forward: int, backward: int):
+        fetch = getattr(self, "fetch_history", None)
+        if fetch is None:
+            return []
+        return [
+            MaxClientMessage.from_object(message)
+            for message in await fetch(chat_id, from_time=from_time, forward=forward, backward=backward)
+        ]
+
+    def install_raw_message_interceptor(self, handler):
+        if getattr(self, "_maxtg_raw_interceptor_installed", False):
+            return MaxRawInterceptorResult(
+                installed=True,
+                raw_handler_count=len(getattr(self, "_on_raw_receive_handlers", []) or []),
+            )
+        original = getattr(self, "_handle_message_notifications", None)
+        if original is None:
+            return MaxRawInterceptorResult(
+                installed=False,
+                reason="client_has_no_message_notification_handler",
+            )
+
+        async def wrapped(data):
+            await handler(data)
+            return await original(data)
+
+        self._handle_message_notifications = wrapped
+        self._maxtg_raw_interceptor_installed = True
+        return MaxRawInterceptorResult(
+            installed=True,
+            raw_handler_count=len(getattr(self, "_on_raw_receive_handlers", []) or []),
+        )
+
+    def _extract_result_msg_id(self, result):
+        direct_id = getattr(result, "id", None) or getattr(result, "message_id", None)
+        if direct_id is not None:
+            return str(direct_id)
+        if isinstance(result, dict):
+            for key in ("id", "messageId", "message_id"):
+                if result.get(key) is not None:
+                    return str(result[key])
+        return None
+
+
+class RecoveryClient(LookupClient):
     def __init__(self):
         self.me = SimpleNamespace(id=100)
         self._users = {
@@ -1478,24 +1657,23 @@ async def test_download_audio_reference_uses_dialog_last_message_url(tmp_path):
     )
     local_path = str(tmp_path / "tmp" / "voice.ogg")
     adapter.url_result = (local_path, "voice.ogg")
-    adapter._client = SimpleNamespace(
-        dialogs=[
-            SimpleNamespace(
-                id=200056208,
-                last_message=SimpleNamespace(
-                    id=116605799957888782,
-                    attaches=[
-                        SimpleNamespace(
-                            type="AUDIO",
-                            audio_id=92,
-                            url="https://audio.example.test/dialog.ogg",
-                            duration=9,
-                        )
-                    ],
-                ),
-            )
-        ]
-    )
+    adapter._client = LookupClient()
+    adapter._client.dialogs = [
+        SimpleNamespace(
+            id=200056208,
+            last_message=SimpleNamespace(
+                id=116605799957888782,
+                attaches=[
+                    SimpleNamespace(
+                        type="AUDIO",
+                        audio_id=92,
+                        url="https://audio.example.test/dialog.ogg",
+                        duration=9,
+                    )
+                ],
+            ),
+        )
+    ]
 
     attachment = await adapter.download_audio_reference(
         chat_id="200056208",
@@ -2937,6 +3115,9 @@ class PingClient:
         self.close_calls += 1
         self.is_connected = False
 
+    async def raw_request(self, **kwargs):
+        return await self._send_and_wait(**kwargs)
+
 
 class StartClient:
     def __init__(self):
@@ -2948,20 +3129,44 @@ class StartClient:
     async def _login(self):
         return None
 
-    def on_start(self, handler):
+    def prepare_startup(self, error_handler):
+        for attr_name in ("_sync", "_login"):
+            original = getattr(self, attr_name)
+
+            async def wrapped(*args, __original=original, **kwargs):
+                try:
+                    return await __original(*args, **kwargs)
+                except Exception as exc:
+                    await error_handler(exc)
+                    raise
+
+            wrapped._maxtg_wrapped = True
+            setattr(self, attr_name, wrapped)
+
+    def install_raw_message_interceptor(self, _handler):
+        return MaxRawInterceptorResult(installed=False, reason="client_has_no_message_notification_handler")
+
+    def install_interactive_ping(self, ping_loop):
+        self.ping_loop = ping_loop
+
+    def register_start_handler(self, handler):
         self.start_handler = handler
 
-    def on_raw_receive(self, handler):
+    def register_raw_receive_handler(self, handler):
         self.raw_handlers.append(handler)
+        return len(self.raw_handlers)
 
-    def on_message(self):
-        return lambda handler: handler
+    def register_message_handler(self, handler):
+        self.message_handler = handler
 
-    def on_message_edit(self):
-        return lambda handler: handler
+    def register_message_edit_handler(self, handler):
+        self.message_edit_handler = handler
 
-    def on_message_delete(self):
-        return lambda handler: handler
+    def register_message_delete_handler(self, handler):
+        self.message_delete_handler = handler
+
+    def own_user_id(self):
+        return None
 
     async def start(self):
         raise RuntimeError("test-stop")

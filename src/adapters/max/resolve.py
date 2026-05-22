@@ -35,18 +35,18 @@ class MaxResolveService:
 
         # 1. Из кеша (синхронно, всегда доступно после sync)
         try:
-            cached = self._client.get_cached_user(user_id_int)
+            cached = self._client.cached_user(user_id_int)
             if cached:
                 name = self._extract_user_name(cached)
                 if name:
                     logger.debug("resolve_user_name (cache) user_id=%s → %r", user_id, name)
                     return name
         except Exception as e:
-            logger.debug("get_cached_user failed user_id=%s: %s", user_id, e)
+            logger.debug("cached user lookup failed user_id=%s: %s", user_id, e)
 
         for source_name, users in (
-            ("contacts", getattr(self._client, "contacts", []) or []),
-            ("users_cache", (getattr(self._client, "_users", {}) or {}).values()),
+            ("contacts", self._client.contacts_snapshot()),
+            ("users_cache", self._client.users_cache_snapshot().values()),
         ):
             try:
                 for user in users:
@@ -66,7 +66,7 @@ class MaxResolveService:
 
         # 2. Live-запрос (требует активного сокета)
         try:
-            users = await asyncio.wait_for(self._client.get_users([user_id_int]), timeout=5)
+            users = await asyncio.wait_for(self._client.load_users([user_id_int]), timeout=5)
             if users:
                 name = self._extract_user_name(users[0])
                 logger.debug("resolve_user_name (live) user_id=%s → %r", user_id, name)
@@ -79,7 +79,7 @@ class MaxResolveService:
 
     async def resolve_chat_title(self, chat_id: str) -> Optional[str]:
         """Получить название группового чата по ID.
-        Сначала пробует локальный кеш pymax, затем live-запрос к MAX API.
+        Сначала пробует локальный кеш клиента, затем live-запрос к MAX API.
         """
         if not self._client:
             return None
@@ -94,7 +94,11 @@ class MaxResolveService:
 
         try:
             chat_obj = next(
-                (chat for chat in getattr(self._client, "chats", []) if getattr(chat, "id", None) == chat_id_int),
+                (
+                    chat
+                    for chat in self._client.group_chats_snapshot()
+                    if getattr(chat, "id", None) == chat_id_int
+                ),
                 None,
             )
             if chat_obj:
@@ -106,7 +110,7 @@ class MaxResolveService:
             logger.debug("resolve_chat_title cache failed chat_id=%s: %s", chat_id, e)
 
         try:
-            chat_obj = await self._client.get_chat(chat_id_int)
+            chat_obj = await self._client.chat(chat_id_int)
             if chat_obj:
                 title = getattr(chat_obj, "title", None) or getattr(chat_obj, "name", None)
                 if title:
@@ -125,9 +129,9 @@ class MaxResolveService:
         """Найти user_id по отображаемому имени (регистронезависимо).
 
         Поиск в трёх источниках (от быстрого к более широкому):
-          1. client.contacts — контакты, загруженные при sync.
-          2. Кеш участников известных DM-диалогов (client.dialogs).
-          3. client._users — все пользователи, чьи имена были резолвнуты
+          1. Контакты, загруженные при sync.
+          2. Кеш участников известных DM-диалогов.
+          3. Полный user cache — все пользователи, чьи имена были резолвнуты
              в этой сессии (каждый отправитель любого сообщения в известные чаты).
 
         Возвращает str(user_id) или None если не найден.
@@ -138,19 +142,19 @@ class MaxResolveService:
         name_lower = name.strip().lower()
 
         # 1. Контакты из sync
-        for contact in getattr(self._client, "contacts", []):
+        for contact in self._client.contacts_snapshot():
             contact_name = self._extract_user_name(contact)
             if contact_name and contact_name.strip().lower() == name_lower:
                 return str(contact.id)
 
         # 2. Участники известных DM-диалогов через user cache
         own_id = self._own_id
-        for dialog in getattr(self._client, "dialogs", []):
+        for dialog in self._client.dialogs_snapshot():
             for pid in (dialog.participants or {}):
                 if str(pid) == own_id:
                     continue
                 try:
-                    user = self._client.get_cached_user(int(pid))
+                    user = self._client.cached_user(int(pid))
                     if user:
                         user_name = self._extract_user_name(user)
                         if user_name and user_name.strip().lower() == name_lower:
@@ -158,9 +162,9 @@ class MaxResolveService:
                 except Exception:
                     pass
 
-        # 3. Полный кеш пользователей сессии (_users): все отправители всех
+        # 3. Полный кеш пользователей сессии: все отправители всех
         #    сообщений, прошедших через bridge (группы + DM).
-        users_cache: dict = getattr(self._client, "_users", {})
+        users_cache: dict = self._client.users_cache_snapshot()
         for uid, user in users_cache.items():
             if str(uid) == own_id:
                 continue
@@ -176,7 +180,7 @@ class MaxResolveService:
     def get_dm_partner_id(self, chat_id: str) -> Optional[str]:
         """Для DM-чата вернуть user_id СОБЕСЕДНИКА (не нашего аккаунта).
 
-        Использует кеш dialogs из pymax (populated при sync).
+        Использует кеш DM-диалогов клиента (populated при sync).
         Нужен когда наш аккаунт инициировал чат: в этом случае chat_id может
         совпадать с own_id, и resolve_user_name(chat_id) вернёт наше имя.
         Возвращает None если диалог не найден или собеседник не определён.
@@ -186,7 +190,7 @@ class MaxResolveService:
         try:
             chat_id_int = int(chat_id)
             dialog = next(
-                (d for d in getattr(self._client, "dialogs", []) if d.id == chat_id_int),
+                (d for d in self._client.dialogs_snapshot() if d.id == chat_id_int),
                 None,
             )
             if dialog:
@@ -198,9 +202,12 @@ class MaxResolveService:
         return None
 
     def _extract_user_name(self, user_obj) -> Optional[str]:
-        """Извлечь имя из pymax User/Contact/Names объекта."""
+        """Извлечь имя из MAX user view."""
         if user_obj is None:
             return None
+        display_name = getattr(user_obj, "display_name", None)
+        if isinstance(display_name, str) and display_name.strip():
+            return display_name.strip()
         # User/Contact имеют .names: list[Names], где Names.name, first_name, last_name
         names_list = getattr(user_obj, "names", None)
         if names_list:

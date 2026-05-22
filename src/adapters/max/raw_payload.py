@@ -17,11 +17,10 @@ class MaxRawPayloadService:
     def __init__(self, deps: RawPayloadDeps):
         self._deps = deps
         attachments = AttachmentInspectorProxy(lambda: self._deps.media)
-        self._parser = RawPayloadParser(backend=deps.backend, attachments=attachments)
+        self._parser = RawPayloadParser(attachments=attachments)
         self._history = RawHistoryCache(raw_history=deps.raw_history, parser=self._parser)
         self._history_fetcher = RawHistoryFetcher(
             connection=deps.connection,
-            backend=deps.backend,
             parser=self._parser,
             cache=self._history,
         )

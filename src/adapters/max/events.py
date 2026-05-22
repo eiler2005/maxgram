@@ -23,10 +23,6 @@ class MaxEventsService:
         self._deps = deps
 
     @property
-    def _backend(self):
-        return self._deps.backend
-
-    @property
     def _client(self):
         return self._deps.connection.client
 
@@ -60,15 +56,12 @@ class MaxEventsService:
 
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""
-        notif_message_opcode = self._backend.opcode_value("NOTIF_MESSAGE", 128)
-        chat_history_opcode = self._backend.opcode_value("CHAT_HISTORY", 49)
-
         raw_opcode = data.get("opcode") if isinstance(data, dict) else None
         opcode_value = getattr(raw_opcode, "value", raw_opcode)
         if not isinstance(data, dict):
             return
-        if opcode_value != notif_message_opcode:
-            if opcode_value == chat_history_opcode:
+        if int(opcode_value or 0) != 128:
+            if int(opcode_value or 0) == 49:
                 self._raw_payload._cache_raw_history_payload(data.get("payload") or {})
             self._raw_payload._log_raw_auxiliary_event(data)
             return
@@ -110,36 +103,24 @@ class MaxEventsService:
         await self._handle_raw_message(unwrapped)
 
     def _install_raw_message_interceptor(self, client):
-        if getattr(client, "_maxtg_raw_interceptor_installed", False):
-            return client
-
-        original = getattr(client, "_handle_message_notifications", None)
-        if original is None:
+        result = client.install_raw_message_interceptor(self._handle_raw_receive)
+        if not result.installed:
             log_event(
                 logger,
                 logging.WARNING,
                 "max.raw.interceptor_missing",
                 stage="startup",
                 outcome="skipped",
-                reason="client_has_no_message_notification_handler",
+                reason=result.reason or "client_has_no_message_notification_handler",
             )
             return client
-
-        async def _handle_message_notifications_with_raw(data: dict):
-            await self._handle_raw_receive(data)
-            return await original(data)
-
-        _handle_message_notifications_with_raw._maxtg_wrapped = True  # type: ignore[attr-defined]
-        client._handle_message_notifications = _handle_message_notifications_with_raw
-        client._maxtg_raw_interceptor_installed = True
-        handler_count = len(getattr(client, "_on_raw_receive_handlers", []) or [])
         log_event(
             logger,
             logging.INFO,
             "max.raw.interceptor_installed",
             stage="startup",
             outcome="installed",
-            raw_handler_count=handler_count,
+            raw_handler_count=result.raw_handler_count,
         )
         return client
 
@@ -376,7 +357,7 @@ class MaxEventsService:
     async def _handle_raw_message(self, message):
         """Конвертируем raw MAX Message → MaxMessage и вызываем handlers.
 
-        pymax Message fields:
+        MAX client message view fields:
           .id         — int message id
           .chat_id    — int (положительный = DM, отрицательный = группа)
           .sender     — int user_id отправителя (не объект!)
@@ -515,12 +496,17 @@ class MaxEventsService:
             except (ValueError, TypeError):
                 is_dm = not chat_id.startswith("-")
 
-            # Название чата: для групп ищем в кеше client.chats
+            # Название чата: для групп ищем в кеше клиента.
             chat_title = None
             if not is_dm and self._client:
                 try:
                     chat_obj = next(
-                        (c for c in self._client.chats if c.id == chat_id_int), None
+                        (
+                            c
+                            for c in self._client.group_chats_snapshot()
+                            if c.id == chat_id_int
+                        ),
+                        None,
                     )
                     if chat_obj:
                         chat_title = getattr(chat_obj, "title", None)
@@ -627,7 +613,7 @@ class MaxEventsService:
             # own_id сохраняем в msg для фильтрации в BridgeCore
             # (не фильтруем здесь — bridge решает сам)
 
-            # Вложения (в pymax Message это .attaches)
+            # Вложения в MAX client message view.
             attachments: list[MaxAttachment] = []
             attachment_failures: list[MaxAttachmentFailure] = []
             rendered_texts: list[str] = []

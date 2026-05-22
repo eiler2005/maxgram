@@ -145,12 +145,10 @@ class RawHistoryFetcher:
         self,
         *,
         connection,
-        backend,
         parser: RawPayloadParser,
         cache: RawHistoryCache,
     ):
         self._connection = connection
-        self._backend = backend
         self._parser = parser
         self._cache = cache
 
@@ -164,19 +162,14 @@ class RawHistoryFetcher:
         flow_id: Optional[str] = None,
     ) -> Optional[dict]:
         client = self._connection.client
-        if not client or getattr(client, "_send_and_wait", None) is None:
+        if not client:
             return None
         try:
-            payload = self._backend.fetch_history_payload(
+            payload = await client.raw_history_payload(
                 chat_id=chat_id_int,
                 from_time=from_time,
                 forward=forward,
                 backward=backward,
-            )
-            data = await client._send_and_wait(
-                opcode=self._backend.opcode("CHAT_HISTORY", 49),
-                payload=payload,
-                timeout=10,
             )
         except Exception as e:
             log_event(
@@ -193,7 +186,6 @@ class RawHistoryFetcher:
             )
             return None
 
-        payload = data.get("payload") if isinstance(data, dict) else None
         if not isinstance(payload, dict):
             return None
         cached = self._cache._cache_raw_history_payload(payload)

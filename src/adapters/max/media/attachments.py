@@ -32,10 +32,6 @@ class MaxMediaService:
         )
 
     @property
-    def _backend(self):
-        return self._deps.backend
-
-    @property
     def _client(self):
         return self._deps.connection.client
 
@@ -160,11 +156,12 @@ class MaxMediaService:
         msg_id: str,
         flow_id: Optional[str] = None,
     ) -> tuple[Optional[str], bool]:
-        if not self._client or getattr(self._client, "_send_and_wait", None) is None:
+        if not self._client:
             return None, False
         try:
-            data = await self._client._send_and_wait(
-                opcode=opcode,
+            data = await self._client.raw_request(
+                opcode_name=getattr(opcode, "name", str(opcode)),
+                default_opcode=getattr(opcode, "value", None),
                 payload=payload,
                 timeout=5,
             )
@@ -224,10 +221,7 @@ class MaxMediaService:
         msg_id: str,
         flow_id: Optional[str] = None,
     ) -> Optional[dict]:
-        if not self._client or getattr(self._client, "_send_and_wait", None) is None:
-            return None
-        msg_get_opcode = self._backend.opcode("MSG_GET")
-        if msg_get_opcode is None:
+        if not self._client:
             return None
 
         try:
@@ -252,8 +246,8 @@ class MaxMediaService:
 
         for index, payload in enumerate(payloads, start=1):
             try:
-                data = await self._client._send_and_wait(
-                    opcode=msg_get_opcode,
+                data = await self._client.raw_request(
+                    opcode_name="MSG_GET",
                     payload=payload,
                     timeout=5,
                 )
@@ -354,9 +348,7 @@ class MaxMediaService:
                 },
             ))
 
-        file_download_opcode = self._backend.opcode("FILE_DOWNLOAD", 88)
-
-        # Userbot FILE_DOWNLOAD is only known safe with pymax's fileId shape.
+        # Userbot FILE_DOWNLOAD is only known safe with MAX fileId shape.
         # audioId/token variants returned proto.payload in prod and closed the socket.
         for msg_value in [primary_msg]:
             for ref_value in [primary_ref]:
@@ -376,7 +368,7 @@ class MaxMediaService:
             opcode = (
                 self._audio_get_sources_opcode()
                 if candidate.startswith("audio_get_sources")
-                else file_download_opcode
+                else SimpleNamespace(value=88, name="FILE_DOWNLOAD")
             )
             url, hard_stop = await self._probe_audio_download_payload(
                 opcode=opcode,
@@ -462,12 +454,11 @@ class MaxMediaService:
         if not self._client:
             return None, None
         try:
-            file_obj = await self._client.get_file_by_id(
+            url = await self._client.file_url(
                 chat_id=int(chat_id),
                 message_id=int(msg_id),
                 file_id=int(file_id),
             )
-            url = getattr(file_obj, "url", None)
             if not url:
                 return None, None
             return await self._download_from_url(
@@ -502,16 +493,11 @@ class MaxMediaService:
         if not self._client:
             return None, None
         try:
-            payload = self._backend.get_video_payload(
+            raw_payload = await self._client.video_payload(
                 chat_id=int(chat_id),
                 message_id=int(msg_id),
                 video_id=int(video_id),
             )
-            data = await self._client._send_and_wait(
-                opcode=self._backend.opcode("VIDEO_PLAY"),
-                payload=payload,
-            )
-            raw_payload = data.get("payload") if isinstance(data, dict) else None
             url = self._extract_video_url(raw_payload)
             if not url:
                 log_event(
@@ -616,15 +602,7 @@ class MaxMediaService:
 
         if self._client:
             try:
-                dialog = next(
-                    (
-                        d
-                        for d in getattr(self._client, "dialogs", [])
-                        if getattr(d, "id", None) == chat_id_int
-                    ),
-                    None,
-                )
-                last_message = getattr(dialog, "last_message", None) if dialog else None
+                last_message = self._client.dialog_last_message(chat_id_int)
                 if str(getattr(last_message, "id", "")) == str(msg_id):
                     attaches = getattr(last_message, "attaches", None) or []
                     attach_list = attaches if isinstance(attaches, list) else [attaches]

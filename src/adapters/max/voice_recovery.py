@@ -116,12 +116,9 @@ class MaxVoiceRecoveryService:
                 if recovered is not None:
                     return recovered
 
-        if getattr(self._client, "fetch_history", None) is None:
-            return None
-
         try:
-            messages = await self._client.fetch_history(
-                chat_id_int,
+            messages = await self._client.history_messages(
+                chat_id=chat_id_int,
                 from_time=history_from_time,
                 forward=0,
                 backward=10,
@@ -346,11 +343,11 @@ class MaxVoiceRecoveryService:
                     flow_id=flow_id,
                     message_count=len(raw_messages),
                 )
-        elif self._client and getattr(self._client, "fetch_history", None):
+        elif self._client:
             try:
                 candidates = list(
-                    await self._client.fetch_history(
-                        chat_id_int,
+                    await self._client.history_messages(
+                        chat_id=chat_id_int,
                         from_time=from_time,
                         forward=0,
                         backward=max(1, int(limit)),

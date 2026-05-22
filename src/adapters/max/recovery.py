@@ -82,7 +82,7 @@ class MaxRecoveryService:
         if not self._client or not user_id:
             return None
         try:
-            cached = self._client.get_cached_user(int(user_id))
+            cached = self._client.cached_user(int(user_id))
             cached_name = self._resolver._extract_user_name(cached)
             if cached_name:
                 return cached_name
@@ -111,7 +111,7 @@ class MaxRecoveryService:
         enriched = chat_obj
         if self._client:
             try:
-                enriched_obj = await asyncio.wait_for(self._client.get_chat(int(chat_id)), timeout=5)
+                enriched_obj = await asyncio.wait_for(self._client.chat(int(chat_id)), timeout=5)
                 if enriched_obj is not None:
                     enriched = enriched_obj
             except Exception:
@@ -202,9 +202,8 @@ class MaxRecoveryService:
         """Collect account/chat recovery metadata without message contents."""
         own_id = self._own_id
         try:
-            me = getattr(self._client, "me", None) if self._client else None
-            if me is not None:
-                own_id = str(getattr(me, "id", None) or own_id or "") or None
+            if self._client:
+                own_id = self._client.own_user_id() or own_id
         except Exception:
             pass
 
@@ -218,8 +217,8 @@ class MaxRecoveryService:
 
         seen: set[str] = set()
         chat_sources = [
-            *(getattr(self._client, "chats", None) or []),
-            *(getattr(self._client, "channels", None) or []),
+            *self._client.group_chats_snapshot(),
+            *self._client.channels_snapshot(),
         ]
         for chat_obj in chat_sources:
             item = await self._recovery_snapshot_for_chat(chat_obj)
@@ -228,7 +227,7 @@ class MaxRecoveryService:
                 seen.add(item.max_chat_id)
 
         seen_contacts: set[str] = set()
-        for dialog_obj in getattr(self._client, "dialogs", None) or []:
+        for dialog_obj in self._client.dialogs_snapshot():
             item = await self._recovery_snapshot_for_dialog(dialog_obj, own_id)
             if item and item.max_chat_id not in seen:
                 snapshot.chats.append(item)

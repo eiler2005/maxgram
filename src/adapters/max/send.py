@@ -18,10 +18,6 @@ class MaxSendService:
         self._deps = deps
 
     @property
-    def _backend(self):
-        return self._deps.backend
-
-    @property
     def _client(self):
         return self._deps.connection.client
 
@@ -111,22 +107,15 @@ class MaxSendService:
             )
 
             try:
-                attachment = None
-                if media_path and Path(media_path).exists():
-                    if media_type == "photo":
-                        attachment = self._backend.make_photo_attachment(media_path)
-                    elif media_type == "video":
-                        attachment = self._backend.make_video_attachment(media_path)
-                    else:  # audio, document
-                        attachment = self._backend.make_file_attachment(media_path)
-
-                kwargs: dict = {"chat_id": int(chat_id), "text": text}
-                if reply_to_msg_id:
-                    kwargs["reply_to"] = int(reply_to_msg_id)
-                if attachment is not None:
-                    kwargs["attachment"] = attachment
-                result = await self._client.send_message(**kwargs)
-                msg_id = self._deps.runtime._extract_result_msg_id(result)
+                reply_to = int(reply_to_msg_id) if reply_to_msg_id else None
+                result = await self._client.send_outbound_message(
+                    chat_id=int(chat_id),
+                    text=text,
+                    reply_to=reply_to,
+                    media_path=media_path if media_path and Path(media_path).exists() else None,
+                    media_type=media_type,
+                )
+                msg_id = result.message_id
                 if msg_id:
                     self._deps.runtime._remember_expected_outbound_id(chat_id, msg_id)
                     self._deps.runtime._set_last_outbound_failure(None, attempts=attempt)

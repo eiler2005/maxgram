@@ -46,7 +46,7 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Gap-уведомление после reconnect** — после восстановления бот предупреждает о возможном пропуске сообщений за время простоя
 - **Supervisor runtime** — контейнер остаётся `Up`, даже если MAX/TG интеграция деградировала; supervisor перезапускает worker и хранит health-state
 - **Persisted health-state** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, `health_heartbeat.json`
-- **Явная adapter/backend boundary** — `BridgeCore` зависит от transport-neutral contracts; `MaxAdapter` стал facade над operation services с explicit deps, а `pymax` изолирован в `src/adapters/max/backends/pymax/`; это защищено regression-тестами
+- **Явная adapter/backend boundary** — `BridgeCore` зависит от transport-neutral contracts; MAX operation services зависят от typed client ports/DTO, а `pymax` imports и форма pymax-клиента изолированы в `src/adapters/max/backends/pymax/`; это защищено regression-тестами
 - **Retry Telegram API** — 3 попытки с экспоненциальным backoff, поддержка `Retry-After`
 - **Retry TG→MAX на временных ошибках транспорта** — bridge повторяет отправку в MAX при `Socket is not connected`, `Must be ONLINE session`, timeout и похожих временных сбоях
 - **Аудит неотправленных TG→MAX сообщений** — все неуспешные outbound-доставки пишутся в `delivery_log` с причиной ошибки и числом попыток
@@ -65,8 +65,9 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 MAX WebSocket
   └─► MaxAdapter facade
         ├─► operation services: lifecycle/events/send/media/recovery/resolve
-        ├─► explicit deps + state slices
-        └─► MaxBackend ──► PymaxBackend (только pymax imports)
+        ├─► typed MAX client ports + explicit deps/state slices
+        └─► MaxBackend ──► PymaxBackend/PymaxClientAdapter
+              (только pymax imports и форма pymax-клиента)
               │
               ▼
 Bridge Core (contracts) ──► TG Adapter (aiogram) ──► Telegram Topics

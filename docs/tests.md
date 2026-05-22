@@ -10,11 +10,11 @@ PYTHONPATH=. .venv/bin/pytest -q -m architecture        # service-boundary/refac
 PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/ruff check .
 .venv/bin/ruff check src/bridge --select E9,F63,F7,F82,F401,F841,B,C4,SIM,RET
-.venv/bin/mypy src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
+.venv/bin/mypy src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/ports.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **178 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **183 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -40,7 +40,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_bridge_contracts.py — архитектурная граница (8 тестов)
+## test_bridge_contracts.py — архитектурная граница (9 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -51,6 +51,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_max_adapter_uses_composition_not_mixins` | `MaxAdapter` собран composition/facade-ом, не через mixin inheritance; сервисы не принимают полный `MaxAdapter`. |
 | `test_max_services_use_explicit_dependencies` | MAX services не используют `MaxServiceRegistry`/service `__getattr__`, не принимают `MaxAdapter`, а adapter tests не subclass-ят real adapter для private overrides. |
 | `test_max_services_do_not_use_god_base_forwarders` | MAX services не наследуются от `ExplicitMaxService` и не возвращают скрытые cross-service deps-forwarders через `*args, **kwargs`. |
+| `test_max_operation_services_do_not_use_pymax_client_shape_directly` | MAX operation services не обращаются к pymax-private/client-shape attrs напрямую (`_send_and_wait`, `_handle_message_notifications`, `fetch_history`, `contacts/dialogs/chats/_users` и т.д.); всё проходит через typed ports. |
 | `test_bridge_core_keeps_heavy_leaf_logic_outside_coordinator` | `BridgeCore` не содержит status/recovery/media-retry command-heavy methods/state, не импортирует recovery reporter напрямую и регистрирует команды через dispatcher. |
 
 ---
@@ -196,6 +197,17 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_users_and_downloader_helpers_are_plain_object_based` | `users.py` и downloader helpers работают с plain objects/URL metadata. |
 | `test_client_factory_disables_pymax_reconnect_and_fake_telemetry` | `PymaxBackend`/`client_factory.py` создают `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`. |
 | `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |
+
+---
+
+## test_max_service_ports.py — MAX client ports (4 теста)
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_resolve_service_uses_client_port_snapshots_without_pymax_attrs` | `MaxResolveService` работает через typed snapshots/methods, а не через `contacts`/`_users` shape. |
+| `test_send_service_uses_outbound_port_method` | `MaxSendService` вызывает `send_outbound_message(...)` и получает `MaxSendResult`, не создавая library attachments сам. |
+| `test_media_service_uses_raw_request_port_for_audio_probe` | `MaxMediaService` делает protocol probe через `raw_request(...)`, без прямого `_send_and_wait`. |
+| `test_events_service_installs_raw_interceptor_through_port` | `MaxEventsService` ставит raw interceptor через client port, без доступа к pymax notification handler. |
 
 ---
 
