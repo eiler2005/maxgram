@@ -95,6 +95,13 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 6. **Git push только по явной просьбе** — после изменений не делать push автоматически, спросить сначала
 7. **Деплой на Hetzner только по явной просьбе** — после изменений не обновлять сервер автоматически, спросить сначала
 
+## Документация
+
+- Поддерживать bilingual public docs: при изменении user-facing/architecture/runbook информации обновлять обе версии, если есть пара (`README.md` ↔ `README-ru.md`).
+- Русский остаётся основным языком operator/runbook/context docs (`CLAUDE.md`, `PROJECT.md`, `docs/runbooks/*`), но public README должен иметь актуальную English и Russian версию без смыслового drift.
+- Архитектурные изменения отражать минимум в `docs/architecture.md`, `docs/tests.md` и, если меняется boundary/decision, в `docs/decisions/*`; навигационные/summary изменения дублировать в README/README-ru.
+- Документация должна описывать фактическое состояние кода после рефакторинга: реальные имена файлов, compatibility import paths, dependency boundaries и текущие operational правила.
+
 ## Запуск
 
 ```bash
