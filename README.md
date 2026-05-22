@@ -39,6 +39,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 ## Engineering Highlights
 
 - **Unofficial WebSocket API** — reverse-engineered `pymax` userbot with a custom reconnect loop that fixes an OOM bug in the upstream library (`reconnect=False` + outer `while True`)
+- **Explicit adapter boundary** — `BridgeCore` depends on transport-neutral contracts; `pymax` and `aiogram` stay in adapter/startup modules, with regression tests guarding the boundary
 - **Idempotent message deduplication** — `max_msg_id` is written to SQLite *before* forwarding to Telegram, making the system safe to restart at any point without duplicates
 - **Privacy-first design** — no message text or media is ever stored; SQLite only holds routing metadata (chat bindings, message ID map, delivery log)
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
@@ -92,14 +93,12 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 
 ```
 MAX WebSocket ──► MAX Adapter ──► Bridge Core ──► TG Adapter ──► Telegram
-                  (pymax)         (routing)        (aiogram)      (Topics API)
+                  (pymax)         (contracts)      (aiogram)      (Topics API)
                                       │
-                                  SQLite DB
-                              (bindings, dedup,
-                               delivery log)
+                             SQLite DB + runtime health
 ```
 
-One Python service with two layers: a long-lived supervisor plus a restartable bridge worker. No external queues or services. SQLite and persisted health files are the only state stores.
+One Python service with two layers: a long-lived supervisor plus a restartable bridge worker. Runtime wiring lives in `src/startup/composition.py`; SQLite and persisted health files are the only state stores.
 
 Details: [docs/architecture.md](docs/architecture.md)
 
@@ -202,20 +201,31 @@ docker compose -f deploy/docker-compose.yml up -d
 ```
 maxgram/
 ├── src/
-│   ├── main.py                ← supervisor entry point + worker bootstrap
+│   ├── main.py                ← thin entry point: logging, config, supervisor
+│   ├── startup/
+│   │   └── composition.py     ← runtime wiring / DI
 │   ├── adapters/
-│   │   ├── max_adapter.py     ← MAX userbot: connect, recv, send, reconnect
-│   │   └── tg_adapter.py      ← Telegram bot: topics, send, receive, ops alerts
+│   │   ├── max/               ← MAX userbot package; pymax boundary
+│   │   ├── max_adapter.py     ← compatibility import
+│   │   ├── tg/                ← Telegram adapter + notifier
+│   │   └── tg_adapter.py      ← compatibility import
 │   ├── bridge/
-│   │   └── core.py           ← all routing logic
+│   │   ├── contracts.py       ← transport-neutral models and ports
+│   │   ├── core.py            ← coordinator
+│   │   ├── forwarding.py
+│   │   ├── replies.py
+│   │   ├── topics.py
+│   │   ├── commands/
+│   │   └── recovery/
 │   ├── config/loader.py
 │   ├── runtime/
-│   │   ├── health.py         ← persisted health snapshot/events/outbox/heartbeat
+│   │   ├── health/           ← persisted health snapshot/events/outbox/heartbeat
 │   │   ├── supervisor.py     ← worker restart loop + alert integration
 │   │   └── healthcheck.py    ← Docker healthcheck entry point
 │   └── db/
 │       ├── models.py          ← SQLite schema: bindings, messages, health/retry, recovery registry
-│       └── repository.py
+│       ├── repository.py      ← public facade
+│       └── repos/             ← subdomain repositories
 │
 ├── docs/
 │   ├── architecture.md

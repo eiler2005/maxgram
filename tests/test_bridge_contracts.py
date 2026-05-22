@@ -37,3 +37,25 @@ def test_main_keeps_runtime_wiring_in_composition_root():
     forbidden = ("adapters.max_adapter", "adapters.tg_adapter", "bridge.core")
     assert not any(any(name in target for name in forbidden) for target in targets)
     assert any(target.endswith("startup.composition") for target in targets)
+
+
+def test_pymax_imports_stay_inside_max_adapter_boundary():
+    allowed = {
+        "src/adapters/max/client_factory.py",
+        "src/adapters/max/events.py",
+        "src/adapters/max/lifecycle.py",
+        "src/adapters/max/media/attachments.py",
+        "src/adapters/max/raw_payload.py",
+        "src/adapters/max/send.py",
+    }
+
+    offenders = []
+    for path in (PROJECT_ROOT / "src").rglob("*.py"):
+        relative = path.relative_to(PROJECT_ROOT).as_posix()
+        content = path.read_text(encoding="utf-8")
+        if "from pymax" not in content and "import pymax" not in content:
+            continue
+        if relative not in allowed:
+            offenders.append(relative)
+
+    assert offenders == []

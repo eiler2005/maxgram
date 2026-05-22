@@ -7,16 +7,18 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 ```
 
-Всего: **160 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **167 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 ---
 
-## test_bridge_contracts.py — архитектурная граница (2 теста)
+## test_bridge_contracts.py — архитектурная граница (4 теста)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_bridge_core_does_not_import_concrete_adapters` | `src.bridge.core` импортирует bridge contracts, но не concrete `src.adapters.max_adapter` / `src.adapters.tg_adapter`. |
 | `test_bridge_contracts_stay_transport_neutral` | `src.bridge.contracts` не импортирует `pymax`, `aiogram` или adapter-слой. |
+| `test_main_keeps_runtime_wiring_in_composition_root` | `src.main` не импортирует concrete adapters или `BridgeCore`; runtime wiring живёт в `src.startup.composition`. |
+| `test_pymax_imports_stay_inside_max_adapter_boundary` | `pymax` imports разрешены только в bounded MAX adapter modules. |
 
 ---
 
@@ -139,6 +141,18 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_download_from_url_logs_src_ag_and_sanitized_http_error` | При CDN HTTP-ошибке downloader пишет `src_ag`, `ua_family`, `http_status`, `download_source`, но не раскрывает signed query URL в `error`. |
 | `test_download_from_url_rejects_html_for_expected_video` | Post-validation блокирует `text/html`/HTML-body для ожидаемого `video`, чтобы player fallback не уходил в Telegram как файл/медиа. |
 | `test_download_from_url_allows_text_for_expected_document` | Для ожидаемого `document` обычный `text/plain` файл остаётся допустимым, чтобы post-validation не ломала пересылку текстовых документов. |
+
+---
+
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves (5 тестов)
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_select_user_agent_maps_known_src_ag_values` | `media/ua.py` выбирает корректный MAX CDN User-Agent для Chrome/Android/iOS/Safari fallback. |
+| `test_payload_helpers_read_nested_values_and_safe_error_code` | `payload.py` читает nested payload values и безопасный error code без pymax. |
+| `test_error_helpers_classify_runtime_and_retryable_send_errors` | `errors.py` классифицирует runtime issue и retryable outbound errors. |
+| `test_user_helpers_extract_names_and_dm_partner_id` | `users.py` извлекает имена и DM partner id из plain objects. |
+| `test_client_factory_disables_pymax_reconnect_and_fake_telemetry` | `client_factory.py` создаёт `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`. |
 
 ---
 

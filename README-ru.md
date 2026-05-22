@@ -46,6 +46,7 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Gap-уведомление после reconnect** — после восстановления бот предупреждает о возможном пропуске сообщений за время простоя
 - **Supervisor runtime** — контейнер остаётся `Up`, даже если MAX/TG интеграция деградировала; supervisor перезапускает worker и хранит health-state
 - **Persisted health-state** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, `health_heartbeat.json`
+- **Явная adapter boundary** — `BridgeCore` зависит от transport-neutral contracts, а `pymax`/`aiogram` остаются в adapter/startup слоях; это защищено regression-тестами
 - **Retry Telegram API** — 3 попытки с экспоненциальным backoff, поддержка `Retry-After`
 - **Retry TG→MAX на временных ошибках транспорта** — bridge повторяет отправку в MAX при `Socket is not connected`, `Must be ONLINE session`, timeout и похожих временных сбоях
 - **Аудит неотправленных TG→MAX сообщений** — все неуспешные outbound-доставки пишутся в `delivery_log` с причиной ошибки и числом попыток
@@ -62,14 +63,12 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 
 ```
 MAX WebSocket ──► MAX Adapter ──► Bridge Core ──► TG Adapter ──► Telegram
-                  (pymax)         (роутинг)        (aiogram)      (Topics)
+                  (pymax)         (contracts)      (aiogram)      (Topics)
                                       │
-                                  SQLite DB
-                              (bindings, dedup,
-                               delivery log)
+                             SQLite DB + runtime health
 ```
 
-Один Python сервис с двумя слоями: supervisor и restartable worker. Никаких внешних очередей. SQLite и persisted runtime-health файлы — единственное хранилище состояния.
+Один Python сервис с двумя слоями: supervisor и restartable worker. Runtime wiring живёт в `src/startup/composition.py`. Никаких внешних очередей. SQLite и persisted runtime-health файлы — единственное хранилище состояния.
 
 Подробнее: [docs/architecture.md](docs/architecture.md)
 
@@ -241,17 +240,28 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 ```
 maxgram/
 ├── src/
-│   ├── main.py                ← supervisor entry point + bootstrap worker
+│   ├── main.py                ← тонкий entry point: logging, config, supervisor
+│   ├── startup/
+│   │   └── composition.py     ← runtime wiring / DI
 │   ├── adapters/
-│   │   ├── max_adapter.py     ← MAX userbot: connect, recv, send, reconnect
-│   │   └── tg_adapter.py      ← Telegram бот: topics, send, receive, ops fanout
+│   │   ├── max/               ← MAX userbot package; pymax boundary
+│   │   ├── max_adapter.py     ← compatibility import
+│   │   ├── tg/                ← Telegram adapter + notifier
+│   │   └── tg_adapter.py      ← compatibility import
 │   ├── bridge/
-│   │   └── core.py           ← вся бизнес-логика роутинга
+│   │   ├── contracts.py       ← transport-neutral models and ports
+│   │   ├── core.py            ← coordinator
+│   │   ├── forwarding.py
+│   │   ├── replies.py
+│   │   ├── topics.py
+│   │   ├── commands/
+│   │   └── recovery/
 │   ├── config/loader.py       ← YAML + .env
-│   ├── runtime/               ← health-state, supervisor, healthcheck
+│   ├── runtime/               ← health package, supervisor, healthcheck
 │   └── db/
 │       ├── models.py          ← SQLite схема: bindings, messages, health/retry, recovery registry
-│       └── repository.py     ← data access layer
+│       ├── repository.py      ← public facade
+│       └── repos/             ← subdomain repositories
 │
 ├── docs/
 │   ├── architecture.md        ← диаграммы и потоки данных

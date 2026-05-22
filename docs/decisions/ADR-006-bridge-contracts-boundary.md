@@ -18,11 +18,11 @@
 - Protocol-порты: `MaxBridgePort`, `TelegramBridgePort`, `OpsNotifierPort`
 - bridge-level helper-политики: `is_probable_client_cid`, `MAX_DM_SWEEP_BACKFILL_SECONDS`
 
-`BridgeCore` импортирует только contracts и repository/config/runtime слои. Concrete adapters остаются в composition/bootstrap entrypoints (`src/main.py`, maintenance scripts) и в собственных adapter tests.
+`BridgeCore` импортирует только contracts и repository/config/runtime слои. Concrete adapters остаются в composition/bootstrap layer (`src/startup/composition.py`, maintenance scripts) и в собственных adapter tests.
 
 ## Последствия
 
-- Pymax-specific protocol hooks, reconnect details, media download quirks and lazy `pymax` imports остаются внутри `src/adapters/max_adapter.py`.
-- Aiogram-specific bot/dispatcher logic остаётся внутри `src/adapters/tg_adapter.py`.
+- Pymax-specific protocol hooks, reconnect details, media download quirks and lazy `pymax` imports остаются внутри bounded files under `src/adapters/max/`; `src/adapters/max_adapter.py` — compatibility alias.
+- Aiogram-specific bot/dispatcher logic остаётся внутри `src/adapters/tg/`; `src/adapters/tg_adapter.py` — compatibility alias.
 - Старые imports из `src.adapters.max_adapter` для shared MAX dataclass-моделей временно продолжают работать через re-export, но canonical import теперь `src.bridge.contracts`.
-- Архитектурная граница защищена regression-тестами: `BridgeCore` не импортирует concrete adapters, а contracts не импортируют `pymax`, `aiogram` или adapter-слой.
+- Архитектурная граница защищена regression-тестами: `BridgeCore` не импортирует concrete adapters, contracts не импортируют `pymax`, `aiogram` или adapter-слой, `src.main` не содержит runtime wiring, а `pymax` imports остаются внутри MAX adapter boundary.

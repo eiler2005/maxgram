@@ -1,0 +1,1136 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import sys
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Optional
+
+from aiohttp import ClientSession
+
+from .. import constants as max_constants
+from .. import errors as max_errors
+from .. import payload as max_payload
+from . import downloader as max_downloader
+from .ua import (
+    MAX_CDN_ANDROID_CHROME_USER_AGENT,
+    MAX_CDN_CHROME_USER_AGENT,
+    MAX_CDN_IOS_CHROME_USER_AGENT,
+    MAX_CDN_USER_AGENT,
+)
+from ....bridge.contracts import MaxAttachment
+from ....logging_utils import log_event, sanitize_path, sanitize_url
+
+logger = logging.getLogger("src.adapters.max_adapter")
+
+
+def _client_session_factory():
+    for module_name in ("src.adapters.max_adapter", "src.adapters.max.adapter"):
+        module = sys.modules.get(module_name)
+        if module is not None and hasattr(module, "ClientSession"):
+            return module.ClientSession
+    return ClientSession
+
+
+class MaxAttachmentMixin:
+    def _attachment_type_name(self, attach) -> str:
+        atype = getattr(attach, "type", None)
+        if atype is None:
+            return ""
+        return str(getattr(atype, "value", atype)).upper()
+
+    def _normalize_attachment_type(self, atype: str) -> str:
+        if not atype:
+            return ""
+        upper = str(atype).upper()
+        if upper.startswith(("PHOTO", "IMAGE")):
+            return "PHOTO"
+        if upper.startswith("VIDEO"):
+            return "VIDEO"
+        if upper.startswith(("AUDIO", "VOICE")):
+            return "AUDIO"
+        if upper.startswith(("FILE", "DOCUMENT", "DOC")):
+            return "FILE"
+        return upper
+
+    def _attachment_filename(self, attach) -> Optional[str]:
+        name = getattr(attach, "filename", None) or getattr(attach, "name", None)
+        return self._fix_filename_encoding(name) if name else None
+
+    def _duration_seconds(self, duration, *, kind: Optional[str] = None) -> Optional[int]:
+        """Normalize MAX media duration to Telegram seconds.
+
+        MAX audio payloads observed in prod use milliseconds (for example
+        38360 for a 38 second voice note), while Telegram expects seconds.
+        Keep plausible second values intact.
+        """
+        if duration is None:
+            return None
+        try:
+            value = float(duration)
+        except (TypeError, ValueError):
+            return None
+        if value <= 0:
+            return None
+        normalized_kind = (kind or "").lower()
+        if normalized_kind == "audio" and value > 10 * 60:
+            value = value / 1000
+        return max(1, int(round(value)))
+
+    def _safe_attachment_field_names(self, attach) -> list[str]:
+        try:
+            names = vars(attach).keys()
+        except TypeError:
+            names = (
+                name
+                for name in dir(attach)
+                if not name.startswith("_") and not callable(getattr(attach, name, None))
+            )
+        return sorted(
+            name
+            for name in names
+            if self._is_safe_field_name(name)
+        )
+
+    def _fix_filename_encoding(name: str) -> str:
+        """Fix cp1251-as-latin-1 mojibake in filenames from MAX.
+
+        MAX CDN sometimes returns filenames with cp1251 bytes decoded as latin-1,
+        producing garbled text like "Âàëüñ" instead of "Вальс".
+        Heuristic: if the string fits in latin-1 and decodes cleanly as cp1251, use it.
+        Pure ASCII and already-correct UTF-8 strings pass through unchanged.
+        """
+        return max_downloader.fix_filename_encoding(name)
+
+    def _build_filename(self, prefix: str, filename_hint: Optional[str],
+                        url: Optional[str], content_type: Optional[str],
+                        default_extension: str = "") -> str:
+        return max_downloader.build_filename(
+            prefix,
+            filename_hint,
+            url,
+            content_type,
+            default_extension,
+        )
+
+    def _extract_video_url(self, value, *, key_hint: Optional[str] = None) -> Optional[str]:
+        """Найти реальный URL видео в сыром payload VIDEO_PLAY.
+
+        pymax разбирает VIDEO_PLAY довольно хрупко: берёт первое поле payload,
+        которое не EXTERNAL/cache. На практике сервер может вернуть вложенную
+        структуру или сначала preview/thumbnail. Здесь ищем лучший URL сами.
+        """
+        return max_downloader.extract_video_url(value, key_hint=key_hint)
+
+    def _extract_audio_url(self, value, *, key_hint: Optional[str] = None) -> Optional[str]:
+        """Найти реальный URL голосового/audio в сыром MAX payload."""
+        return max_downloader.extract_audio_url(value, key_hint=key_hint)
+
+    def _safe_payload_error_code(self, payload) -> Optional[str]:
+        return max_payload.safe_payload_error_code(payload)
+
+    def _is_socket_probe_error(self, exc: Exception) -> bool:
+        return max_errors.is_socket_probe_error(exc)
+
+    def _audio_get_sources_opcode(self):
+        """Opcode 301 is used by MAX Web for audioGetSources but is absent in pymax 1.2.5."""
+        return SimpleNamespace(value=301, name="AUDIO_GET_SOURCES")
+
+    async def _probe_audio_download_payload(
+        self,
+        *,
+        opcode,
+        candidate: str,
+        payload: dict,
+        chat_id: str,
+        msg_id: str,
+        flow_id: Optional[str] = None,
+    ) -> tuple[Optional[str], bool]:
+        if not self._client or getattr(self._client, "_send_and_wait", None) is None:
+            return None, False
+        try:
+            data = await self._client._send_and_wait(
+                opcode=opcode,
+                payload=payload,
+                timeout=5,
+            )
+        except Exception as e:
+            hard_stop = self._is_socket_probe_error(e)
+            log_event(
+                logger,
+                logging.INFO,
+                "max.attachment.audio_protocol_probe",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="failed",
+                reason="socket_unavailable" if hard_stop else "send_failed",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                candidate=candidate,
+                error_class=e.__class__.__name__,
+                hard_stop=hard_stop,
+            )
+            return None, hard_stop
+
+        raw_payload = data.get("payload") if isinstance(data, dict) else None
+        url = self._extract_audio_url(raw_payload)
+        error_code = self._safe_payload_error_code(raw_payload)
+        log_event(
+            logger,
+            logging.INFO,
+            "max.attachment.audio_protocol_probe",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="download",
+            outcome="received" if url else "miss",
+            reason=None if url else (error_code or "url_missing"),
+            max_chat_id=chat_id,
+            max_msg_id=msg_id,
+            candidate=candidate,
+            has_download_url=bool(url),
+            payload_class=raw_payload.__class__.__name__ if raw_payload is not None else None,
+            payload_fields=(
+                sorted(
+                    str(key)
+                    for key in raw_payload.keys()
+                    if self._is_safe_field_name(key)
+                )
+                if isinstance(raw_payload, dict)
+                else []
+            ),
+            payload_shape=self._safe_field_paths(raw_payload) if isinstance(raw_payload, dict) else [],
+        )
+        return url, False
+
+    async def _fetch_raw_message_payload_by_id(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        flow_id: Optional[str] = None,
+    ) -> Optional[dict]:
+        if not self._client or getattr(self._client, "_send_and_wait", None) is None:
+            return None
+        try:
+            from pymax.static.enum import Opcode
+        except Exception:
+            return None
+
+        try:
+            chat_id_value = int(chat_id)
+        except (TypeError, ValueError):
+            return None
+        msg_values: list[object] = []
+        try:
+            msg_values.append(int(msg_id))
+        except (TypeError, ValueError):
+            pass
+        msg_values.append(str(msg_id))
+
+        payloads = []
+        for msg_value in dict.fromkeys(msg_values):
+            payloads.extend([
+                {"chatId": chat_id_value, "messageId": msg_value},
+                {"chatId": chat_id_value, "messageIds": [msg_value]},
+            ])
+        if msg_values:
+            payloads.append({"chatId": chat_id_value, "ids": [msg_values[0]]})
+
+        for index, payload in enumerate(payloads, start=1):
+            try:
+                data = await self._client._send_and_wait(
+                    opcode=Opcode.MSG_GET,
+                    payload=payload,
+                    timeout=5,
+                )
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.raw.message_get_probe",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="failed",
+                    reason="send_failed",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    candidate=f"msg_get_{index}",
+                    error_class=e.__class__.__name__,
+                )
+                continue
+            raw_payload = data.get("payload") if isinstance(data, dict) else None
+            message, outer_chat_id = self._payload_message_dict(raw_payload or {})
+            if message is None and isinstance(raw_payload, dict):
+                message = self._find_raw_history_message_dict(raw_payload, str(msg_id))
+            if message is not None:
+                return self._normalize_message_dict(message)
+            log_event(
+                logger,
+                logging.INFO,
+                "max.raw.message_get_probe",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="miss",
+                reason="message_missing",
+                max_chat_id=str(outer_chat_id or chat_id),
+                max_msg_id=msg_id,
+                candidate=f"msg_get_{index}",
+                payload_shape=self._safe_field_paths(raw_payload) if isinstance(raw_payload, dict) else [],
+            )
+        return None
+
+    async def _download_audio_by_protocol(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        reference_id: object,
+        reference_kind: str,
+        prefix: str,
+        filename_hint: Optional[str] = None,
+        token: Optional[str] = None,
+        flow_id: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str], bool]:
+        try:
+            chat_id_int = int(chat_id)
+        except (TypeError, ValueError):
+            return None, None, False
+
+        reference = str(reference_id)
+        ref_values: list[object] = []
+        try:
+            ref_values.append(int(reference))
+        except (TypeError, ValueError):
+            pass
+        ref_values.append(reference)
+
+        base_messages: list[object] = []
+        try:
+            base_messages.append(int(msg_id))
+        except (TypeError, ValueError):
+            pass
+        base_messages.append(str(msg_id))
+
+        candidates: list[tuple[str, dict]] = []
+        msg_values = list(dict.fromkeys(base_messages))
+        reference_values = list(dict.fromkeys(ref_values))
+        primary_msg = msg_values[0] if msg_values else str(msg_id)
+        primary_ref = reference_values[0] if reference_values else reference
+
+        audio_get_payload = {
+            "audioId": primary_ref,
+            "chatId": chat_id_int,
+            "messageId": primary_msg,
+        }
+        if token is not None:
+            audio_get_payload["token"] = str(token)
+        candidates.append((
+            "audio_get_sources",
+            audio_get_payload,
+        ))
+        if token is not None:
+            candidates.append((
+                "audio_get_sources_no_token",
+                {
+                    "audioId": primary_ref,
+                    "chatId": chat_id_int,
+                    "messageId": primary_msg,
+                },
+            ))
+
+        try:
+            from pymax.static.enum import Opcode
+            file_download_opcode = Opcode.FILE_DOWNLOAD
+        except Exception:
+            file_download_opcode = SimpleNamespace(value=88, name="FILE_DOWNLOAD")
+
+        # Userbot FILE_DOWNLOAD is only known safe with pymax's fileId shape.
+        # audioId/token variants returned proto.payload in prod and closed the socket.
+        for msg_value in [primary_msg]:
+            for ref_value in [primary_ref]:
+                candidates.extend([
+                    (
+                        "file_download_file_id",
+                        {"chatId": chat_id_int, "messageId": msg_value, "fileId": ref_value},
+                    ),
+                ])
+
+        seen_payloads: set[str] = set()
+        for candidate, payload in candidates:
+            signature = json.dumps(payload, sort_keys=True, default=str)
+            if signature in seen_payloads:
+                continue
+            seen_payloads.add(signature)
+            opcode = (
+                self._audio_get_sources_opcode()
+                if candidate.startswith("audio_get_sources")
+                else file_download_opcode
+            )
+            url, hard_stop = await self._probe_audio_download_payload(
+                opcode=opcode,
+                candidate=candidate,
+                payload=payload,
+                chat_id=chat_id,
+                msg_id=msg_id,
+                flow_id=flow_id,
+            )
+            if hard_stop:
+                return None, None, True
+            if not url:
+                continue
+            local_path, filename = await self._download_from_url(
+                url,
+                prefix,
+                filename_hint,
+                ".ogg",
+                expected_kind="audio",
+                flow_id=flow_id,
+                download_source=candidate,
+            )
+            return local_path, filename, False
+
+        return None, None, False
+
+    def _download_client_profile_for_url(self, url: str) -> tuple[dict[str, str], Optional[str], str]:
+        from .ua import download_client_profile_for_url
+
+        return download_client_profile_for_url(url)
+
+    def _download_headers_for_url(self, url: str) -> dict[str, str]:
+        from .ua import download_headers_for_url
+
+        return download_headers_for_url(url)
+
+    def _detect_magic_type(self, content: bytes) -> str:
+        return max_downloader.detect_magic_type(content)
+
+    def _classify_downloaded_content(self, content_type: Optional[str], content: bytes) -> str:
+        return max_downloader.classify_downloaded_content(content_type, content)
+
+    def _is_download_valid(self, expected_kind: Optional[str], detected_kind: str) -> bool:
+        return max_downloader.is_download_valid(expected_kind, detected_kind)
+
+    def _is_retryable_download_error(self, error: Exception) -> bool:
+        return max_downloader.is_retryable_download_error(error)
+
+    def _download_error_for_log(self, error: Exception) -> str:
+        return max_downloader.download_error_for_log(error)
+
+    def _download_error_status(self, error: Exception) -> Optional[int]:
+        return max_downloader.download_error_status(error)
+
+    async def _write_download_response(self, response, part_path: Path, mode: str) -> int:
+        written = 0
+        with part_path.open(mode) as fh:
+            stream = getattr(getattr(response, "content", None), "iter_chunked", None)
+            if callable(stream):
+                async for chunk in stream(max_constants.get("MAX_DOWNLOAD_CHUNK_SIZE")):
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    written += len(chunk)
+            else:
+                content = await response.read()
+                fh.write(content)
+                written += len(content)
+        return written
+
+    def _download_retry_delay(self, attempt: int) -> int:
+        return max_downloader.download_retry_delay(attempt)
+
+    async def _download_from_url(self, url: str, prefix: str,
+                                 filename_hint: Optional[str] = None,
+                                 default_extension: str = "",
+                                 expected_kind: Optional[str] = None,
+                                 flow_id: Optional[str] = None,
+                                 download_source: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+        """Скачать файл по URL, вернуть (local_path, filename)."""
+        self._tmp_dir.mkdir(parents=True, exist_ok=True)
+        filename = self._build_filename(prefix, filename_hint, url, None, default_extension)
+        local_path = self._tmp_dir / filename
+        part_path = self._tmp_dir / f"{filename}.part"
+        last_error: Exception | None = None
+        content_type: Optional[str] = None
+
+        for attempt in range(1, max_constants.get("MAX_DOWNLOAD_ATTEMPTS") + 1):
+            resume_from = part_path.stat().st_size if part_path.exists() else 0
+            headers, src_ag, ua_family = self._download_client_profile_for_url(url)
+            if resume_from:
+                headers = {**headers, "Range": f"bytes={resume_from}-"}
+
+            try:
+                async with _client_session_factory()(headers=headers) as session:
+                    async with session.get(url) as response:
+                        http_status = getattr(response, "status", None)
+                        if resume_from and getattr(response, "status", None) == 200:
+                            part_path.unlink(missing_ok=True)
+                            resume_from = 0
+                            log_event(
+                                logger,
+                                logging.INFO,
+                                "max.attachment.download_resume",
+                                flow_id=flow_id,
+                                direction="inbound",
+                                stage="download",
+                                outcome="unsupported",
+                                source=sanitize_url(url),
+                                download_source=download_source,
+                                src_ag=src_ag,
+                                ua_family=ua_family,
+                                http_status=http_status,
+                                attempt=attempt,
+                            )
+
+                        response.raise_for_status()
+                        content_type = response.headers.get("Content-Type", "").split(";")[0].strip() or None
+                        mode = "ab" if resume_from and getattr(response, "status", None) == 206 else "wb"
+                        bytes_written = await self._write_download_response(response, part_path, mode)
+
+                if bytes_written <= 0 and not part_path.exists():
+                    raise RuntimeError("download returned no content")
+
+                content = part_path.read_bytes()
+                detected_kind = self._classify_downloaded_content(content_type, content)
+                if not self._is_download_valid(expected_kind, detected_kind):
+                    part_path.unlink(missing_ok=True)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.attachment.download",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="download",
+                        outcome="rejected",
+                        reason="download_rejected",
+                        expected_kind=expected_kind,
+                        detected_kind=detected_kind,
+                        content_type=content_type,
+                        source=sanitize_url(url),
+                        download_source=download_source,
+                        src_ag=src_ag,
+                        ua_family=ua_family,
+                        http_status=http_status,
+                        attempts=attempt,
+                    )
+                    return None, None
+
+                part_path.replace(local_path)
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.attachment.download",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="downloaded",
+                    expected_kind=expected_kind,
+                    detected_kind=detected_kind,
+                    content_type=content_type,
+                    source=sanitize_url(url),
+                    download_source=download_source,
+                    src_ag=src_ag,
+                    ua_family=ua_family,
+                    http_status=http_status,
+                    filename=sanitize_path(filename),
+                    size_bytes=local_path.stat().st_size,
+                    attempts=attempt,
+                    resumed=attempt > 1 or bool(resume_from),
+                )
+                return str(local_path), filename
+            except Exception as e:
+                last_error = e
+                retryable = self._is_retryable_download_error(e)
+                if retryable and attempt < max_constants.get("MAX_DOWNLOAD_ATTEMPTS"):
+                    retry_in_seconds = self._download_retry_delay(attempt)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.attachment.download_retry",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="download",
+                        outcome="retry",
+                        reason="download_failed",
+                        expected_kind=expected_kind,
+                        source=sanitize_url(url),
+                        download_source=download_source,
+                        src_ag=src_ag,
+                        ua_family=ua_family,
+                        http_status=self._download_error_status(e),
+                        error=self._download_error_for_log(e),
+                        attempt=attempt,
+                        max_attempts=max_constants.get("MAX_DOWNLOAD_ATTEMPTS"),
+                        resume_from_bytes=part_path.stat().st_size if part_path.exists() else 0,
+                        retry_in_seconds=retry_in_seconds,
+                    )
+                    await asyncio.sleep(retry_in_seconds)
+                    continue
+
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "max.attachment.download",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="failed",
+                    reason="download_failed",
+                    expected_kind=expected_kind,
+                    source=sanitize_url(url),
+                    download_source=download_source,
+                    src_ag=src_ag,
+                    ua_family=ua_family,
+                    http_status=self._download_error_status(e),
+                    error=self._download_error_for_log(e),
+                    attempts=attempt,
+                    max_attempts=max_constants.get("MAX_DOWNLOAD_ATTEMPTS"),
+                    retryable=retryable,
+                    resume_from_bytes=part_path.stat().st_size if part_path.exists() else 0,
+                )
+                break
+
+        if last_error is not None:
+            part_path.unlink(missing_ok=True)
+        return None, None
+
+    async def _download_file_by_id(self, chat_id: str, msg_id: str, file_id: int,
+                                   prefix: str, filename_hint: Optional[str] = None,
+                                   default_extension: str = "",
+                                   expected_kind: Optional[str] = None,
+                                   flow_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+        """Скачать файл через pymax FILE_DOWNLOAD."""
+        if not self._client:
+            return None, None
+        try:
+            file_obj = await self._client.get_file_by_id(
+                chat_id=int(chat_id),
+                message_id=int(msg_id),
+                file_id=int(file_id),
+            )
+            url = getattr(file_obj, "url", None)
+            if not url:
+                return None, None
+            return await self._download_from_url(
+                url,
+                prefix,
+                filename_hint,
+                default_extension,
+                expected_kind=expected_kind,
+                flow_id=flow_id,
+                download_source="file_download",
+            )
+        except Exception as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.attachment.download",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="failed",
+                reason="file_download_failed",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                error=str(e),
+            )
+        return None, None
+
+    async def _download_video_by_id(self, chat_id: str, msg_id: str, video_id: int,
+                                    prefix: str, filename_hint: Optional[str] = None,
+                                    flow_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+        """Скачать видео через pymax VIDEO_PLAY."""
+        if not self._client:
+            return None, None
+        try:
+            from pymax.payloads import GetVideoPayload
+            from pymax.static.enum import Opcode
+
+            payload = GetVideoPayload(
+                chat_id=int(chat_id),
+                message_id=int(msg_id),
+                video_id=int(video_id),
+            ).model_dump(by_alias=True)
+            data = await self._client._send_and_wait(opcode=Opcode.VIDEO_PLAY, payload=payload)
+            raw_payload = data.get("payload") if isinstance(data, dict) else None
+            url = self._extract_video_url(raw_payload)
+            if not url:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "max.attachment.download",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="failed",
+                    reason="video_url_missing",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                )
+                return None, None
+            return await self._download_from_url(
+                url,
+                prefix,
+                filename_hint,
+                ".mp4",
+                expected_kind="video",
+                flow_id=flow_id,
+                download_source="video_play",
+            )
+        except Exception as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.attachment.download",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="failed",
+                reason="video_download_failed",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                error=str(e),
+            )
+        return None, None
+
+    async def download_video_reference(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        video_id: str,
+        attachment_index: int = 0,
+        filename_hint: Optional[str] = None,
+        duration: Optional[int] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        source_type: Optional[str] = "VIDEO",
+        flow_id: Optional[str] = None,
+    ) -> Optional[MaxAttachment]:
+        """Скачать видео по стабильной ссылке MAX без хранения signed URL."""
+        idx = f"_{attachment_index}" if attachment_index > 0 else ""
+        try:
+            video_id_int = int(video_id)
+        except (TypeError, ValueError):
+            return None
+
+        local_path, filename = await self._download_video_by_id(
+            chat_id,
+            msg_id,
+            video_id_int,
+            f"video_retry_{chat_id}_{msg_id}{idx}",
+            filename_hint,
+            flow_id=flow_id,
+        )
+        if not local_path:
+            return None
+        return MaxAttachment(
+            kind="video",
+            local_path=local_path,
+            filename=filename,
+            duration=duration,
+            width=width,
+            height=height,
+            source_type=source_type,
+        )
+
+    async def download_audio_reference(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        reference_id: str,
+        reference_kind: str = "audio_id",
+        attachment_index: int = 0,
+        filename_hint: Optional[str] = None,
+        duration: Optional[int] = None,
+        source_type: Optional[str] = "AUDIO",
+        flow_id: Optional[str] = None,
+    ) -> Optional[MaxAttachment]:
+        """Retry MAX audio without persisting signed URLs."""
+        idx = f"_{attachment_index}" if attachment_index > 0 else ""
+        normalized_duration = self._duration_seconds(duration, kind="audio")
+        try:
+            chat_id_int = int(chat_id)
+        except (TypeError, ValueError):
+            return None
+
+        if self._client:
+            try:
+                dialog = next(
+                    (
+                        d
+                        for d in getattr(self._client, "dialogs", [])
+                        if getattr(d, "id", None) == chat_id_int
+                    ),
+                    None,
+                )
+                last_message = getattr(dialog, "last_message", None) if dialog else None
+                if str(getattr(last_message, "id", "")) == str(msg_id):
+                    attaches = getattr(last_message, "attaches", None) or []
+                    attach_list = attaches if isinstance(attaches, list) else [attaches]
+                    for attach in attach_list:
+                        atype = self._normalize_attachment_type(
+                            self._attachment_type_name(attach)
+                        )
+                        if atype != "AUDIO":
+                            continue
+                        attach_refs = {
+                            str(value)
+                            for value in (
+                                getattr(attach, "audio_id", None),
+                                getattr(attach, "audioId", None),
+                                getattr(attach, "file_id", None),
+                                getattr(attach, "fileId", None),
+                                getattr(attach, "id", None),
+                            )
+                            if value is not None
+                        }
+                        if str(reference_id) not in attach_refs and len(attach_list) > 1:
+                            continue
+                        attachment = await self._download_attachment(
+                            chat_id,
+                            msg_id,
+                            attach,
+                            index=attachment_index,
+                            flow_id=flow_id,
+                        )
+                        if attachment:
+                            attachment.duration = attachment.duration or normalized_duration
+                            attachment.source_type = source_type or attachment.source_type
+                            return attachment
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.attachment.audio_dialog_fallback",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="failed",
+                    reason="dialog_last_message_failed",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    error=str(e),
+                )
+
+        raw_payload = await self._fetch_raw_history_payload(
+            chat_id_int=chat_id_int,
+            from_time=int(time.time() * 1000) + 60_000,
+            forward=0,
+            backward=30,
+            flow_id=flow_id,
+        )
+        if raw_payload is not None:
+            raw_message = self._find_raw_history_message_dict(raw_payload, str(msg_id))
+            if raw_message is not None:
+                normalized = self._normalize_message_dict(raw_message)
+                raw_attaches = self._payload_value(normalized, "attaches", "attachments") or []
+                attach_list = raw_attaches if isinstance(raw_attaches, list) else [raw_attaches]
+                for attach in attach_list:
+                    if not isinstance(attach, dict):
+                        continue
+                    attach_obj = SimpleNamespace(**self._normalize_message_dict(attach))
+                    atype = self._normalize_attachment_type(
+                        self._attachment_type_name(attach_obj)
+                    )
+                    if atype != "AUDIO":
+                        continue
+                    attach_refs = {
+                        str(value)
+                        for value in (
+                            getattr(attach_obj, "audio_id", None),
+                            getattr(attach_obj, "audioId", None),
+                            getattr(attach_obj, "file_id", None),
+                            getattr(attach_obj, "fileId", None),
+                            getattr(attach_obj, "id", None),
+                        )
+                        if value is not None
+                    }
+                    if str(reference_id) not in attach_refs and len(attach_list) > 1:
+                        continue
+                    attachment = await self._download_attachment(
+                        chat_id,
+                        msg_id,
+                        attach_obj,
+                        index=attachment_index,
+                        flow_id=flow_id,
+                    )
+                    if attachment:
+                        attachment.duration = attachment.duration or normalized_duration
+                        attachment.source_type = source_type or attachment.source_type
+                        return attachment
+
+        raw_message = await self._fetch_raw_message_payload_by_id(
+            chat_id=chat_id,
+            msg_id=msg_id,
+            flow_id=flow_id,
+        )
+        if raw_message is not None:
+            normalized = self._normalize_message_dict(raw_message)
+            raw_attaches = self._payload_value(normalized, "attaches", "attachments") or []
+            attach_list = raw_attaches if isinstance(raw_attaches, list) else [raw_attaches]
+            for attach in attach_list:
+                if not isinstance(attach, dict):
+                    continue
+                attach_obj = SimpleNamespace(**self._normalize_message_dict(attach))
+                atype = self._normalize_attachment_type(
+                    self._attachment_type_name(attach_obj)
+                )
+                if atype != "AUDIO":
+                    continue
+                attach_refs = {
+                    str(value)
+                    for value in (
+                        getattr(attach_obj, "audio_id", None),
+                        getattr(attach_obj, "audioId", None),
+                        getattr(attach_obj, "file_id", None),
+                        getattr(attach_obj, "fileId", None),
+                        getattr(attach_obj, "id", None),
+                    )
+                    if value is not None
+                }
+                if str(reference_id) not in attach_refs and len(attach_list) > 1:
+                    continue
+                attachment = await self._download_attachment(
+                    chat_id,
+                    msg_id,
+                    attach_obj,
+                    index=attachment_index,
+                    flow_id=flow_id,
+                )
+                if attachment:
+                    attachment.duration = attachment.duration or normalized_duration
+                    attachment.source_type = source_type or attachment.source_type
+                    return attachment
+
+        try:
+            stable_id = int(reference_id)
+        except (TypeError, ValueError):
+            return None
+        local_path, filename, protocol_hard_stop = await self._download_audio_by_protocol(
+            chat_id=chat_id,
+            msg_id=msg_id,
+            reference_id=stable_id,
+            reference_kind=reference_kind,
+            prefix=f"audio_retry_{chat_id}_{msg_id}{idx}",
+            filename_hint=filename_hint,
+            flow_id=flow_id,
+        )
+        if local_path:
+            return MaxAttachment(
+                kind="audio",
+                local_path=local_path,
+                filename=filename,
+                duration=normalized_duration,
+                width=None,
+                height=None,
+                source_type=source_type,
+            )
+        if protocol_hard_stop:
+            return None
+        local_path, filename = await self._download_file_by_id(
+            chat_id,
+            msg_id,
+            stable_id,
+            f"audio_retry_{chat_id}_{msg_id}{idx}",
+            filename_hint,
+            ".ogg",
+            expected_kind="audio",
+            flow_id=flow_id,
+        )
+        if not local_path:
+            return None
+        return MaxAttachment(
+            kind="audio",
+            local_path=local_path,
+            filename=filename,
+            duration=normalized_duration,
+            width=None,
+            height=None,
+            source_type=source_type,
+        )
+
+    async def _download_attachment(self, chat_id: str, msg_id: str,
+                                   attach, index: int = 0,
+                                   flow_id: Optional[str] = None) -> Optional[MaxAttachment]:
+        """Скачать одно вложение и нормализовать в MaxAttachment."""
+        raw_type = self._attachment_type_name(attach)
+        atype = self._normalize_attachment_type(raw_type)
+        filename_hint = self._attachment_filename(attach)
+        idx = f"_{index}" if index > 0 else ""
+
+        if "PHOTO" in atype or "IMAGE" in atype:
+            url = getattr(attach, "base_url", None) or getattr(attach, "baseRawUrl", None) or getattr(attach, "url", None)
+            if url:
+                local_path, filename = await self._download_from_url(
+                    url, f"photo_{chat_id}_{msg_id}{idx}", filename_hint, ".jpg",
+                    expected_kind="photo", flow_id=flow_id, download_source="direct_url",
+                )
+            else:
+                file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
+                if not file_id:
+                    return None
+                local_path, filename = await self._download_file_by_id(
+                    chat_id, msg_id, file_id, f"photo_{chat_id}_{msg_id}{idx}",
+                    filename_hint, ".jpg", expected_kind="photo", flow_id=flow_id,
+                )
+            if local_path:
+                return MaxAttachment(
+                    kind="photo",
+                    local_path=local_path,
+                    filename=filename,
+                    duration=None,
+                    width=getattr(attach, "width", None),
+                    height=getattr(attach, "height", None),
+                    source_type=raw_type,
+                )
+            return None
+
+        if "VIDEO" in atype:
+            video_id = getattr(attach, "video_id", None) or getattr(attach, "id", None)
+            url = getattr(attach, "url", None)
+            local_path = None
+            filename = None
+            if url:
+                local_path, filename = await self._download_from_url(
+                    url, f"video_{chat_id}_{msg_id}{idx}", filename_hint, ".mp4",
+                    expected_kind="video", flow_id=flow_id, download_source="direct_url",
+                )
+                if not local_path and video_id:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.attachment.video_fallback",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="download",
+                        outcome="retry",
+                        reason="direct_url_failed",
+                        max_chat_id=chat_id,
+                        max_msg_id=msg_id,
+                        source=sanitize_url(url),
+                        attachment_index=index,
+                    )
+            if not local_path and video_id:
+                local_path, filename = await self._download_video_by_id(
+                    chat_id, msg_id, video_id, f"video_{chat_id}_{msg_id}{idx}", filename_hint,
+                    flow_id=flow_id,
+                )
+            if not local_path:
+                return None
+            if local_path:
+                return MaxAttachment(
+                    kind="video",
+                    local_path=local_path,
+                    filename=filename,
+                    duration=self._duration_seconds(getattr(attach, "duration", None), kind="video"),
+                    width=getattr(attach, "width", None),
+                    height=getattr(attach, "height", None),
+                    source_type=raw_type,
+                )
+            return None
+
+        if "AUDIO" in atype or "VOICE" in atype:
+            url = getattr(attach, "url", None)
+            audio_id = getattr(attach, "audio_id", None) or getattr(attach, "audioId", None)
+            token = getattr(attach, "token", None)
+            file_id = (
+                getattr(attach, "file_id", None)
+                or getattr(attach, "id", None)
+                or audio_id
+            )
+            local_path = None
+            filename = None
+            protocol_hard_stop = False
+            if url:
+                local_path, filename = await self._download_from_url(
+                    url, f"audio_{chat_id}_{msg_id}{idx}", filename_hint, ".ogg",
+                    expected_kind="audio", flow_id=flow_id, download_source="direct_url",
+                )
+                if not local_path and file_id:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.attachment.audio_fallback",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="download",
+                        outcome="retry",
+                        reason="direct_url_failed",
+                        max_chat_id=chat_id,
+                        max_msg_id=msg_id,
+                        attachment_index=index,
+                    )
+            if not local_path and file_id:
+                local_path, filename, protocol_hard_stop = await self._download_audio_by_protocol(
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                    reference_id=file_id,
+                    reference_kind="audio_id" if audio_id is not None else "file_id",
+                    prefix=f"audio_{chat_id}_{msg_id}{idx}",
+                    filename_hint=filename_hint,
+                    token=str(token) if token is not None else None,
+                    flow_id=flow_id,
+                )
+            if not local_path and file_id and not protocol_hard_stop:
+                local_path, filename = await self._download_file_by_id(
+                    chat_id, msg_id, file_id, f"audio_{chat_id}_{msg_id}{idx}",
+                    filename_hint, ".ogg", expected_kind="audio", flow_id=flow_id,
+                )
+            if not local_path and not file_id:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "max.attachment.voice_reference_missing",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="download",
+                    outcome="failed",
+                    reason="voice_reference_missing",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    source_type=raw_type,
+                    attachment_class=attach.__class__.__name__,
+                    attachment_fields=self._safe_attachment_field_names(attach),
+                    attachment_index=index,
+                )
+                return None
+            if local_path:
+                return MaxAttachment(
+                    kind="audio",
+                    local_path=local_path,
+                    filename=filename,
+                    duration=self._duration_seconds(getattr(attach, "duration", None), kind="audio"),
+                    width=None,
+                    height=None,
+                    source_type=raw_type,
+                )
+            return None
+
+        if "FILE" in atype or "DOCUMENT" in atype or "DOC" in atype:
+            file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
+            if not file_id:
+                return None
+            local_path, filename = await self._download_file_by_id(
+                chat_id, msg_id, file_id, f"doc_{chat_id}_{msg_id}{idx}",
+                filename_hint, expected_kind="document", flow_id=flow_id,
+            )
+            if local_path:
+                return MaxAttachment(
+                    kind="document",
+                    local_path=local_path,
+                    filename=filename,
+                    duration=None,
+                    width=None,
+                    height=None,
+                    source_type=raw_type,
+                )
+            return None
+
+        return None

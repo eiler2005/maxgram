@@ -23,16 +23,19 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 
 | Файл | Ответственность |
 |------|----------------|
-| `src/main.py` | Supervisor entry point + bootstrap worker |
-| `src/adapters/max_adapter.py` | pymax userbot: connect, recv, send, reconnect |
-| `src/adapters/tg_adapter.py` | aiogram бот: топики, send, recv reply, ops notifications |
+| `src/main.py` | Тонкий entry point: logging, config load, health store, supervisor |
+| `src/startup/composition.py` | Runtime composition root: Repository, adapters, BridgeCore, startup notifications |
+| `src/adapters/max/adapter.py` (`src/adapters/max_adapter.py`) | pymax userbot facade: connect, recv, send, reconnect; старый import path сохранён |
+| `src/adapters/max/{payload,users,errors,media/*}.py` | Pymax-free MAX helper leaves: payload parsing, names, error classification, CDN UA/download |
+| `src/adapters/tg/adapter.py` (`src/adapters/tg_adapter.py`) | aiogram бот: топики, send, recv reply; старый import path сохранён |
+| `src/adapters/tg/notifier.py` | Owner DM / ops topic notifications and alert outbox flush |
 | `src/bridge/contracts.py` | Транспортно-нейтральные dataclass-модели и Protocol-порты между core и adapters |
-| `src/bridge/core.py` | Роутинг: MAX→TG, TG→MAX, dedup, topic auto-create, health-aware status, recovery registry |
-| `src/runtime/health.py` | Health snapshot, health events, alert outbox, heartbeat |
+| `src/bridge/core.py` + `src/bridge/{forwarding,replies,topics,...}.py` | Роутинг, dedup, topic auto-create, commands, recovery registry; core координирует leaf modules |
+| `src/runtime/health/` | Health snapshot, health events, alert outbox, heartbeat; package-level imports сохранены |
 | `src/runtime/supervisor.py` | Worker restart loop, heartbeat, crash alerts |
 | `src/config/loader.py` | YAML конфиг + env переменные |
 | `src/db/models.py` | SQLite схема: routing, delivery, retry, users, recovery registry |
-| `src/db/repository.py` | Data access layer |
+| `src/db/repository.py` + `src/db/repos/*.py` | Repository facade + subdomain repos over one `aiosqlite.Connection` |
 | `infra/ansible/` | Ansible playbooks: deploy, backup, recover, bootstrap, hardening (см. `infra/ansible/README.md`) |
 
 ## База данных (SQLite)
@@ -66,7 +69,8 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 
 > Это знание получено через debugging — **не терять**.
 
-- `BridgeCore` не импортирует `pymax`/`aiogram` и не зависит от concrete adapters: общие модели (`MaxMessage`, `MaxAttachment`, recovery snapshot) и Protocol-порты живут в `src/bridge/contracts.py`. Pymax-грабли и protocol hooks остаются внутри `src/adapters/max_adapter.py`.
+- `BridgeCore` не импортирует `pymax`/`aiogram` и не зависит от concrete adapters: общие модели (`MaxMessage`, `MaxAttachment`, recovery snapshot) и Protocol-порты живут в `src/bridge/contracts.py`. Pymax-грабли и protocol hooks остаются внутри `src/adapters/max/` (`src/adapters/max_adapter.py` — compatibility import).
+- `pymax` imports разрешены только внутри bounded MAX adapter modules: `client_factory.py`, `events.py`, `lifecycle.py`, `raw_payload.py`, `send.py`, `media/attachments.py`. Проверка: `tests/test_bridge_contracts.py::test_pymax_imports_stay_inside_max_adapter_boundary`.
 - `message.sender` — это `int` (user_id), **не** User-объект
 - `message.chat_id` — `int`; положительный = DM, отрицательный = группа
 - `User.names: list[Names]` — имя через `names[0].first_name / last_name / name`

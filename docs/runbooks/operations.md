@@ -510,9 +510,9 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 ### Когда применять
 
 - после деплоя на новый сервер
-- после изменений в `src/adapters/tg_adapter.py`
-- после изменений в `src/adapters/max_adapter.py`
-- после изменений в `src/bridge/core.py`
+- после изменений в `src/adapters/tg/` или compatibility `src/adapters/tg_adapter.py`
+- после изменений в `src/adapters/max/` или compatibility `src/adapters/max_adapter.py`
+- после изменений в `src/bridge/`
 
 ## Добавить новый чат
 

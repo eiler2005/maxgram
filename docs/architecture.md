@@ -81,12 +81,14 @@ Telegram Update (reply в топике форум-группы)
 
 ## Компоненты
 
-### Supervisor / Runtime Health (`src/runtime/*.py`)
+### Supervisor / Runtime Health (`src/runtime/`)
 
-Новый runtime слой:
+Runtime слой разделён на supervisor и health package:
 
 - `supervisor.py` — PID1-процесс, который запускает bridge worker, ловит его аварийный выход и перезапускает с backoff
-- `health.py` — единая модель `HealthSnapshot / SubsystemState / HealthIssue / Severity`
+- `health/state.py` — `HealthSnapshot / SubsystemState / HealthIssue / Severity`
+- `health/store.py` — публичный `RuntimeHealthStore`
+- `health/writer.py`, `health/events.py`, `health/outbox.py`, `health/heartbeat.py`, `health/rendering.py` — atomic writes, event log, alert outbox, heartbeat and operator message rendering
 - persisted артефакты:
   - `data/health_state.json`
   - `data/health_events.jsonl`
@@ -117,9 +119,28 @@ Telegram Update (reply в топике форум-группы)
 from src.bridge.contracts import MaxMessage, MaxAttachment, MaxBridgePort, TelegramBridgePort
 ```
 
-### MAX Adapter (`src/adapters/max_adapter.py`)
+### Composition Root (`src/main.py`, `src/startup/composition.py`)
 
-Обёртка над `pymax.SocketMaxClient`. Управляет:
+`src/main.py` — тонкая точка входа: logging, config load, `RuntimeHealthStore`, `BridgeSupervisor`.
+
+`src/startup/composition.py` — единственное место runtime wiring: создаёт `Repository`, `MaxAdapter`, `TelegramAdapter`, `BridgeCore`, ops notifier и startup notification flow. `src.main` не импортирует concrete adapters или `BridgeCore` напрямую; эту границу защищает architectural regression test.
+
+### MAX Adapter (`src/adapters/max/`, compatibility `src/adapters/max_adapter.py`)
+
+Публичный класс `MaxAdapter` живёт в `src/adapters/max/adapter.py`; старый import path `src.adapters.max_adapter` сохранён как compatibility alias. Внутри adapter split по доменам:
+
+- `adapter.py` — публичный facade and constructor/state wiring
+- `client_factory.py` — `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`
+- `lifecycle.py` — start loop, readiness, failfast ping
+- `events.py`, `raw_payload.py`, `voice_recovery.py` — raw/typed MAX events, raw history cache, empty voice recovery
+- `send.py` — TG→MAX send, reconnect wait window, outbound ack
+- `media/attachments.py` — pymax-bound media protocol downloads
+- `media/downloader.py`, `media/ua.py`, `payload.py`, `users.py`, `errors.py` — pymax-free helper leaves
+- `recovery.py`, `resolve.py`, `runtime_state.py` — recovery snapshots, name/title resolve, runtime issue state
+
+Pymax imports are allowed only inside the MAX adapter boundary files covered by tests. Bridge/runtime/db/startup/main and pymax-free leaves must stay free of `pymax`.
+
+The adapter wraps `pymax.SocketMaxClient` and manages:
 - Соединением и аутентификацией (сессия в `data/session.db`)
 - Reconnect-циклом (fresh client на каждый reconnect — обход pymax OOM-бага)
 - Парсингом входящих сообщений → `MaxMessage` dataclass из `src.bridge.contracts`
@@ -139,9 +160,11 @@ from src.bridge.contracts import MaxMessage, MaxAttachment, MaxBridgePort, Teleg
 SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 ```
 
-### Telegram Adapter (`src/adapters/tg_adapter.py`)
+### Telegram Adapter (`src/adapters/tg/`, compatibility `src/adapters/tg_adapter.py`)
 
-Обёртка над `aiogram`. Управляет:
+`src/adapters/tg/adapter.py` содержит aiogram bot/dispatcher, topic operations and message send/receive. `src/adapters/tg/notifier.py` отвечает за owner DM, ops topic fanout and alert outbox flush/reporting. Старый import path `src.adapters.tg_adapter` сохранён.
+
+Adapter управляет:
 - Ботом и long-polling dispatcher
 - Созданием/переименованием топиков в форум-группе
 - Отправкой текста, фото, видео, аудио, voice и документов в топики
@@ -164,15 +187,15 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 ### Bridge Core (`src/bridge/core.py`)
 
 Центральная логика без зависимости от concrete transports: зависит от `src.bridge.contracts`, а не от `pymax`, `aiogram`, `MaxAdapter` или `TelegramAdapter`.
-- Роутинг MAX↔TG
-- Дедупликация (idempotency key в SQLite до отправки)
-- Auto-create + auto-rename топиков
-- Проверка режима чата (active/readonly/disabled)
-- Определение имени топика (`config → chat_title → MAX API → fallback`)
-- Персистирование отправителей входящих сообщений в `known_users`
-- Команды: `/status`, `/chats`, `/help`, `/dm Имя текст`, `/recovery scan|report|export|set|remap`
-- Health-aware `/status`, periodic status и watchdog: все они читают один и тот же persisted health snapshot
-- Recovery registry: scan после MAX connect/reconnect, weekly snapshot, event-driven snapshots, freshness `last_scan_at`, owner-only export, DM contact recovery из реальных dialogs и ручной remap topic → new MAX chat
+
+`core.py` координирует leaf modules:
+- `mapping.py`, `delivery.py`, `topics.py`
+- `forwarding.py`, `replies.py`, `media_retry.py`
+- `commands/dm.py`, `commands/recovery.py`
+- `recovery/orchestrator.py`, `recovery/reporter.py`
+- `background.py`
+
+Ключевые инварианты прежние: `message_map` пишется до отправки в Telegram; event-driven recovery scans выполняются background task и не блокируют forwarding/topic creation/rename; `/recovery export` остаётся owner-only DM.
 
 **`/dm` — инициация нового DM в MAX из Telegram:**
 Алгоритм longest-prefix matching (до 4 слов для имени, минимум 1 слово сообщение).
@@ -196,9 +219,19 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 
 Important-only уведомления отправляются owner/ops только если auto scan нашёл meaningful change: новые registry rows, unmapped MAX chats, `needs_invite`, `manual_admin_required`, `account_migration_required` или изменение статуса DM contacts. Текст уведомления содержит только counts/statuses и подсказку открыть `/recovery report`; invite links, manual notes, phone numbers, message text, titles, DM contact names и raw MAX fields не попадают в notification/log/health.
 
-### Repository (`src/db/repository.py`)
+### Repository (`src/db/repository.py`, `src/db/repos/*.py`)
 
-Все обращения к SQLite. Принципы:
+`Repository` остался публичным фасадом с прежними методами; SQL разнесён по subdomain repos:
+
+- `bindings.py` — chat bindings and topic mappings
+- `messages.py` — `message_map`, `tg_reply_map`
+- `delivery.py` — delivery log and activity counters
+- `pending_media.py` — durable media retry queue
+- `users.py` — `known_users`
+- `generations.py` — MAX account generations
+- `recovery.py` — recovery registry/events and DM contact registry
+
+Все subrepo используют одно `aiosqlite.Connection`, чтобы commit/transaction behavior оставался прежним. Принципы:
 - Только простые запросы, никаких JOIN-монстров
 - Никакого контента сообщений
 - Все методы async (aiosqlite)

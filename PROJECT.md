@@ -73,10 +73,13 @@ MAX→Telegram Bridge решает конкретную задачу: польз
    (personal account)                          (forum group members)
 ```
 
-### Три компонента
+### Основные компоненты
 
-**MAX Adapter** (`src/adapters/max_adapter.py`)  
-Обёртка над `pymax.SocketMaxClient`. Управляет WebSocket-соединением с MAX, парсит входящие события в `MaxMessage` dataclass, скачивает медиа во временную директорию, отправляет исходящие сообщения. Реализует собственный reconnect-цикл (fresh client на каждый reconnect) обходя OOM-баг библиотеки. Для account recovery собирает meta-only snapshot из `client.chats`, `client.channels`, `client.dialogs` и `get_chat()`.
+**Entrypoint + composition** (`src/main.py`, `src/startup/composition.py`)
+`main.py` остаётся тонкой точкой входа: logging, config load, `RuntimeHealthStore`, `BridgeSupervisor`. Runtime wiring вынесен в `startup/composition.py`: создание `Repository`, `MaxAdapter`, `TelegramAdapter`, `BridgeCore`, ops notifier и startup notification flow.
+
+**MAX Adapter** (`src/adapters/max/`, compatibility `src/adapters/max_adapter.py`)
+Обёртка над `pymax.SocketMaxClient`. Публичный `MaxAdapter` — небольшой facade; connect/reconnect, raw events, send/ack, media protocol downloads, voice recovery, user/title resolve и recovery snapshots разнесены по `src/adapters/max/*.py`. Pymax-free листья (`payload.py`, `users.py`, `errors.py`, `media/ua.py`, `media/downloader.py`) не импортируют `pymax`. Старый import path `src.adapters.max_adapter` сохранён.
 
 Библиотечная база адаптера:
 - GitHub: `https://github.com/MaxApiTeam/PyMax`
@@ -86,11 +89,14 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 
 На 2 апреля 2026 репозиторий `PyMax` на GitHub помечен как archived/read-only, поэтому проект использует pinned dependency в `requirements.txt` и не рассчитывает на быстрые upstream-фиксы.
 
-**Bridge Core** (`src/bridge/core.py`)  
-Вся бизнес-логика без зависимости от транспорта. Принимает события от адаптеров, принимает решения о роутинге, создаёт/переименовывает топики, проверяет режим чата, обеспечивает идемпотентность через SQLite. Владеет recovery registry flow: scan после connect/reconnect, weekly snapshot, `/recovery report/export/set/remap`, защита stale reply mapping после remap.
+**Bridge Core** (`src/bridge/contracts.py`, `src/bridge/core.py`, `src/bridge/*`)
+Вся бизнес-логика без зависимости от транспорта. `BridgeCore` зависит от transport-neutral contracts, а не от concrete adapters. Leaf modules (`forwarding.py`, `replies.py`, `topics.py`, `media_retry.py`, `commands/`, `recovery/`, `background.py`) держат routing, topic, command, recovery and background behavior с явными зависимостями.
 
-**Telegram Adapter** (`src/adapters/tg_adapter.py`)  
-Обёртка над `aiogram`. Управляет Forum Supergroup Topics: создание, переименование, отправка сообщений (текст/фото/видео/аудио/voice/документ). Принимает сообщения из нужной форум-группы, пропускает обычные сообщения от участников группы, держит explicit allowlist для public General-команд (`/dm`) и ограничивает `/status`, `/chats`, `/reauth`, `/recovery ...` только владельцем.
+**Telegram Adapter** (`src/adapters/tg/`, compatibility `src/adapters/tg_adapter.py`)
+Обёртка над `aiogram`. `tg/adapter.py` управляет Forum Supergroup Topics, send/receive и command dispatch. `tg/notifier.py` отвечает за owner DM, ops topic fanout and alert outbox flush. Старый import path `src.adapters.tg_adapter` сохранён.
+
+**Repository + runtime health** (`src/db/repository.py`, `src/db/repos/*.py`, `src/runtime/health/`)
+`Repository` — публичный фасад над subdomain repos, все используют один `aiosqlite.Connection`. Runtime health package сохраняет прежние форматы `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, `health_heartbeat.json`.
 
 ---
 
@@ -285,9 +291,11 @@ for _ in range(3):
 
 ### Тесты
 
-В проекте есть regression-набор на `pytest` (**156 тестов**):
+В проекте есть regression-набор на `pytest` (**167 тестов**):
 
 - `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих, recovery snapshot collector
+- `tests/test_max_adapter_leaves.py` — pymax-free helper leaves и `SocketMaxClient` flags
+- `tests/test_bridge_contracts.py` — contracts/composition/pymax-boundary architecture regressions
 - `tests/test_bridge_core.py` — пересылка media/rendered text, `/dm`, `/recovery`, async event-driven recovery scans, remap stale-reply safety
 - `tests/test_tg_adapter.py` — приём сообщений от участников группы, public `/dm` allowlist, owner-only `/recovery`
 - `tests/test_main.py` — startup notification с runtime/location/masked IP и статусом startup `pytest`
@@ -741,6 +749,19 @@ fly logs -f
 | Owner-only `/recovery scan/report/export/set/remap` | ✅ |
 | Remap safety для stale reply mapping | ✅ |
 | Privacy tests для report/logs/export path | ✅ |
+
+### Phase 8: Architecture boundary refactor ✅ (2026-05-22)
+
+| Задача | Статус |
+|--------|--------|
+| Bridge contracts boundary: core без concrete adapters | ✅ |
+| Repository subdomain repos with compatibility facade | ✅ |
+| Bridge leaf modules for forwarding/replies/topics/recovery/background | ✅ |
+| Telegram adapter package + notifier split | ✅ |
+| Runtime health package split with stable file formats | ✅ |
+| MAX adapter package split, pymax bounded modules, pymax-free helper leaves | ✅ |
+| Startup composition root; `main.py` as thin entry point | ✅ |
+| Architecture regression tests for contracts, composition and pymax boundary | ✅ |
 
 ---
 
