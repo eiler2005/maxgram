@@ -280,6 +280,8 @@ src.adapters.max_adapter compatibility alias
         │    events.py          backend event/raw payload -> MaxMessage
         │    send.py            outbound text + reconnect wait + ack tracking
         │    media/attachments.py media refs -> local files / MaxAttachment
+        │    media/downloader.py  generic CDN HTTP/.part/Range download
+        │    raw/*               raw parser/cache/recovery/telemetry helpers
         │    recovery.py        chats/dialogs/users -> MaxRecoverySnapshot
         │    resolve.py         user/chat title and DM partner lookup
         │    voice_recovery.py  empty voice/raw history recovery

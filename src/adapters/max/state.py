@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from aiohttp import ClientSession
 
@@ -58,7 +58,7 @@ class MaxRuntimeState:
     backend: object
     tmp_dir: Path
     context: MaxAdapterContext
-    client_session_factory: type[ClientSession] = ClientSession
+    client_session_factory: Callable[..., Any] = ClientSession
     handlers: list[MessageHandler] = field(default_factory=list)
     start_handlers: list[Callable] = field(default_factory=list)
     issue_handlers: list[IssueHandler] = field(default_factory=list)

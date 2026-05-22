@@ -107,7 +107,7 @@ class MaxAdapter:
                 session_name=normalized_session_name,
                 tmp_dir=tmp_path,
             ),
-            client_session_factory=ClientSession,
+            client_session_factory=lambda **kwargs: ClientSession(**kwargs),
         )
         runtime = MaxRuntimeService(
             RuntimeDeps(

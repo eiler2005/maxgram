@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from aiohttp import ClientSession
-
 from .backends.base import MaxBackend
 from .context import MaxAdapterContext
 from .state import ConnectionState, EmptyRecoveryState, OutboundState, RawHistoryState
@@ -46,7 +44,7 @@ class MediaDeps:
     connection: ConnectionState
     backend: MaxBackend
     tmp_dir: Path
-    client_session_factory: type[ClientSession]
+    client_session_factory: Callable[..., Any]
     raw_payload: Any
 
 

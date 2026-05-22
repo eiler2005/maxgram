@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
-from aiohttp import ClientSession
-
-from .. import constants as max_constants
 from .. import errors as max_errors
 from .. import payload as max_payload
 from ..deps import ExplicitMaxService
@@ -28,15 +23,14 @@ from ....logging_utils import log_event, sanitize_path, sanitize_url
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-def _client_session_factory():
-    for module_name in ("src.adapters.max_adapter", "src.adapters.max.adapter"):
-        module = sys.modules.get(module_name)
-        if module is not None and hasattr(module, "ClientSession"):
-            return module.ClientSession
-    return ClientSession
-
-
 class MaxMediaService(ExplicitMaxService):
+    def __init__(self, deps):
+        super().__init__(deps)
+        self._downloader = max_downloader.MaxCdnDownloader(
+            tmp_dir=deps.tmp_dir,
+            client_session_factory=deps.client_session_factory,
+        )
+
     def _attachment_type_name(self, attach) -> str:
         atype = getattr(attach, "type", None)
         if atype is None:
@@ -422,20 +416,7 @@ class MaxMediaService(ExplicitMaxService):
         return max_downloader.download_error_status(error)
 
     async def _write_download_response(self, response, part_path: Path, mode: str) -> int:
-        written = 0
-        with part_path.open(mode) as fh:
-            stream = getattr(getattr(response, "content", None), "iter_chunked", None)
-            if callable(stream):
-                async for chunk in stream(max_constants.get("MAX_DOWNLOAD_CHUNK_SIZE")):
-                    if not chunk:
-                        continue
-                    fh.write(chunk)
-                    written += len(chunk)
-            else:
-                content = await response.read()
-                fh.write(content)
-                written += len(content)
-        return written
+        return await self._downloader.write_download_response(response, part_path, mode)
 
     def _download_retry_delay(self, attempt: int) -> int:
         return max_downloader.download_retry_delay(attempt)
@@ -446,154 +427,15 @@ class MaxMediaService(ExplicitMaxService):
                                  expected_kind: Optional[str] = None,
                                  flow_id: Optional[str] = None,
                                  download_source: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
-        """Скачать файл по URL, вернуть (local_path, filename)."""
-        self._tmp_dir.mkdir(parents=True, exist_ok=True)
-        filename = self._build_filename(prefix, filename_hint, url, None, default_extension)
-        local_path = self._tmp_dir / filename
-        part_path = self._tmp_dir / f"{filename}.part"
-        last_error: Exception | None = None
-        content_type: Optional[str] = None
-
-        for attempt in range(1, max_constants.get("MAX_DOWNLOAD_ATTEMPTS") + 1):
-            resume_from = part_path.stat().st_size if part_path.exists() else 0
-            headers, src_ag, ua_family = self._download_client_profile_for_url(url)
-            if resume_from:
-                headers = {**headers, "Range": f"bytes={resume_from}-"}
-
-            try:
-                async with _client_session_factory()(headers=headers) as session:
-                    async with session.get(url) as response:
-                        http_status = getattr(response, "status", None)
-                        if resume_from and getattr(response, "status", None) == 200:
-                            part_path.unlink(missing_ok=True)
-                            resume_from = 0
-                            log_event(
-                                logger,
-                                logging.INFO,
-                                "max.attachment.download_resume",
-                                flow_id=flow_id,
-                                direction="inbound",
-                                stage="download",
-                                outcome="unsupported",
-                                source=sanitize_url(url),
-                                download_source=download_source,
-                                src_ag=src_ag,
-                                ua_family=ua_family,
-                                http_status=http_status,
-                                attempt=attempt,
-                            )
-
-                        response.raise_for_status()
-                        content_type = response.headers.get("Content-Type", "").split(";")[0].strip() or None
-                        mode = "ab" if resume_from and getattr(response, "status", None) == 206 else "wb"
-                        bytes_written = await self._write_download_response(response, part_path, mode)
-
-                if bytes_written <= 0 and not part_path.exists():
-                    raise RuntimeError("download returned no content")
-
-                content = part_path.read_bytes()
-                detected_kind = self._classify_downloaded_content(content_type, content)
-                if not self._is_download_valid(expected_kind, detected_kind):
-                    part_path.unlink(missing_ok=True)
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "max.attachment.download",
-                        flow_id=flow_id,
-                        direction="inbound",
-                        stage="download",
-                        outcome="rejected",
-                        reason="download_rejected",
-                        expected_kind=expected_kind,
-                        detected_kind=detected_kind,
-                        content_type=content_type,
-                        source=sanitize_url(url),
-                        download_source=download_source,
-                        src_ag=src_ag,
-                        ua_family=ua_family,
-                        http_status=http_status,
-                        attempts=attempt,
-                    )
-                    return None, None
-
-                part_path.replace(local_path)
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "max.attachment.download",
-                    flow_id=flow_id,
-                    direction="inbound",
-                    stage="download",
-                    outcome="downloaded",
-                    expected_kind=expected_kind,
-                    detected_kind=detected_kind,
-                    content_type=content_type,
-                    source=sanitize_url(url),
-                    download_source=download_source,
-                    src_ag=src_ag,
-                    ua_family=ua_family,
-                    http_status=http_status,
-                    filename=sanitize_path(filename),
-                    size_bytes=local_path.stat().st_size,
-                    attempts=attempt,
-                    resumed=attempt > 1 or bool(resume_from),
-                )
-                return str(local_path), filename
-            except Exception as e:
-                last_error = e
-                retryable = self._is_retryable_download_error(e)
-                if retryable and attempt < max_constants.get("MAX_DOWNLOAD_ATTEMPTS"):
-                    retry_in_seconds = self._download_retry_delay(attempt)
-                    log_event(
-                        logger,
-                        logging.WARNING,
-                        "max.attachment.download_retry",
-                        flow_id=flow_id,
-                        direction="inbound",
-                        stage="download",
-                        outcome="retry",
-                        reason="download_failed",
-                        expected_kind=expected_kind,
-                        source=sanitize_url(url),
-                        download_source=download_source,
-                        src_ag=src_ag,
-                        ua_family=ua_family,
-                        http_status=self._download_error_status(e),
-                        error=self._download_error_for_log(e),
-                        attempt=attempt,
-                        max_attempts=max_constants.get("MAX_DOWNLOAD_ATTEMPTS"),
-                        resume_from_bytes=part_path.stat().st_size if part_path.exists() else 0,
-                        retry_in_seconds=retry_in_seconds,
-                    )
-                    await asyncio.sleep(retry_in_seconds)
-                    continue
-
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "max.attachment.download",
-                    flow_id=flow_id,
-                    direction="inbound",
-                    stage="download",
-                    outcome="failed",
-                    reason="download_failed",
-                    expected_kind=expected_kind,
-                    source=sanitize_url(url),
-                    download_source=download_source,
-                    src_ag=src_ag,
-                    ua_family=ua_family,
-                    http_status=self._download_error_status(e),
-                    error=self._download_error_for_log(e),
-                    attempts=attempt,
-                    max_attempts=max_constants.get("MAX_DOWNLOAD_ATTEMPTS"),
-                    retryable=retryable,
-                    resume_from_bytes=part_path.stat().st_size if part_path.exists() else 0,
-                )
-                break
-
-        if last_error is not None:
-            part_path.unlink(missing_ok=True)
-        return None, None
+        return await self._downloader.download_from_url(
+            url,
+            prefix,
+            filename_hint,
+            default_extension,
+            expected_kind=expected_kind,
+            flow_id=flow_id,
+            download_source=download_source,
+        )
 
     async def _download_file_by_id(self, chat_id: str, msg_id: str, file_id: int,
                                    prefix: str, filename_hint: Optional[str] = None,
