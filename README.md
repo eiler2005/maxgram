@@ -92,10 +92,16 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 ## Architecture
 
 ```
-MAX WebSocket ──► MAX Adapter ──► Bridge Core ──► TG Adapter ──► Telegram
-                  (pymax)         (contracts)      (aiogram)      (Topics API)
-                                      │
-                             SQLite DB + runtime health
+MAX WebSocket
+  └─► MaxAdapter facade
+        ├─► operation services: lifecycle/events/send/media/recovery/resolve
+        ├─► explicit deps + state slices
+        └─► MaxBackend ──► PymaxBackend (only pymax imports)
+              │
+              ▼
+Bridge Core (contracts) ──► TG Adapter (aiogram) ──► Telegram Topics
+              │
+              └─► SQLite DB + runtime health
 ```
 
 One Python service with two layers: a long-lived supervisor plus a restartable bridge worker. Runtime wiring lives in `src/startup/composition.py`; SQLite and persisted health files are the only state stores.

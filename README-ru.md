@@ -62,10 +62,16 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 ## Архитектура
 
 ```
-MAX WebSocket ──► MAX Adapter ──► Bridge Core ──► TG Adapter ──► Telegram
-                  (pymax)         (contracts)      (aiogram)      (Topics)
-                                      │
-                             SQLite DB + runtime health
+MAX WebSocket
+  └─► MaxAdapter facade
+        ├─► operation services: lifecycle/events/send/media/recovery/resolve
+        ├─► explicit deps + state slices
+        └─► MaxBackend ──► PymaxBackend (только pymax imports)
+              │
+              ▼
+Bridge Core (contracts) ──► TG Adapter (aiogram) ──► Telegram Topics
+              │
+              └─► SQLite DB + runtime health
 ```
 
 Один Python сервис с двумя слоями: supervisor и restartable worker. Runtime wiring живёт в `src/startup/composition.py`. Никаких внешних очередей. SQLite и persisted runtime-health файлы — единственное хранилище состояния.

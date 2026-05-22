@@ -262,6 +262,30 @@ from src.bridge.contracts import MaxMessage, MaxAttachment, MaxBridgePort, Teleg
 
 Публичный класс `MaxAdapter` живёт в `src/adapters/max/adapter.py`; старый import path `src.adapters.max_adapter` сохранён как compatibility alias. `MaxAdapter` больше не наследует набор mixin-ов: это facade, который собирает operation services поверх internal backend boundary. По умолчанию он lazily создаёт `PymaxBackend`, но tests/future backend replacement могут передать fake/alternate backend через internal injection point без изменения `BridgeCore`.
 
+Внутренний разрез MAX adapter после explicit-deps рефакторинга:
+
+```text
+src.adapters.max_adapter compatibility alias
+  └─► MaxAdapter facade
+        ├─ public MaxBridgePort methods
+        │    send_message(), collect_recovery_snapshot(),
+        │    download_*_reference(), resolve_*(), get_last_issue()
+        │
+        ├─ operation services
+        │    lifecycle.py       start/reconnect/readiness
+        │    events.py          backend event/raw payload -> MaxMessage
+        │    send.py            outbound text + reconnect wait + ack tracking
+        │    media/attachments.py media refs -> local files / MaxAttachment
+        │    recovery.py        chats/dialogs/users -> MaxRecoverySnapshot
+        │    resolve.py         user/chat title and DM partner lookup
+        │    voice_recovery.py  empty voice/raw history recovery
+        │
+        ├─ deps.py              RuntimeDeps/SendDeps/EventsDeps/...
+        ├─ state.py             connection/outbound/raw-history/empty-recovery
+        └─ MaxBackend
+              └─► PymaxBackend  only pymax imports, SocketMaxClient, payloads/files
+```
+
 - `backends/base.py` — internal `MaxBackend` protocol: create client, make attachments/messages, opcodes, history/media payloads.
 - `backends/pymax/` — `PymaxBackend`; единственное место с `pymax` imports и `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`.
 - `state.py` — явный mutable state по доменам: connection, outbound, raw history, empty recovery.
