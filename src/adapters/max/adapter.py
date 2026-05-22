@@ -29,6 +29,17 @@ from .constants import (
     MAX_RAW_HISTORY_EXPECTED_TTL_SECONDS,
 )
 from .context import MaxAdapterContext
+from .deps import (
+    EventsDeps,
+    LifecycleDeps,
+    MediaDeps,
+    RawPayloadDeps,
+    RecoveryDeps,
+    ResolveDeps,
+    RuntimeDeps,
+    SendDeps,
+    VoiceRecoveryDeps,
+)
 from .events import MaxEventsService
 from .lifecycle import MaxLifecycleService
 from .media.attachments import MaxMediaService
@@ -44,7 +55,6 @@ from .recovery import MaxRecoveryService
 from .resolve import MaxResolveService
 from .runtime_state import MaxRuntimeService
 from .send import MaxSendService
-from .service_base import MaxServiceRegistry
 from .state import MaxRuntimeState
 from .types import ForwardedPayload, OutboundFailureState, PendingOutboundAck
 from .voice_recovery import MaxVoiceRecoveryService
@@ -99,46 +109,95 @@ class MaxAdapter:
             ),
             client_session_factory=ClientSession,
         )
-        services = MaxServiceRegistry(state=state)
-        services.runtime = MaxRuntimeService(state, services)
-        services.raw_payload = MaxRawPayloadService(state, services)
-        services.voice_recovery = MaxVoiceRecoveryService(state, services)
-        services.events = MaxEventsService(state, services)
-        services.send = MaxSendService(state, services)
-        services.resolver = MaxResolveService(state, services)
-        services.media = MaxMediaService(state, services)
-        services.recovery = MaxRecoveryService(state, services)
-        services.lifecycle = MaxLifecycleService(state, services)
+        runtime = MaxRuntimeService(
+            RuntimeDeps(
+                connection=state.connection,
+                outbound=state.outbound,
+                issue_handlers=state.issue_handlers,
+            )
+        )
+        resolver = MaxResolveService(ResolveDeps(connection=state.connection))
+        raw_payload_deps = RawPayloadDeps(
+            connection=state.connection,
+            raw_history=state.raw_history,
+            backend=backend,
+        )
+        raw_payload = MaxRawPayloadService(raw_payload_deps)
+        media = MaxMediaService(
+            MediaDeps(
+                connection=state.connection,
+                backend=backend,
+                tmp_dir=state.tmp_dir,
+                client_session_factory=state.client_session_factory,
+                raw_payload=raw_payload,
+            )
+        )
+        raw_payload_deps.media = media
+        voice_recovery_deps = VoiceRecoveryDeps(
+            connection=state.connection,
+            raw_history=state.raw_history,
+            empty_recovery=state.empty_recovery,
+            data_dir=state.data_dir,
+            raw_payload=raw_payload,
+        )
+        voice_recovery = MaxVoiceRecoveryService(voice_recovery_deps)
+        events = MaxEventsService(
+            EventsDeps(
+                connection=state.connection,
+                outbound=state.outbound,
+                handlers=state.handlers,
+                backend=backend,
+                raw_payload=raw_payload,
+                media=media,
+                resolver=resolver,
+                runtime=runtime,
+                voice_recovery=voice_recovery,
+            )
+        )
+        voice_recovery_deps.events = events
+        send = MaxSendService(
+            SendDeps(
+                connection=state.connection,
+                outbound=state.outbound,
+                backend=backend,
+                runtime=runtime,
+            )
+        )
+        recovery = MaxRecoveryService(
+            RecoveryDeps(
+                connection=state.connection,
+                phone=state.phone,
+                data_dir=state.data_dir,
+                session_name=state.session_name,
+                session_store=state.session_store,
+                resolver=resolver,
+            )
+        )
+        lifecycle = MaxLifecycleService(
+            LifecycleDeps(
+                connection=state.connection,
+                backend=backend,
+                phone=state.phone,
+                start_handlers=state.start_handlers,
+                interactive_ping_failure_limit=state.interactive_ping_failure_limit,
+                runtime=runtime,
+                recovery=recovery,
+                events=events,
+                voice_recovery=voice_recovery,
+            )
+        )
 
-        object.__setattr__(self, "_state", state)
-        object.__setattr__(self, "_services", services)
-        services.overrides = {}
-        for name, value in {
-            name: value.__get__(self, type(self))
-            for name, value in type(self).__dict__.items()
-            if name.startswith("_")
-            and not name.startswith("__")
-            and callable(value)
-            and name not in MaxAdapter.__dict__
-        }.items():
-            self._install_override(name, value)
-        services.voice_recovery._load_pending_empty_recoveries()
-
-    def __getattr__(self, name: str):
-        return self._services.resolve(name)
-
-    def __setattr__(self, name: str, value):
-        if self._state.set_attr(name, value):
-            return
-        if name.startswith("_") and callable(value):
-            self._install_override(name, value)
-        object.__setattr__(self, name, value)
-
-    def _install_override(self, name: str, value):
-        self._services.overrides[name] = value
-        for service in self._services.services():
-            if getattr(type(service), name, None) is not None:
-                object.__setattr__(service, name, value)
+        self._state = state
+        self._runtime = runtime
+        self._raw_payload = raw_payload
+        self._voice_recovery = voice_recovery
+        self._events = events
+        self._send = send
+        self._resolver = resolver
+        self._media = media
+        self._recovery = recovery
+        self._lifecycle = lifecycle
+        self._voice_recovery._load_pending_empty_recoveries()
 
     @staticmethod
     def _fix_filename_encoding(name: str) -> str:
@@ -154,55 +213,55 @@ class MaxAdapter:
         self._state.issue_handlers.append(handler)
 
     async def start(self):
-        return await self._services.lifecycle.start()
+        return await self._lifecycle.start()
 
     def is_ready(self) -> bool:
-        return self._services.lifecycle.is_ready()
+        return self._lifecycle.is_ready()
 
     async def send_message(self, *args, **kwargs):
-        return await self._services.send.send_message(*args, **kwargs)
+        return await self._send.send_message(*args, **kwargs)
 
     async def resolve_user_name(self, *args, **kwargs):
-        return await self._services.resolver.resolve_user_name(*args, **kwargs)
+        return await self._resolver.resolve_user_name(*args, **kwargs)
 
     async def resolve_chat_title(self, *args, **kwargs):
-        return await self._services.resolver.resolve_chat_title(*args, **kwargs)
+        return await self._resolver.resolve_chat_title(*args, **kwargs)
 
     def get_own_id(self):
-        return self._services.resolver.get_own_id()
+        return self._resolver.get_own_id()
 
     def find_user_by_name(self, *args, **kwargs):
-        return self._services.resolver.find_user_by_name(*args, **kwargs)
+        return self._resolver.find_user_by_name(*args, **kwargs)
 
     def get_dm_partner_id(self, *args, **kwargs):
-        return self._services.resolver.get_dm_partner_id(*args, **kwargs)
+        return self._resolver.get_dm_partner_id(*args, **kwargs)
 
     def get_last_outbound_error(self):
-        return self._services.runtime.get_last_outbound_error()
+        return self._runtime.get_last_outbound_error()
 
     def get_last_outbound_attempts(self):
-        return self._services.runtime.get_last_outbound_attempts()
+        return self._runtime.get_last_outbound_attempts()
 
     def get_last_start_error(self):
-        return self._services.runtime.get_last_start_error()
+        return self._runtime.get_last_start_error()
 
     def get_last_issue(self):
-        return self._services.runtime.get_last_issue()
+        return self._runtime.get_last_issue()
 
     def get_last_connected_at(self):
-        return self._services.runtime.get_last_connected_at()
+        return self._runtime.get_last_connected_at()
 
     async def collect_recovery_snapshot(self):
-        return await self._services.recovery.collect_recovery_snapshot()
+        return await self._recovery.collect_recovery_snapshot()
 
     async def download_video_reference(self, *args, **kwargs):
-        return await self._services.media.download_video_reference(*args, **kwargs)
+        return await self._media.download_video_reference(*args, **kwargs)
 
     async def download_audio_reference(self, *args, **kwargs):
-        return await self._services.media.download_audio_reference(*args, **kwargs)
+        return await self._media.download_audio_reference(*args, **kwargs)
 
     async def replay_recent_history(self, *args, **kwargs):
-        return await self._services.voice_recovery.replay_recent_history(*args, **kwargs)
+        return await self._voice_recovery.replay_recent_history(*args, **kwargs)
 
     def get_pending_empty_recovery_stats(self):
-        return self._services.voice_recovery.get_pending_empty_recovery_stats()
+        return self._voice_recovery.get_pending_empty_recovery_stats()

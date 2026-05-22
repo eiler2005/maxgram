@@ -14,7 +14,7 @@ from src.adapters.max_adapter import (
     MAX_CDN_USER_AGENT,
     MAX_EMPTY_RECOVERY_CACHE_WAIT_SECONDS,
     MaxAttachment,
-    MaxAdapter,
+    MaxAdapter as RealMaxAdapter,
 )
 
 
@@ -93,7 +93,166 @@ class RecoveryClient:
         return self._enriched.get(chat_id)
 
 
-class DummyDownloadAdapter(MaxAdapter):
+class AdapterHarness:
+    def __init__(self, *args, **kwargs):
+        self._adapter = RealMaxAdapter(*args, **kwargs)
+
+    def __setattr__(self, name, value):
+        if name in {"_download_from_url", "_download_file_by_id", "_download_video_by_id"} and "_adapter" in self.__dict__:
+            setattr(self._adapter._media, name, value)
+            return
+        if name == "_make_client" and "_adapter" in self.__dict__:
+            setattr(self._adapter._lifecycle, name, value)
+            return
+        object.__setattr__(self, name, value)
+
+    def on_message(self, handler):
+        return self._adapter.on_message(handler)
+
+    def on_issue(self, handler):
+        return self._adapter.on_issue(handler)
+
+    async def start(self):
+        return await self._adapter.start()
+
+    def is_ready(self):
+        return self._adapter.is_ready()
+
+    async def send_message(self, *args, **kwargs):
+        return await self._adapter.send_message(*args, **kwargs)
+
+    async def collect_recovery_snapshot(self):
+        return await self._adapter.collect_recovery_snapshot()
+
+    async def download_video_reference(self, *args, **kwargs):
+        return await self._adapter.download_video_reference(*args, **kwargs)
+
+    async def download_audio_reference(self, *args, **kwargs):
+        return await self._adapter.download_audio_reference(*args, **kwargs)
+
+    async def replay_recent_history(self, *args, **kwargs):
+        return await self._adapter.replay_recent_history(*args, **kwargs)
+
+    def get_last_outbound_error(self):
+        return self._adapter.get_last_outbound_error()
+
+    def get_last_outbound_attempts(self):
+        return self._adapter.get_last_outbound_attempts()
+
+    def get_last_start_error(self):
+        return self._adapter.get_last_start_error()
+
+    def get_last_issue(self):
+        return self._adapter.get_last_issue()
+
+    def get_pending_empty_recovery_stats(self):
+        return self._adapter.get_pending_empty_recovery_stats()
+
+    @property
+    def _client(self):
+        return self._adapter._state.connection.client
+
+    @_client.setter
+    def _client(self, value):
+        self._adapter._state.connection.client = value
+
+    @property
+    def _own_id(self):
+        return self._adapter._state.connection.own_id
+
+    @_own_id.setter
+    def _own_id(self, value):
+        self._adapter._state.connection.own_id = value
+
+    @property
+    def _started(self):
+        return self._adapter._state.connection.started
+
+    @_started.setter
+    def _started(self, value):
+        self._adapter._state.connection.started = value
+
+    @property
+    def _pending_empty_recoveries(self):
+        return self._adapter._state.empty_recovery.pending_empty_recoveries
+
+    @property
+    def _pending_empty_recovery_tasks(self):
+        return self._adapter._state.empty_recovery.pending_empty_recovery_tasks
+
+    @property
+    def _raw_history_messages(self):
+        return self._adapter._state.raw_history.raw_history_messages
+
+    async def _handle_raw_message(self, *args, **kwargs):
+        return await self._adapter._events._handle_raw_message(*args, **kwargs)
+
+    async def _handle_raw_receive(self, *args, **kwargs):
+        return await self._adapter._events._handle_raw_receive(*args, **kwargs)
+
+    def _install_raw_message_interceptor(self, *args, **kwargs):
+        return self._adapter._events._install_raw_message_interceptor(*args, **kwargs)
+
+    async def _make_client(self, *args, **kwargs):
+        return await self._adapter._lifecycle._make_client(*args, **kwargs)
+
+    def _build_failfast_interactive_ping(self, *args, **kwargs):
+        return self._adapter._lifecycle._build_failfast_interactive_ping(*args, **kwargs)
+
+    def _classify_runtime_error(self, *args, **kwargs):
+        return self._adapter._runtime._classify_runtime_error(*args, **kwargs)
+
+    def _remember_runtime_issue(self, *args, **kwargs):
+        return self._adapter._runtime._remember_runtime_issue(*args, **kwargs)
+
+    async def _emit_runtime_issue(self, *args, **kwargs):
+        return await self._adapter._runtime._emit_runtime_issue(*args, **kwargs)
+
+    def _remember_pending_empty_recovery(self, *args, **kwargs):
+        return self._adapter._voice_recovery._remember_pending_empty_recovery(*args, **kwargs)
+
+    async def _attempt_pending_empty_recovery(self, *args, **kwargs):
+        return await self._adapter._voice_recovery._attempt_pending_empty_recovery(*args, **kwargs)
+
+    def _download_headers_for_url(self, *args, **kwargs):
+        return self._adapter._media._download_headers_for_url(*args, **kwargs)
+
+    def _extract_video_url(self, *args, **kwargs):
+        return self._adapter._media._extract_video_url(*args, **kwargs)
+
+    async def _download_video_by_id(self, *args, **kwargs):
+        return await self._adapter._media._download_video_by_id(*args, **kwargs)
+
+    async def _download_from_url(self, *args, **kwargs):
+        return await self._adapter._media._download_from_url(*args, **kwargs)
+
+    async def _download_attachment(self, *args, **kwargs):
+        return await self._adapter._media._download_attachment(*args, **kwargs)
+
+    def _attachment_type_name(self, *args, **kwargs):
+        return self._adapter._media._attachment_type_name(*args, **kwargs)
+
+    def _normalize_attachment_type(self, *args, **kwargs):
+        return self._adapter._media._normalize_attachment_type(*args, **kwargs)
+
+    def _attachment_filename(self, *args, **kwargs):
+        return self._adapter._media._attachment_filename(*args, **kwargs)
+
+    def _duration_seconds(self, *args, **kwargs):
+        return self._adapter._media._duration_seconds(*args, **kwargs)
+
+    def _safe_attachment_field_names(self, *args, **kwargs):
+        return self._adapter._media._safe_attachment_field_names(*args, **kwargs)
+
+    async def resolve_user_name(self, *args, **kwargs):
+        return await self._adapter.resolve_user_name(*args, **kwargs)
+
+
+class DummyDownloadAdapter(AdapterHarness):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._adapter._events._deps.media = self
+
     async def _download_attachment(self, chat_id: str, msg_id: str, attach, index: int = 0, flow_id=None):
         raw_type = self._attachment_type_name(attach)
         return MaxAttachment(
@@ -132,13 +291,16 @@ class CapturingDownloadAdapter(DummyDownloadAdapter):
         )
 
 
-class CapturingAttachmentDownloadAdapter(MaxAdapter):
+class CapturingAttachmentDownloadAdapter(AdapterHarness):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.url_downloads = []
         self.file_downloads = []
         self.url_result = (None, None)
         self.file_result = (None, None)
+        self._adapter._media._download_from_url = self._download_from_url
+        self._adapter._media._download_file_by_id = self._download_file_by_id
+        self._adapter._events._deps.media = self._adapter._media
 
     async def _download_from_url(
         self,
@@ -175,7 +337,7 @@ class CapturingAttachmentDownloadAdapter(MaxAdapter):
 @pytest.mark.asyncio
 async def test_collect_recovery_snapshot_captures_access_metadata_without_messages(tmp_path):
     (tmp_path / "session").write_bytes(b"session bytes")
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+79991234567",
         data_dir=str(tmp_path),
         session_name="session",
@@ -213,7 +375,7 @@ async def test_collect_recovery_snapshot_captures_access_metadata_without_messag
 
 @pytest.mark.asyncio
 async def test_handle_raw_message_renders_control_leave(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._client = LookupClient(
         users={7001: make_user("Тестовый", "Пользователь")},
         chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")],
@@ -305,7 +467,7 @@ async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
 
 @pytest.mark.asyncio
 async def test_handle_raw_receive_unwraps_channel_wrapper_and_skips_pymax_duplicate(tmp_path):
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -601,7 +763,7 @@ async def test_handle_raw_receive_skips_top_level_message_with_only_cid(
     tmp_path,
     caplog,
 ):
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -651,7 +813,7 @@ async def test_handle_raw_receive_skips_top_level_message_with_only_cid(
 
 @pytest.mark.asyncio
 async def test_handle_raw_receive_prefers_real_chat_id_over_cid(tmp_path):
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -690,7 +852,7 @@ async def test_handle_raw_receive_prefers_real_chat_id_over_cid(tmp_path):
 
 @pytest.mark.asyncio
 async def test_handle_raw_receive_logs_top_level_empty_message_diagnostic(tmp_path, caplog):
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -1966,7 +2128,7 @@ def test_pending_empty_recovery_load_retries_soon_after_restart(tmp_path):
         encoding="utf-8",
     )
 
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -2022,7 +2184,7 @@ async def test_pending_empty_recovery_worker_reschedules_empty_history(tmp_path)
 
 @pytest.mark.asyncio
 async def test_handle_raw_receive_logs_safe_empty_message_diagnostic(tmp_path, caplog):
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -2064,7 +2226,7 @@ async def test_handle_raw_receive_logs_safe_empty_message_diagnostic(tmp_path, c
 
 @pytest.mark.asyncio
 async def test_handle_raw_receive_logs_safe_auxiliary_attachment_event(tmp_path, caplog):
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -2106,7 +2268,7 @@ async def test_handle_raw_receive_logs_safe_auxiliary_attachment_event(tmp_path,
 
 @pytest.mark.asyncio
 async def test_handle_raw_receive_logs_unknown_message_payload_shape_safely(tmp_path, caplog):
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -2145,7 +2307,7 @@ async def test_handle_raw_receive_logs_unknown_message_payload_shape_safely(tmp_
 
 @pytest.mark.asyncio
 async def test_handle_raw_message_renders_unknown_message_details(tmp_path):
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -2189,7 +2351,7 @@ async def test_handle_raw_message_renders_unknown_message_details(tmp_path):
 
 @pytest.mark.asyncio
 async def test_handle_raw_message_renders_control_add_with_partial_name_resolution(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._client = LookupClient(
         users={7001: make_user("Тестовый", "Пользователь")},
         chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")],
@@ -2221,7 +2383,7 @@ async def test_handle_raw_message_renders_control_add_with_partial_name_resoluti
 
 @pytest.mark.asyncio
 async def test_handle_raw_message_renders_control_join_by_link(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._client = LookupClient(
         users={7001: make_user("Тестовый", "Пользователь")},
         chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")],
@@ -2254,7 +2416,7 @@ async def test_handle_raw_message_renders_control_join_by_link(tmp_path):
 @pytest.mark.asyncio
 async def test_handle_raw_message_renders_join_by_link_with_sender_when_no_user_ids(tmp_path):
     """joinbylink без userIds — имя берётся из sender."""
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._client = LookupClient(
         users={7001: make_user("Екатерина", "Глебова")},
         chats=[SimpleNamespace(id=-70000000000003, title="Родительский чат")],
@@ -2297,7 +2459,7 @@ async def test_handle_raw_message_renders_join_by_link_with_sender_when_no_user_
     ],
 )
 async def test_handle_raw_message_renders_non_media_supported_attachments(tmp_path, attach, expected):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._client = LookupClient(chats=[SimpleNamespace(id=123456789, title=None)])
 
     received = []
@@ -2501,7 +2663,7 @@ async def test_resolve_user_name_uses_contacts_cache_before_live_lookup(tmp_path
             self.live_calls += 1
             return []
 
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -2528,7 +2690,7 @@ async def test_resolve_user_name_live_lookup_has_short_timeout(tmp_path, monkeyp
 
     monkeypatch.setattr("src.adapters.max_adapter.asyncio.wait_for", fake_wait_for)
 
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
         session_name="session",
@@ -2541,7 +2703,7 @@ async def test_resolve_user_name_live_lookup_has_short_timeout(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_handle_raw_message_skips_empty_reaction_only_event(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._client = LookupClient(chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")])
 
     received = []
@@ -2570,7 +2732,7 @@ async def test_handle_raw_message_skips_empty_reaction_only_event(tmp_path):
 
 @pytest.mark.asyncio
 async def test_handle_raw_message_logs_received_and_skip_reason(tmp_path, caplog):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._client = LookupClient(chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")])
 
     with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
@@ -2628,7 +2790,7 @@ class EchoAckClient(LookupClient):
 
 @pytest.mark.asyncio
 async def test_send_message_waits_for_echo_ack_when_pymax_does_not_return_id(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._started = True
     adapter._own_id = "161361072"
     adapter._client = EchoAckClient(adapter)
@@ -2653,7 +2815,7 @@ class DirectIdClient(LookupClient):
 
 @pytest.mark.asyncio
 async def test_own_echo_is_suppressed_when_send_message_returns_real_id(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._started = True
     adapter._own_id = "161361072"
     adapter._client = DirectIdClient()
@@ -2700,7 +2862,7 @@ class FlakyRetryClient(LookupClient):
 
 @pytest.mark.asyncio
 async def test_send_message_retries_retryable_transport_error_and_succeeds(tmp_path, monkeypatch, caplog):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._started = True
     adapter._client = FlakyRetryClient(
         [
@@ -2727,7 +2889,7 @@ async def test_send_message_retries_retryable_transport_error_and_succeeds(tmp_p
 
 @pytest.mark.asyncio
 async def test_send_message_exposes_final_error_after_retries(tmp_path, monkeypatch):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._started = True
     adapter._client = FlakyRetryClient(
         [
@@ -2780,6 +2942,12 @@ class StartClient:
     def __init__(self):
         self.raw_handlers = []
 
+    async def _sync(self):
+        return None
+
+    async def _login(self):
+        return None
+
     def on_start(self, handler):
         self.start_handler = handler
 
@@ -2799,9 +2967,17 @@ class StartClient:
         raise RuntimeError("test-stop")
 
 
+class LifecycleBackend:
+    def __init__(self, client):
+        self.client = client
+
+    def create_client(self):
+        return self.client
+
+
 @pytest.mark.asyncio
 async def test_start_path_logs_masked_phone_without_name_error(tmp_path, monkeypatch, caplog):
-    adapter = MaxAdapter(
+    adapter = AdapterHarness(
         phone="+79991234567",
         data_dir=str(tmp_path),
         session_name="session",
@@ -2825,8 +3001,30 @@ async def test_start_path_logs_masked_phone_without_name_error(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_make_client_wraps_startup_stage_errors_with_runtime_capture(tmp_path):
+    class StageFailingClient(StartClient):
+        async def _sync(self):
+            raise RuntimeError("sync-boom")
+
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+        backend=LifecycleBackend(StageFailingClient()),
+    )
+
+    client = await adapter._make_client()
+
+    assert getattr(client._sync, "_maxtg_wrapped", False) is True
+    with pytest.raises(RuntimeError, match="sync-boom"):
+        await client._sync()
+    assert adapter.get_last_start_error() == "sync-boom"
+
+
+@pytest.mark.asyncio
 async def test_failfast_ping_closes_client_after_consecutive_failures(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     client = PingClient([RuntimeError("boom"), RuntimeError("boom"), RuntimeError("boom")])
 
     ping_loop = adapter._build_failfast_interactive_ping(
@@ -2845,7 +3043,7 @@ async def test_failfast_ping_closes_client_after_consecutive_failures(tmp_path):
 
 @pytest.mark.asyncio
 async def test_failfast_ping_resets_failure_counter_after_success(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     client = PingClient(
         [
             RuntimeError("boom"),
@@ -2870,7 +3068,7 @@ async def test_failfast_ping_resets_failure_counter_after_success(tmp_path):
 
 
 def test_classify_runtime_error_marks_corrupt_session_as_reauth(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     issue = adapter._classify_runtime_error(RuntimeError("sqlite3.OperationalError: unsupported file format"))
 
@@ -2880,7 +3078,7 @@ def test_classify_runtime_error_marks_corrupt_session_as_reauth(tmp_path):
 
 
 def test_classify_runtime_error_marks_malformed_session_as_reauth(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     issue = adapter._classify_runtime_error(RuntimeError("sqlite3.DatabaseError: database disk image is malformed"))
 
@@ -2891,7 +3089,7 @@ def test_classify_runtime_error_marks_malformed_session_as_reauth(tmp_path):
 
 @pytest.mark.asyncio
 async def test_emit_runtime_issue_notifies_only_once_per_signature(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     seen = []
 
     async def handler(issue):
@@ -2920,7 +3118,7 @@ class VideoPlayClient(LookupClient):
 
 
 def test_extract_video_url_prefers_stream_over_thumbnail(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     payload = {
         "EXTERNAL": False,
@@ -2938,7 +3136,7 @@ def test_extract_video_url_prefers_stream_over_thumbnail(tmp_path):
 
 
 def test_extract_video_url_prefers_mp4_variant_over_external_page(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     payload = {
         "cache": True,
@@ -2950,7 +3148,7 @@ def test_extract_video_url_prefers_mp4_variant_over_external_page(tmp_path):
 
 
 def test_download_headers_for_url_uses_chrome_user_agent_for_chrome_signed_url(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     headers = adapter._download_headers_for_url(
         "https://maxvd677.okcdn.ru/?expires=1&srcAg=CHROME&id=13644091493083"
@@ -2960,7 +3158,7 @@ def test_download_headers_for_url_uses_chrome_user_agent_for_chrome_signed_url(t
 
 
 def test_download_headers_for_url_uses_android_chrome_user_agent(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     headers = adapter._download_headers_for_url(
         "https://maxvd217.okcdn.ru/?expires=1&srcAg=CHROME_ANDROID&id=13644091493083"
@@ -2970,7 +3168,7 @@ def test_download_headers_for_url_uses_android_chrome_user_agent(tmp_path):
 
 
 def test_download_headers_for_url_uses_ios_chrome_user_agent(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     headers = adapter._download_headers_for_url(
         "https://maxvd587.okcdn.ru/?expires=1&srcAg=CHROME_IPHONE&id=13644091493083"
@@ -2980,7 +3178,7 @@ def test_download_headers_for_url_uses_ios_chrome_user_agent(tmp_path):
 
 
 def test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     headers = adapter._download_headers_for_url(
         "https://maxvd204.okcdn.ru/?expires=1&srcAg=SAFARI_IPHONE_OTHER&id=13636639132379"
@@ -2991,7 +3189,7 @@ def test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url(t
 
 @pytest.mark.asyncio
 async def test_download_video_by_id_uses_raw_video_play_payload(tmp_path):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._client = VideoPlayClient(
         {
             "EXTERNAL": False,
@@ -3047,7 +3245,11 @@ async def test_download_video_by_id_uses_raw_video_play_payload(tmp_path):
 
 @pytest.mark.asyncio
 async def test_handle_raw_message_marks_failed_video_retryable_by_video_id(tmp_path):
-    class FailingVideoAdapter(MaxAdapter):
+    class FailingVideoAdapter(AdapterHarness):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._adapter._media._download_video_by_id = self._download_video_by_id
+
         async def _download_video_by_id(self, *args, **kwargs):
             return None, None
 
@@ -3105,7 +3307,7 @@ async def test_handle_raw_message_marks_failed_video_retryable_by_video_id(tmp_p
 
 @pytest.mark.asyncio
 async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeypatch):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     captured = {}
 
     class FakeResponse:
@@ -3157,7 +3359,7 @@ async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeyp
 
 @pytest.mark.asyncio
 async def test_download_from_url_logs_src_ag_and_sanitized_http_error(tmp_path, monkeypatch, caplog):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     signed_url = (
         "https://maxvd587.okcdn.ru/?expires=1778779666&srcAg=CHROME_IPHONE"
         "&sig=secret&id=13644091493083"
@@ -3223,7 +3425,7 @@ async def test_download_from_url_logs_src_ag_and_sanitized_http_error(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_download_from_url_resumes_partial_file_after_connection_break(tmp_path, monkeypatch):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     captured_headers = []
 
     class BrokenStream:
@@ -3290,7 +3492,7 @@ async def test_download_from_url_resumes_partial_file_after_connection_break(tmp
 
 @pytest.mark.asyncio
 async def test_download_from_url_rejects_html_for_expected_video(tmp_path, monkeypatch):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     class FakeResponse:
         def __init__(self):
@@ -3337,7 +3539,7 @@ async def test_download_from_url_rejects_html_for_expected_video(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_download_from_url_allows_text_for_expected_document(tmp_path, monkeypatch):
-    adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
     class FakeResponse:
         def __init__(self):

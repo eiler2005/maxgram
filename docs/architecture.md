@@ -87,7 +87,7 @@ src/
 │   ├── max/
 │   │   ├── adapter.py        public MaxAdapter facade over operation services
 │   │   ├── state.py          connection/outbound/raw-history/recovery state
-│   │   ├── service_base.py   internal service registry/delegation helpers
+│   │   ├── deps.py           explicit service dependency objects
 │   │   ├── lifecycle.py      start/reconnect/readiness lifecycle service
 │   │   ├── events.py         backend events -> MaxMessage normalization
 │   │   ├── raw_payload.py    raw payload hooks/history fetch service
@@ -265,7 +265,8 @@ from src.bridge.contracts import MaxMessage, MaxAttachment, MaxBridgePort, Teleg
 - `backends/base.py` — internal `MaxBackend` protocol: create client, make attachments/messages, opcodes, history/media payloads.
 - `backends/pymax/` — `PymaxBackend`; единственное место с `pymax` imports и `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`.
 - `state.py` — явный mutable state по доменам: connection, outbound, raw history, empty recovery.
-- `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Они не импортируют `pymax`; pymax-specific objects приходят через backend.
+- `deps.py` — explicit dependency objects for operation services; старый service registry / dynamic `__getattr__` не используется.
+- `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Они не импортируют `pymax`, не принимают полный `MaxAdapter`; pymax-specific objects приходят через backend.
 - `media/downloader.py`, `media/ua.py`, `payload.py`, `users.py`, `errors.py` — pymax-free helper leaves.
 
 Pymax imports are allowed only inside `src/adapters/max/backends/pymax/*`. Replacing `pymax` later means implementing another `MaxBackend`, not changing `BridgeCore`.

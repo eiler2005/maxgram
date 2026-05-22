@@ -32,8 +32,8 @@ jobs:
             src/bridge/contracts.py \
             src/db/migrations.py \
             src/adapters/max/backends/base.py \
+            src/adapters/max/deps.py \
             src/adapters/max/state.py \
-            src/adapters/max/service_base.py \
             src/adapters/max/payload.py \
             src/adapters/max/users.py \
             src/adapters/max/errors.py \

@@ -25,7 +25,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 |------|----------------|
 | `src/main.py` | Тонкий entry point: logging, config load, health store, supervisor |
 | `src/startup/composition.py` | Runtime composition root: Repository, adapters, BridgeCore, startup notifications |
-| `src/adapters/max/adapter.py` (`src/adapters/max_adapter.py`) | MAX facade: operation services over internal backend boundary; старый import path сохранён |
+| `src/adapters/max/adapter.py` (`src/adapters/max_adapter.py`) | MAX facade: operation services with explicit deps over internal backend boundary; старый import path сохранён |
 | `src/adapters/max/backends/pymax/` | Единственная текущая pymax implementation boundary (`SocketMaxClient`, opcodes, pymax types/files/payloads) |
 | `src/adapters/max/{payload,users,errors,media/*}.py` | Pymax-free MAX helper leaves: payload parsing, names, error classification, CDN UA/download |
 | `src/adapters/tg/adapter.py` (`src/adapters/tg_adapter.py`) | aiogram бот: топики, send, recv reply; старый import path сохранён |
@@ -71,7 +71,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 > Это знание получено через debugging — **не терять**.
 
 - `BridgeCore` не импортирует `pymax`/`aiogram` и не зависит от concrete adapters: общие модели (`MaxMessage`, `MaxAttachment`, recovery snapshot) и Protocol-порты живут в `src/bridge/contracts.py`. Pymax-грабли и protocol hooks остаются внутри `src/adapters/max/` (`src/adapters/max_adapter.py` — compatibility import).
-- `pymax` imports разрешены только внутри `src/adapters/max/backends/pymax/*`. `MaxAdapter` — facade over operation services; замена pymax в будущем означает новый `MaxBackend`/internal injection, а не изменение `BridgeCore`. Проверки: `tests/test_bridge_contracts.py::test_pymax_imports_stay_inside_max_adapter_boundary`, `test_max_adapter_uses_composition_not_mixins`, `tests/test_max_adapter_leaves.py::test_max_adapter_can_be_composed_with_fake_backend`.
+- `pymax` imports разрешены только внутри `src/adapters/max/backends/pymax/*`. `MaxAdapter` — facade over operation services with explicit deps; замена pymax в будущем означает новый `MaxBackend`/internal injection, а не изменение `BridgeCore`. Проверки: `tests/test_bridge_contracts.py::test_pymax_imports_stay_inside_max_adapter_boundary`, `test_max_adapter_uses_composition_not_mixins`, `test_max_services_use_explicit_dependencies`, `tests/test_max_adapter_leaves.py::test_max_adapter_can_be_composed_with_fake_backend`.
 - `message.sender` — это `int` (user_id), **не** User-объект
 - `message.chat_id` — `int`; положительный = DM, отрицательный = группа
 - `User.names: list[Names]` — имя через `names[0].first_name / last_name / name`

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import constants as max_constants
-from .service_base import MaxService
+from .deps import ExplicitMaxService
 from ...bridge.contracts import (
     MAX_DM_SWEEP_BACKFILL_SECONDS,
     MaxAttachment,
@@ -20,7 +20,7 @@ from ...logging_utils import build_max_flow_id, log_event
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxVoiceRecoveryService(MaxService):
+class MaxVoiceRecoveryService(ExplicitMaxService):
     async def _recover_empty_message_from_recent_history(
         self,
         *,

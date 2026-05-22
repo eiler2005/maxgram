@@ -8,7 +8,7 @@ from typing import Optional
 
 from . import constants as max_constants
 from . import payload as max_payload
-from .service_base import MaxService
+from .deps import ExplicitMaxService
 from .types import ForwardedPayload
 from ...bridge.contracts import MAX_PROBABLE_CLIENT_CID_MIN, is_probable_client_cid
 from ...logging_utils import build_max_flow_id, log_event
@@ -16,7 +16,7 @@ from ...logging_utils import build_max_flow_id, log_event
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxRawPayloadService(MaxService):
+class MaxRawPayloadService(ExplicitMaxService):
     def _extract_reply_to_msg_id(self, message) -> Optional[str]:
         link = getattr(message, "link", None)
         if not link:

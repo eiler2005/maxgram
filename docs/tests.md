@@ -7,16 +7,16 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/ruff check .
-.venv/bin/mypy src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/state.py src/adapters/max/service_base.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
+.venv/bin/mypy src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
 ```
 
-Всего: **173 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **175 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же базовый gate: `compileall`, `ruff check`, scoped `mypy`, затем `pytest -q`.
 
 ---
 
-## test_bridge_contracts.py — архитектурная граница (5 тестов)
+## test_bridge_contracts.py — архитектурная граница (6 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -25,6 +25,7 @@ GitHub Actions выполняет тот же базовый gate: `compileall`,
 | `test_main_keeps_runtime_wiring_in_composition_root` | `src.main` не импортирует concrete adapters или `BridgeCore`; runtime wiring живёт в `src.startup.composition`. |
 | `test_pymax_imports_stay_inside_max_adapter_boundary` | `pymax` imports разрешены только в `src/adapters/max/backends/pymax/*`; bridge/contracts/services остаются transport-neutral. |
 | `test_max_adapter_uses_composition_not_mixins` | `MaxAdapter` собран composition/facade-ом, не через mixin inheritance; сервисы не принимают полный `MaxAdapter`. |
+| `test_max_services_use_explicit_dependencies` | MAX services не используют `MaxServiceRegistry`/service `__getattr__`, не принимают `MaxAdapter`, а adapter tests не subclass-ят real adapter для private overrides. |
 
 ---
 

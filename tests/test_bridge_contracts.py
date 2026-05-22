@@ -66,3 +66,32 @@ def test_max_adapter_uses_composition_not_mixins():
         if "MaxAdapter" in content and "def __init__(" in content and "MaxAdapter" in content.split("def __init__(", 1)[1].split(")", 1)[0]:
             offenders.append(relative)
     assert offenders == []
+
+
+def test_max_services_use_explicit_dependencies():
+    offenders = []
+    for path in (PROJECT_ROOT / "src/adapters/max").rglob("*.py"):
+        relative = path.relative_to(PROJECT_ROOT).as_posix()
+        content = path.read_text(encoding="utf-8")
+        if "MaxServiceRegistry" in content:
+            offenders.append(f"{relative}: MaxServiceRegistry")
+        if "def __getattr__" in content:
+            offenders.append(f"{relative}: __getattr__")
+        if "service_base" in content:
+            offenders.append(f"{relative}: service_base")
+        if (
+            "MaxAdapter" in content
+            and "def __init__(" in content
+            and "MaxAdapter" in content.split("def __init__(", 1)[1].split(")", 1)[0]
+        ):
+            offenders.append(f"{relative}: service takes MaxAdapter")
+
+    test_source = (PROJECT_ROOT / "tests/test_max_adapter.py").read_text(encoding="utf-8")
+    tree = ast.parse(test_source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                if isinstance(base, ast.Name) and base.id in {"MaxAdapter", "RealMaxAdapter"}:
+                    offenders.append(f"tests/test_max_adapter.py: {node.name} subclasses {base.id}")
+
+    assert offenders == []

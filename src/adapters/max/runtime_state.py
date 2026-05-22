@@ -6,7 +6,7 @@ import time
 from typing import Optional
 
 from . import errors as max_errors
-from .service_base import MaxService
+from .deps import ExplicitMaxService
 from .types import OutboundFailureState, PendingOutboundAck
 from ...bridge.contracts import MaxIssue
 from ...logging_utils import log_event
@@ -14,7 +14,7 @@ from ...logging_utils import log_event
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxRuntimeService(MaxService):
+class MaxRuntimeService(ExplicitMaxService):
     def _normalize_outbound_text(self, text: Optional[str]) -> str:
         return (text or "").strip()
 

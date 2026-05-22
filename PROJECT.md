@@ -291,7 +291,7 @@ for _ in range(3):
 
 ### Тесты
 
-В проекте есть regression-набор на `pytest` (**173 теста**):
+В проекте есть regression-набор на `pytest` (**175 тестов**):
 
 - `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих, recovery snapshot collector
 - `tests/test_max_adapter_leaves.py` — pymax-free helper leaves и `SocketMaxClient` flags

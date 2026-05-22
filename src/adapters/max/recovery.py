@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import users as max_users
-from .service_base import MaxService
+from .deps import ExplicitMaxService
 from ...bridge.contracts import (
     MaxRecoveryChatSnapshot,
     MaxRecoveryContactSnapshot,
@@ -18,7 +18,7 @@ from ...logging_utils import log_event, mask_phone, sanitize_path
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxRecoveryService(MaxService):
+class MaxRecoveryService(ExplicitMaxService):
     def get_session_fingerprint_hash(self) -> Optional[str]:
         session_path = Path(self._data_dir) / self._session_name
         if not session_path.exists():

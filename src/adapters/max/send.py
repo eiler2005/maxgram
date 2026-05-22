@@ -6,14 +6,14 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .service_base import MaxService
+from .deps import ExplicitMaxService
 from .types import PendingOutboundAck
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxSendService(MaxService):
+class MaxSendService(ExplicitMaxService):
     async def send_message(self, chat_id: str, text: str,
                            reply_to_msg_id: Optional[str] = None,
                            media_path: Optional[str] = None,

@@ -129,6 +129,17 @@
 
 ---
 
+## Phase 8: MAX adapter architecture ✅
+
+**Цель:** сделать MAX adapter заменяемым по backend и явным по внутренним зависимостям.
+
+- [x] **Backend boundary** — `pymax` isolated in `src/adapters/max/backends/pymax/`; replacing the library means implementing another `MaxBackend`.
+- [x] **Facade + operation services** — public `MaxAdapter` wires lifecycle/events/send/media/recovery/resolve/voice services without mixin inheritance.
+- [x] **Explicit service dependencies** — service registry / service `__getattr__` removed; services receive explicit deps/state slices/callables.
+- [x] **Test harness over private adapter hooks** — adapter tests no longer subclass real `MaxAdapter` for private overrides; fake service deps cover media/send/event paths.
+
+---
+
 ## Известные ограничения (won't fix)
 
 | Ограничение | Причина |
@@ -147,4 +158,3 @@
 |--------|-----------|
 | Per-chat управление из TG | Medium |
 | Более удобный guided UI поверх `/recovery report` для массового remap | Medium |
-| Убрать transition-layer `MaxServiceRegistry` delegation: перевести MAX operation services на явные `*Deps`/state-slices, заменить private test hooks на fake backend/service deps, добавить architecture-test на отсутствие service `__getattr__` | Medium |

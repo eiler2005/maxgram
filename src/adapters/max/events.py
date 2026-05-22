@@ -12,13 +12,13 @@ from ...bridge.contracts import (
     MaxMessage,
     is_probable_client_cid,
 )
-from .service_base import MaxService
+from .deps import ExplicitMaxService
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxEventsService(MaxService):
+class MaxEventsService(ExplicitMaxService):
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""
         notif_message_opcode = self._backend.opcode_value("NOTIF_MESSAGE", 128)

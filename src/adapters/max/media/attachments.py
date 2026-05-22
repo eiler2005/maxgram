@@ -14,7 +14,7 @@ from aiohttp import ClientSession
 from .. import constants as max_constants
 from .. import errors as max_errors
 from .. import payload as max_payload
-from ..service_base import MaxService
+from ..deps import ExplicitMaxService
 from . import downloader as max_downloader
 from .ua import (
     MAX_CDN_ANDROID_CHROME_USER_AGENT,
@@ -36,7 +36,7 @@ def _client_session_factory():
     return ClientSession
 
 
-class MaxMediaService(MaxService):
+class MaxMediaService(ExplicitMaxService):
     def _attachment_type_name(self, attach) -> str:
         atype = getattr(attach, "type", None)
         if atype is None:

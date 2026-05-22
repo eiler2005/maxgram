@@ -4,13 +4,13 @@ import asyncio
 import logging
 import time
 
-from .service_base import MaxService
+from .deps import ExplicitMaxService
 from ...logging_utils import log_event, mask_phone, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxLifecycleService(MaxService):
+class MaxLifecycleService(ExplicitMaxService):
     def _build_failfast_interactive_ping(self, client, *, ping_interval: float,
                                          failure_limit: int, ping_opcode,
                                          disconnect_error):

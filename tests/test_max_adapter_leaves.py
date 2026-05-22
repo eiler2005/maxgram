@@ -96,4 +96,4 @@ def test_max_adapter_can_be_composed_with_fake_backend(tmp_path):
         backend=backend,
     )
 
-    assert adapter._backend is backend
+    assert adapter._state.backend is backend

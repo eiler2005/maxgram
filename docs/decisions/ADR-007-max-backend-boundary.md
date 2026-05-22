@@ -22,6 +22,8 @@ internal backend boundary:
 - MAX operation services (`send`, `events`, `media`, `recovery`, `resolve`,
   `voice_recovery`, `lifecycle`) use backend operations and shared runtime
   state, not direct library imports.
+- Service dependencies are wired explicitly through internal `*Deps` objects;
+  there is no service registry or service-level dynamic `__getattr__`.
 - Compatibility imports and public `MaxAdapter` methods stay unchanged.
 
 ## Consequences
@@ -29,8 +31,8 @@ internal backend boundary:
 - Replacing `pymax` later means implementing another backend package and wiring
   it into `MaxAdapter`, while `BridgeCore` and `src/bridge/contracts.py` remain
   unchanged.
-- Tests enforce no mixin-based `MaxAdapter` inheritance and no `pymax` imports
-  outside `src/adapters/max/backends/pymax/`.
-- Some legacy private test hooks still delegate through the facade for
-  compatibility, but production code should use the public `MaxBridgePort`
-  surface.
+- Tests enforce no mixin-based `MaxAdapter` inheritance, no service registry /
+  service `__getattr__`, no service dependency on full `MaxAdapter`, and no
+  `pymax` imports outside `src/adapters/max/backends/pymax/`.
+- Adapter tests use harness/fake service dependencies instead of subclassing
+  the real `MaxAdapter` to override private methods.
