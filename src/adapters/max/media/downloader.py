@@ -8,6 +8,19 @@ from urllib.parse import urlparse
 from aiohttp import ClientResponseError
 
 
+CONTENT_TYPE_EXTENSIONS = {
+    "audio/ogg": ".oga",
+    "audio/opus": ".opus",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/aac": ".aac",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "video/mp4": ".mp4",
+    "image/jpeg": ".jpg",
+}
+
+
 def fix_filename_encoding(name: str) -> str:
     try:
         fixed = name.encode("latin-1").decode("cp1251")
@@ -31,7 +44,10 @@ def build_filename(
         suffix = Path(urlparse(url).path).suffix
 
     if not suffix and content_type:
-        guessed = mimetypes.guess_extension(content_type)
+        normalized_content_type = content_type.split(";", 1)[0].strip().lower()
+        guessed = CONTENT_TYPE_EXTENSIONS.get(normalized_content_type)
+        if guessed is None:
+            guessed = mimetypes.guess_extension(normalized_content_type)
         if guessed == ".jpe":
             guessed = ".jpg"
         suffix = guessed or ""
