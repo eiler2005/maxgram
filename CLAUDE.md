@@ -26,6 +26,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 | `src/main.py` | Supervisor entry point + bootstrap worker |
 | `src/adapters/max_adapter.py` | pymax userbot: connect, recv, send, reconnect |
 | `src/adapters/tg_adapter.py` | aiogram бот: топики, send, recv reply, ops notifications |
+| `src/bridge/contracts.py` | Транспортно-нейтральные dataclass-модели и Protocol-порты между core и adapters |
 | `src/bridge/core.py` | Роутинг: MAX→TG, TG→MAX, dedup, topic auto-create, health-aware status, recovery registry |
 | `src/runtime/health.py` | Health snapshot, health events, alert outbox, heartbeat |
 | `src/runtime/supervisor.py` | Worker restart loop, heartbeat, crash alerts |
@@ -65,6 +66,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 
 > Это знание получено через debugging — **не терять**.
 
+- `BridgeCore` не импортирует `pymax`/`aiogram` и не зависит от concrete adapters: общие модели (`MaxMessage`, `MaxAttachment`, recovery snapshot) и Protocol-порты живут в `src/bridge/contracts.py`. Pymax-грабли и protocol hooks остаются внутри `src/adapters/max_adapter.py`.
 - `message.sender` — это `int` (user_id), **не** User-объект
 - `message.chat_id` — `int`; положительный = DM, отрицательный = группа
 - `User.names: list[Names]` — имя через `names[0].first_name / last_name / name`

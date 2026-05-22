@@ -7,7 +7,16 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 ```
 
-Всего: **158 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **160 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+
+---
+
+## test_bridge_contracts.py — архитектурная граница (2 теста)
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_bridge_core_does_not_import_concrete_adapters` | `src.bridge.core` импортирует bridge contracts, но не concrete `src.adapters.max_adapter` / `src.adapters.tg_adapter`. |
+| `test_bridge_contracts_stay_transport_neutral` | `src.bridge.contracts` не импортирует `pymax`, `aiogram` или adapter-слой. |
 
 ---
 
@@ -133,7 +142,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (44 теста)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (47 тестов)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 

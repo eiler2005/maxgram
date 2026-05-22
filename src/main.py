@@ -20,8 +20,9 @@ sys.path.insert(0, str(ROOT))
 
 from src.config.loader import load_config
 from src.db.repository import Repository
-from src.adapters.max_adapter import MaxAdapter, MaxIssue
+from src.adapters.max_adapter import MaxAdapter
 from src.adapters.tg_adapter import TelegramAdapter
+from src.bridge.contracts import MaxIssue
 from src.bridge.core import BridgeCore
 from src.logging_utils import EventFormatter, log_event
 from src.runtime.health import (

@@ -256,7 +256,7 @@ maxgram/
 ├── docs/
 │   ├── architecture.md        ← диаграммы и потоки данных
 │   ├── roadmap.md            ← статус и планы
-│   ├── decisions/            ← ADR-001…004
+│   ├── decisions/            ← ADR-001…006
 │   └── runbooks/             ← операции, деплой, Hetzner
 │
 ├── deploy/
@@ -306,7 +306,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 |------|-----------|
 | [docs/architecture.md](docs/architecture.md) | Архитектура, потоки данных, схема DB |
 | [docs/roadmap.md](docs/roadmap.md) | Статус фаз и планы |
-| [docs/decisions/](docs/decisions/) | ADR-001…004: ключевые решения |
+| [docs/decisions/](docs/decisions/) | ADR-001…006: ключевые решения |
 | [docs/runbooks/operations.md](docs/runbooks/operations.md) | Операционные процедуры |
 | [docs/runbooks/deployment.md](docs/runbooks/deployment.md) | Деплой: локально, Docker, Hetzner, Fly.io |
 | [docs/runbooks/hetzner-production.md](docs/runbooks/hetzner-production.md) | Безопасный production-деплой |

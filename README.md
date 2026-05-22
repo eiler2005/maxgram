@@ -220,7 +220,7 @@ maxgram/
 ├── docs/
 │   ├── architecture.md
 │   ├── roadmap.md
-│   ├── decisions/             ← ADR-001…004
+│   ├── decisions/             ← ADR-001…006
 │   └── runbooks/
 │
 ├── deploy/

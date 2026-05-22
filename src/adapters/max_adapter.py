@@ -16,16 +16,30 @@ import json
 import logging
 import mimetypes
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, Optional, Awaitable
+from typing import Callable, Optional
 from urllib.parse import urlparse
 from urllib.parse import parse_qs
 
 from aiohttp import ClientResponseError, ClientSession
 
 from .max_session_store import MaxSessionStore
+from ..bridge.contracts import (
+    MAX_DM_SWEEP_BACKFILL_SECONDS,
+    MAX_PROBABLE_CLIENT_CID_MIN,
+    IssueHandler,
+    MaxAttachment,
+    MaxAttachmentFailure,
+    MaxIssue,
+    MaxMessage,
+    MaxRecoveryChatSnapshot,
+    MaxRecoveryContactSnapshot,
+    MaxRecoverySnapshot,
+    MessageHandler,
+    is_probable_client_cid,
+)
 from ..logging_utils import (
     build_max_flow_id,
     log_event,
@@ -67,48 +81,7 @@ MAX_EMPTY_RECOVERY_RETRY_POLL_SECONDS = 30
 MAX_EMPTY_RECOVERY_RETRY_BASE_SECONDS = 60
 MAX_EMPTY_RECOVERY_RETRY_MAX_SECONDS = 6 * 60 * 60
 MAX_EMPTY_RECOVERY_STATE_FILE = "pending_empty_recoveries.json"
-MAX_PROBABLE_CLIENT_CID_MIN = 1_000_000_000_000
-MAX_DM_SWEEP_BACKFILL_SECONDS = 48 * 60 * 60
 MAX_HISTORY_SWEEP_DIAGNOSTIC_TTL_SECONDS = 10 * 60
-
-
-def is_probable_client_cid(value: object) -> bool:
-    """MAX client-side cids are timestamp-like positive ids, not chat ids."""
-    try:
-        value_int = int(str(value))
-    except (TypeError, ValueError):
-        return False
-    return value_int >= MAX_PROBABLE_CLIENT_CID_MIN
-
-
-@dataclass
-class MaxAttachment:
-    """Нормализованное вложение из MAX."""
-    kind: str                     # photo | video | audio | document
-    local_path: str               # локальный путь к скачанному файлу
-    filename: Optional[str]
-    duration: Optional[int]
-    width: Optional[int]
-    height: Optional[int]
-    source_type: Optional[str]    # исходный тип вложения в MAX/pymax
-
-
-@dataclass
-class MaxAttachmentFailure:
-    """Метаданные вложения MAX, которое не удалось скачать."""
-    kind: str
-    source_type: Optional[str]
-    filename: Optional[str]
-    index: int
-    reason: str
-    retryable: bool = False
-    media_chat_id: Optional[str] = None
-    media_msg_id: Optional[str] = None
-    reference_kind: Optional[str] = None
-    reference_id: Optional[str] = None
-    duration: Optional[int] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
 
 
 @dataclass
@@ -119,26 +92,6 @@ class PendingOutboundAck:
     reply_to_msg_id: Optional[str]
     created_monotonic: float
     future: asyncio.Future
-
-
-@dataclass
-class MaxMessage:
-    """Нормализованное сообщение из MAX."""
-    msg_id: str
-    chat_id: str
-    chat_title: Optional[str]       # название группы или None для DM
-    sender_id: Optional[str]
-    sender_name: Optional[str]
-    text: Optional[str]
-    attachments: list[MaxAttachment]
-    attachment_types: list[str]
-    rendered_texts: list[str]
-    message_type: Optional[str]
-    status: Optional[str]
-    is_dm: bool                     # True если это личная переписка
-    is_own: bool                    # True если сообщение отправлено нашим аккаунтом
-    raw: object                     # оригинальный объект библиотеки
-    attachment_failures: list[MaxAttachmentFailure] = field(default_factory=list)
 
 
 @dataclass
@@ -157,58 +110,6 @@ class OutboundFailureState:
     attempts: int = 0
 
 
-@dataclass
-class MaxIssue:
-    """Диагностическое состояние проблем с подключением к MAX."""
-    kind: str
-    summary: str
-    raw_error: str
-    requires_reauth: bool = False
-    first_seen_at: int = field(default_factory=lambda: int(time.time()))
-    last_seen_at: int = field(default_factory=lambda: int(time.time()))
-
-    def signature(self) -> str:
-        return f"{self.kind}:{self.summary}"
-
-
-@dataclass
-class MaxRecoveryChatSnapshot:
-    max_chat_id: str
-    title: str
-    chat_kind: str
-    access_type: Optional[str] = None
-    invite_link: Optional[str] = None
-    owner_user_id: Optional[str] = None
-    owner_name: Optional[str] = None
-    admin_contacts: list[dict[str, str]] = field(default_factory=list)
-    dm_partner_user_id: Optional[str] = None
-    dm_partner_name: Optional[str] = None
-    participant_count: Optional[int] = None
-
-
-@dataclass
-class MaxRecoveryContactSnapshot:
-    max_user_id: str
-    display_name: str
-    old_dm_chat_id: Optional[str] = None
-    current_dm_chat_id: Optional[str] = None
-    tg_topic_id: Optional[int] = None
-    source: str = "dialog"
-    recovery_status: str = "visible"
-
-
-@dataclass
-class MaxRecoverySnapshot:
-    max_user_id: Optional[str]
-    masked_phone: Optional[str]
-    session_fingerprint_hash: Optional[str]
-    chats: list[MaxRecoveryChatSnapshot] = field(default_factory=list)
-    contacts: list[MaxRecoveryContactSnapshot] = field(default_factory=list)
-
-
-MessageHandler = Callable[[MaxMessage], Awaitable[None]]
-
-
 class MaxAdapter:
     def __init__(self, phone: str, data_dir: str, session_name: str, tmp_dir: str):
         self._phone = phone
@@ -220,7 +121,7 @@ class MaxAdapter:
         self._handlers: list[MessageHandler] = []
         self._started = False
         self._start_handlers: list[Callable] = []
-        self._issue_handlers: list[Callable[[MaxIssue], Optional[Awaitable[None]]]] = []
+        self._issue_handlers: list[IssueHandler] = []
         self._own_id: Optional[str] = None  # ID нашего аккаунта в MAX
         self._pending_outbound_acks: list[PendingOutboundAck] = []
         self._expected_outbound_ids: dict[tuple[str, str], float] = {}
@@ -246,7 +147,7 @@ class MaxAdapter:
     def on_start(self, handler: Callable):
         self._start_handlers.append(handler)
 
-    def on_issue(self, handler: Callable[[MaxIssue], Optional[Awaitable[None]]]):
+    def on_issue(self, handler: IssueHandler):
         self._issue_handlers.append(handler)
 
     def _normalize_outbound_text(self, text: Optional[str]) -> str:

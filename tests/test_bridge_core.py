@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.adapters.max_adapter import (
+from src.bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
     MaxMessage,

@@ -767,3 +767,4 @@ fly logs -f
 | [ADR-003](docs/decisions/ADR-003-python-monolith-sqlite.md) | Python async монолит + SQLite |
 | [ADR-004](docs/decisions/ADR-004-pymax-reconnect-strategy.md) | Fresh client на каждый reconnect |
 | [ADR-005](docs/decisions/ADR-005-max-account-recovery-registry.md) | MAX account migration recovery registry |
+| [ADR-006](docs/decisions/ADR-006-bridge-contracts-boundary.md) | Bridge contracts boundary для transport adapters |

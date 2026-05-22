@@ -21,15 +21,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
-from ..adapters.max_adapter import (
-    MaxAdapter,
+from .contracts import (
+    MAX_DM_SWEEP_BACKFILL_SECONDS,
     MaxAttachment,
     MaxAttachmentFailure,
+    MaxBridgePort,
     MaxMessage,
-    MAX_DM_SWEEP_BACKFILL_SECONDS,
+    OpsNotifierPort,
+    TelegramBridgePort,
     is_probable_client_cid,
 )
-from ..adapters.tg_adapter import TelegramAdapter
 from ..config.loader import AppConfig
 from ..db.repository import Repository, ChatBinding, MessageRecord, PendingMediaDownload
 from ..logging_utils import build_max_flow_id, build_tg_flow_id, log_event, sanitize_path
@@ -58,8 +59,8 @@ RECOVERY_NOTIFICATION_DEDUP_SECONDS = 24 * 60 * 60
 
 class BridgeCore:
     def __init__(self, config: AppConfig, repo: Repository,
-                 max_adapter: MaxAdapter, tg_adapter: TelegramAdapter,
-                 ops_notifier: Optional[TelegramAdapter] = None,
+                 max_adapter: MaxBridgePort, tg_adapter: TelegramBridgePort,
+                 ops_notifier: Optional[OpsNotifierPort] = None,
                  health_store: Optional[RuntimeHealthStore] = None):
         self._cfg = config
         self._repo = repo

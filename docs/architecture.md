@@ -104,12 +104,25 @@ Telegram Update (reply в топике форум-группы)
 - `scheduler`
 - `alerting`
 
+### Bridge Contracts (`src/bridge/contracts.py`)
+
+Транспортно-нейтральная граница между routing-core и внешними библиотеками:
+- dataclass-модели `MaxMessage`, `MaxAttachment`, `MaxAttachmentFailure`, `MaxIssue`, `MaxRecoverySnapshot`
+- Protocol-порты `MaxBridgePort`, `TelegramBridgePort`, `OpsNotifierPort`
+- helper-политики, которые нужны core и adapter-слою одинаково (`is_probable_client_cid`, DM history sweep window)
+
+`src/bridge/contracts.py` не импортирует `pymax`, `aiogram` или concrete adapters. Канонический импорт общих моделей:
+
+```python
+from src.bridge.contracts import MaxMessage, MaxAttachment, MaxBridgePort, TelegramBridgePort
+```
+
 ### MAX Adapter (`src/adapters/max_adapter.py`)
 
 Обёртка над `pymax.SocketMaxClient`. Управляет:
 - Соединением и аутентификацией (сессия в `data/session.db`)
 - Reconnect-циклом (fresh client на каждый reconnect — обход pymax OOM-бага)
-- Парсингом входящих сообщений → `MaxMessage` dataclass
+- Парсингом входящих сообщений → `MaxMessage` dataclass из `src.bridge.contracts`
 - Скачиванием медиавложений в `data/tmp/`
 - Отправкой сообщений с retry при reconnect
 - `collect_recovery_snapshot()` — сбор meta-only recovery snapshot из `client.chats`, `client.channels`, `client.dialogs` + `get_chat()`: chat kind, invite link, owner/admin, DM partner, participant count, session fingerprint hash, DM contact snapshot из реальных dialogs only
@@ -150,7 +163,7 @@ SocketMaxClient(reconnect=False, send_fake_telemetry=False)
 
 ### Bridge Core (`src/bridge/core.py`)
 
-Центральная логика без зависимости от транспорта:
+Центральная логика без зависимости от concrete transports: зависит от `src.bridge.contracts`, а не от `pymax`, `aiogram`, `MaxAdapter` или `TelegramAdapter`.
 - Роутинг MAX↔TG
 - Дедупликация (idempotency key в SQLite до отправки)
 - Auto-create + auto-rename топиков
