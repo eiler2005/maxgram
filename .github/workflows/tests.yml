@@ -25,7 +25,21 @@ jobs:
       - name: Run tests
         env:
           PYTHONPATH: .
-        run: pytest -q
+        run: |
+          python -m compileall src tests
+          ruff check .
+          mypy \
+            src/bridge/contracts.py \
+            src/db/migrations.py \
+            src/adapters/max/backends/base.py \
+            src/adapters/max/state.py \
+            src/adapters/max/service_base.py \
+            src/adapters/max/payload.py \
+            src/adapters/max/users.py \
+            src/adapters/max/errors.py \
+            src/adapters/max/media/ua.py \
+            src/adapters/max/media/downloader.py
+          pytest -q
 
   ansible:
     runs-on: ubuntu-latest

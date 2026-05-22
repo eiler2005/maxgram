@@ -3,15 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Optional
 
+from .service_base import MaxService
 from .types import PendingOutboundAck
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxSendMixin:
+class MaxSendService(MaxService):
     async def send_message(self, chat_id: str, text: str,
                            reply_to_msg_id: Optional[str] = None,
                            media_path: Optional[str] = None,
@@ -84,16 +86,14 @@ class MaxSendMixin:
             )
 
             try:
-                from pymax.files import File, Photo, Video
-
                 attachment = None
                 if media_path and Path(media_path).exists():
                     if media_type == "photo":
-                        attachment = Photo(path=media_path)
+                        attachment = self._backend.make_photo_attachment(media_path)
                     elif media_type == "video":
-                        attachment = Video(path=media_path)
+                        attachment = self._backend.make_video_attachment(media_path)
                     else:  # audio, document
-                        attachment = File(path=media_path)
+                        attachment = self._backend.make_file_attachment(media_path)
 
                 kwargs: dict = {"chat_id": int(chat_id), "text": text}
                 if reply_to_msg_id:

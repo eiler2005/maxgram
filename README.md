@@ -39,7 +39,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 ## Engineering Highlights
 
 - **Unofficial WebSocket API** — reverse-engineered `pymax` userbot with a custom reconnect loop that fixes an OOM bug in the upstream library (`reconnect=False` + outer `while True`)
-- **Explicit adapter boundary** — `BridgeCore` depends on transport-neutral contracts; `pymax` and `aiogram` stay in adapter/startup modules, with regression tests guarding the boundary
+- **Explicit adapter/backend boundary** — `BridgeCore` depends on transport-neutral contracts; `MaxAdapter` is a facade over operation services and `pymax` is isolated to `src/adapters/max/backends/pymax/`, with regression tests guarding the boundary
 - **Idempotent message deduplication** — `max_msg_id` is written to SQLite *before* forwarding to Telegram, making the system safe to restart at any point without duplicates
 - **Privacy-first design** — no message text or media is ever stored; SQLite only holds routing metadata (chat bindings, message ID map, delivery log)
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access

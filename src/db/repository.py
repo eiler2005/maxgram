@@ -9,7 +9,7 @@ from typing import Optional
 
 import aiosqlite
 
-from .models import SCHEMA
+from .migrations import apply_migrations
 from .repos.bindings import BindingsRepo
 from .repos.delivery import DeliveryRepo
 from .repos.generations import GenerationsRepo
@@ -44,8 +44,7 @@ class Repository:
     async def connect(self):
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
-        await self._db.executescript(SCHEMA)
-        await self._db.commit()
+        await apply_migrations(self._db)
 
     async def close(self):
         if self._db:

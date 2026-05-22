@@ -12,22 +12,17 @@ from ...bridge.contracts import (
     MaxMessage,
     is_probable_client_cid,
 )
+from .service_base import MaxService
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxEventsMixin:
+class MaxEventsService(MaxService):
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""
-        try:
-            from pymax.static.enum import Opcode
-
-            notif_message_opcode = Opcode.NOTIF_MESSAGE.value
-            chat_history_opcode = Opcode.CHAT_HISTORY.value
-        except Exception:
-            notif_message_opcode = 128
-            chat_history_opcode = 49
+        notif_message_opcode = self._backend.opcode_value("NOTIF_MESSAGE", 128)
+        chat_history_opcode = self._backend.opcode_value("CHAT_HISTORY", 49)
 
         raw_opcode = data.get("opcode") if isinstance(data, dict) else None
         opcode_value = getattr(raw_opcode, "value", raw_opcode)

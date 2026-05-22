@@ -14,6 +14,7 @@ from aiohttp import ClientSession
 from .. import constants as max_constants
 from .. import errors as max_errors
 from .. import payload as max_payload
+from ..service_base import MaxService
 from . import downloader as max_downloader
 from .ua import (
     MAX_CDN_ANDROID_CHROME_USER_AGENT,
@@ -35,7 +36,7 @@ def _client_session_factory():
     return ClientSession
 
 
-class MaxAttachmentMixin:
+class MaxMediaService(MaxService):
     def _attachment_type_name(self, attach) -> str:
         atype = getattr(attach, "type", None)
         if atype is None:
@@ -215,9 +216,8 @@ class MaxAttachmentMixin:
     ) -> Optional[dict]:
         if not self._client or getattr(self._client, "_send_and_wait", None) is None:
             return None
-        try:
-            from pymax.static.enum import Opcode
-        except Exception:
+        msg_get_opcode = self._backend.opcode("MSG_GET")
+        if msg_get_opcode is None:
             return None
 
         try:
@@ -243,7 +243,7 @@ class MaxAttachmentMixin:
         for index, payload in enumerate(payloads, start=1):
             try:
                 data = await self._client._send_and_wait(
-                    opcode=Opcode.MSG_GET,
+                    opcode=msg_get_opcode,
                     payload=payload,
                     timeout=5,
                 )
@@ -344,11 +344,7 @@ class MaxAttachmentMixin:
                 },
             ))
 
-        try:
-            from pymax.static.enum import Opcode
-            file_download_opcode = Opcode.FILE_DOWNLOAD
-        except Exception:
-            file_download_opcode = SimpleNamespace(value=88, name="FILE_DOWNLOAD")
+        file_download_opcode = self._backend.opcode("FILE_DOWNLOAD", 88)
 
         # Userbot FILE_DOWNLOAD is only known safe with pymax's fileId shape.
         # audioId/token variants returned proto.payload in prod and closed the socket.
@@ -648,15 +644,15 @@ class MaxAttachmentMixin:
         if not self._client:
             return None, None
         try:
-            from pymax.payloads import GetVideoPayload
-            from pymax.static.enum import Opcode
-
-            payload = GetVideoPayload(
+            payload = self._backend.get_video_payload(
                 chat_id=int(chat_id),
                 message_id=int(msg_id),
                 video_id=int(video_id),
-            ).model_dump(by_alias=True)
-            data = await self._client._send_and_wait(opcode=Opcode.VIDEO_PLAY, payload=payload)
+            )
+            data = await self._client._send_and_wait(
+                opcode=self._backend.opcode("VIDEO_PLAY"),
+                payload=payload,
+            )
             raw_payload = data.get("payload") if isinstance(data, dict) else None
             url = self._extract_video_url(raw_payload)
             if not url:

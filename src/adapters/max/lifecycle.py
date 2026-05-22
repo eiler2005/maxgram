@@ -4,13 +4,13 @@ import asyncio
 import logging
 import time
 
-from .client_factory import create_socket_client
+from .service_base import MaxService
 from ...logging_utils import log_event, mask_phone, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxLifecycleMixin:
+class MaxLifecycleService(MaxService):
     def _build_failfast_interactive_ping(self, client, *, ping_interval: float,
                                          failure_limit: int, ping_opcode,
                                          disconnect_error):
@@ -72,35 +72,32 @@ class MaxLifecycleMixin:
         return _send_interactive_ping
 
     def _install_failfast_interactive_ping(self, client):
+        get_config = getattr(self._backend, "failfast_ping_config", None)
         try:
-            from pymax.exceptions import SocketNotConnectedError
-            from pymax.static.constant import DEFAULT_PING_INTERVAL
-            from pymax.static.enum import Opcode
+            config = get_config() if callable(get_config) else None
         except Exception as e:
             logger.warning("Could not install fail-fast interactive ping loop: %s", e)
+            return client
+        if not config:
             return client
 
         client._send_interactive_ping = self._build_failfast_interactive_ping(
             client,
-            ping_interval=DEFAULT_PING_INTERVAL,
+            ping_interval=float(config["ping_interval"]),
             failure_limit=self._interactive_ping_failure_limit,
-            ping_opcode=Opcode.PING,
-            disconnect_error=SocketNotConnectedError,
+            ping_opcode=config["ping_opcode"],
+            disconnect_error=config["disconnect_error"],
         )
         logger.debug(
             "Installed fail-fast interactive ping loop failure_limit=%s interval=%ss",
             self._interactive_ping_failure_limit,
-            DEFAULT_PING_INTERVAL,
+            config["ping_interval"],
         )
         return client
 
     async def _make_client(self):
         """Создать свежий SocketMaxClient (без накопленного кеша)."""
-        client = create_socket_client(
-            phone=self._phone,
-            data_dir=self._data_dir,
-            session_name=self._session_name,
-        )
+        client = self._backend.create_client()
         self._wrap_client_stage(client, "_sync")
         self._wrap_client_stage(client, "_login")
         client = self._install_raw_message_interceptor(client)

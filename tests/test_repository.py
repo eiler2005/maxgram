@@ -1,8 +1,70 @@
 import json
 
+import aiosqlite
 import pytest
 
 from src.db.repository import ChatBinding, MessageRecord, PendingMediaDownload, Repository, KnownUser
+from src.db.migrations import apply_migrations
+
+
+@pytest.mark.asyncio
+async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
+    db = await aiosqlite.connect(str(tmp_path / "bridge.db"))
+    db.row_factory = aiosqlite.Row
+    try:
+        await apply_migrations(db)
+        await apply_migrations(db)
+
+        async with db.execute(
+            "SELECT version, name FROM schema_migrations ORDER BY version"
+        ) as cur:
+            rows = await cur.fetchall()
+        assert [(row["version"], row["name"]) for row in rows] == [
+            (1, "baseline_schema")
+        ]
+
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'message_map'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["name"] == "message_map"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_schema_migrations_baseline_existing_db(tmp_path):
+    db = await aiosqlite.connect(str(tmp_path / "existing.db"))
+    db.row_factory = aiosqlite.Row
+    try:
+        await db.execute(
+            """
+            CREATE TABLE chat_bindings (
+                max_chat_id TEXT PRIMARY KEY,
+                tg_topic_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'active',
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        await db.commit()
+
+        await apply_migrations(db)
+
+        async with db.execute(
+            "SELECT version FROM schema_migrations WHERE version = 1"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["version"] == 1
+
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'delivery_log'"
+        ) as cur:
+            table = await cur.fetchone()
+        assert table["name"] == "delivery_log"
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio

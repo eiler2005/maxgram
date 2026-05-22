@@ -5,20 +5,26 @@
 ```bash
 pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
+PYTHONPATH=. .venv/bin/python -m compileall src tests
+.venv/bin/ruff check .
+.venv/bin/mypy src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/state.py src/adapters/max/service_base.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
 ```
 
-Всего: **168 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **173 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+
+GitHub Actions выполняет тот же базовый gate: `compileall`, `ruff check`, scoped `mypy`, затем `pytest -q`.
 
 ---
 
-## test_bridge_contracts.py — архитектурная граница (4 теста)
+## test_bridge_contracts.py — архитектурная граница (5 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_bridge_core_does_not_import_concrete_adapters` | `src.bridge.core` импортирует bridge contracts, но не concrete `src.adapters.max_adapter` / `src.adapters.tg_adapter`. |
 | `test_bridge_contracts_stay_transport_neutral` | `src.bridge.contracts` не импортирует `pymax`, `aiogram` или adapter-слой. |
 | `test_main_keeps_runtime_wiring_in_composition_root` | `src.main` не импортирует concrete adapters или `BridgeCore`; runtime wiring живёт в `src.startup.composition`. |
-| `test_pymax_imports_stay_inside_max_adapter_boundary` | `pymax` imports разрешены только в bounded MAX adapter modules. |
+| `test_pymax_imports_stay_inside_max_adapter_boundary` | `pymax` imports разрешены только в `src/adapters/max/backends/pymax/*`; bridge/contracts/services остаются transport-neutral. |
+| `test_max_adapter_uses_composition_not_mixins` | `MaxAdapter` собран composition/facade-ом, не через mixin inheritance; сервисы не принимают полный `MaxAdapter`. |
 
 ---
 
@@ -31,11 +37,14 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_repository.py — работа с SQLite (13 тестов)
+## test_repository.py — работа с SQLite (15 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
+| `test_schema_migrations_apply_fresh_and_are_idempotent` | Fresh SQLite DB получает baseline schema через `schema_migrations`; повторный запуск миграций безопасен. |
+| `test_schema_migrations_baseline_existing_db` | Уже существующая DB с таблицами до runner-а получает baseline marker без изменения семантики схемы. |
 | `test_save_message_upserts_tg_fields` | При двойном `save_message` с одним `max_msg_id` второй вызов дополняет запись: `tg_msg_id` и `tg_topic_id` обновляются через `ON CONFLICT DO UPDATE SET ... = COALESCE(excluded, existing)`. Проверяет что `get_max_msg_id_by_tg` находит запись по `tg_msg_id`. |
+| `test_tg_reply_mapping_resolves_delayed_media_message` | Поздно досланное media-сообщение в Telegram мапится обратно к исходному MAX message для корректных replies. |
 | `test_get_chat_activity_map_since_groups_by_chat` | SQL-агрегация активности по чатам: корректно считает `inbound`, `outbound`, `total` для `/chats`. |
 | `test_save_and_find_user_by_name` | `save_user()` сохраняет запись в `known_users`; `find_user_by_name()` возвращает корректный `max_user_id`. |
 | `test_find_user_case_insensitive` | `find_user_by_name()` работает без учёта регистра для кириллицы (Python-level сравнение, т.к. SQLite NOCASE не покрывает кириллицу). |
@@ -45,6 +54,8 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_recovery_remap_preserves_topic_and_updates_binding` | `/recovery remap` сохраняет Telegram topic, меняет `chat_bindings.max_chat_id`, фиксирует `old_max_chat_id/current_max_chat_id` и статус `remapped`. |
 | `test_dm_contact_recovery_snapshot_upsert_export_and_privacy` | Проверяет создание `dm_contact_recovery_registry`, idempotent upsert, обновление `last_scan_at`, агрегаты report, owner-only export и отсутствие phone/message/raw payload в событиях/export. |
 | `test_recovery_snapshot_reports_status_change_deltas` | `upsert_recovery_snapshot()` возвращает deltas `inserted/status_changed/needs_invite` и пишет scan reason без чувствительных полей. |
+| `test_find_phantom_topic_bindings_requires_duplicate_real_delivery` | Cleanup phantom topics срабатывает только при подтверждённом duplicate real delivery, не на одном совпадении metadata. |
+| `test_pending_media_queue_lifecycle_is_idempotent` | Очередь durable media retry идемпотентно создаёт, reschedule-ит и завершает jobs. |
 
 ---
 
@@ -145,19 +156,20 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_max_adapter_leaves.py — pymax-free MAX helper leaves (5 тестов)
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves (6 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
-| `test_select_user_agent_maps_known_src_ag_values` | `media/ua.py` выбирает корректный MAX CDN User-Agent для Chrome/Android/iOS/Safari fallback. |
-| `test_payload_helpers_read_nested_values_and_safe_error_code` | `payload.py` читает nested payload values и безопасный error code без pymax. |
-| `test_error_helpers_classify_runtime_and_retryable_send_errors` | `errors.py` классифицирует runtime issue и retryable outbound errors. |
-| `test_user_helpers_extract_names_and_dm_partner_id` | `users.py` извлекает имена и DM partner id из plain objects. |
-| `test_client_factory_disables_pymax_reconnect_and_fake_telemetry` | `client_factory.py` создаёт `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`. |
+| `test_max_ua_mapping_selects_chrome_android_profile` | `media/ua.py` выбирает корректный MAX CDN User-Agent для Chrome/Android/iOS/Safari fallback. |
+| `test_payload_helpers_match_case_and_strip_unsafe_fields` | `payload.py` читает nested payload values и чистит unsafe raw fields без pymax. |
+| `test_error_classification_is_pymax_free` | `errors.py` классифицирует runtime issue и retryable outbound errors без pymax imports. |
+| `test_users_and_downloader_helpers_are_plain_object_based` | `users.py` и downloader helpers работают с plain objects/URL metadata. |
+| `test_client_factory_disables_pymax_reconnect_and_fake_telemetry` | `PymaxBackend`/`client_factory.py` создают `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`. |
+| `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (47 тестов)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (48 тестов)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 

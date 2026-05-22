@@ -54,7 +54,7 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 │  │  Bridge Worker                                            │   │
 │  │  ┌────────────────┐  ┌──────────────┐  ┌────────────────┐ │   │
 │  │  │  MAX Adapter   │  │ Bridge Core  │  │  TG Adapter    │ │   │
-│  │  │  (pymax)       │─►│  (router)    │─►│  (aiogram)     │ │   │
+│  │  │  (facade)      │─►│  (router)    │─►│  (aiogram)     │ │   │
 │  │  │                │◄─│              │◄─│                │ │   │
 │  │  └────────────────┘  └──────┬───────┘  └────────────────┘ │   │
 │  └──────────────────────────────┼─────────────────────────────┘   │
@@ -79,13 +79,13 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 `main.py` остаётся тонкой точкой входа: logging, config load, `RuntimeHealthStore`, `BridgeSupervisor`. Runtime wiring вынесен в `startup/composition.py`: создание `Repository`, `MaxAdapter`, `TelegramAdapter`, `BridgeCore`, ops notifier и startup notification flow.
 
 **MAX Adapter** (`src/adapters/max/`, compatibility `src/adapters/max_adapter.py`)
-Обёртка над `pymax.SocketMaxClient`. Публичный `MaxAdapter` — небольшой facade; connect/reconnect, raw events, send/ack, media protocol downloads, voice recovery, user/title resolve и recovery snapshots разнесены по `src/adapters/max/*.py`. Pymax-free листья (`payload.py`, `users.py`, `errors.py`, `media/ua.py`, `media/downloader.py`) не импортируют `pymax`. Старый import path `src.adapters.max_adapter` сохранён.
+Публичный `MaxAdapter` — facade над operation services (`send`, `events`, `media`, `recovery`, `resolve`, `voice_recovery`, `lifecycle`) и internal `MaxBackend`. Текущая реализация backend-а — `PymaxBackend` в `src/adapters/max/backends/pymax/`; это единственное место, где разрешены imports `pymax`. Для тестов и будущей замены backend можно подменить через internal injection point, не трогая `BridgeCore`. Старый import path `src.adapters.max_adapter` сохранён.
 
 Библиотечная база адаптера:
 - GitHub: `https://github.com/MaxApiTeam/PyMax`
 - PyPI пакет: `maxapi-python`
 - Импорт в коде: `pymax`
-- Основной класс: `SocketMaxClient`
+- Runtime backend: `PymaxBackend` поверх `SocketMaxClient`
 
 На 2 апреля 2026 репозиторий `PyMax` на GitHub помечен как archived/read-only, поэтому проект использует pinned dependency в `requirements.txt` и не рассчитывает на быстрые upstream-фиксы.
 
@@ -276,7 +276,7 @@ while True:
         send_fake_telemetry=False, # без SSL storm
     )
     await client.start()           # блокирует до disconnect
-    self._started = False
+    state.connection.started = False
     await asyncio.sleep(5)         # пауза перед reconnect
 ```
 
@@ -291,7 +291,7 @@ for _ in range(3):
 
 ### Тесты
 
-В проекте есть regression-набор на `pytest` (**168 тестов**):
+В проекте есть regression-набор на `pytest` (**173 теста**):
 
 - `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих, recovery snapshot collector
 - `tests/test_max_adapter_leaves.py` — pymax-free helper leaves и `SocketMaxClient` flags
@@ -310,8 +310,8 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 Автоматизация:
 
-- локально: `PYTHONPATH=. .venv/bin/pytest -q`
-- в CI: GitHub Actions workflow `tests.yml`
+- локально: `PYTHONPATH=. .venv/bin/pytest -q`, `compileall`, `ruff check .`, scoped `mypy`
+- в CI: GitHub Actions workflow `tests.yml` запускает тот же test/lint/typecheck gate
 - в production: startup self-check запускается после первого успешного `MAX connected`
 
 ### Секреты и приватные данные

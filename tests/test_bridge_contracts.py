@@ -40,22 +40,29 @@ def test_main_keeps_runtime_wiring_in_composition_root():
 
 
 def test_pymax_imports_stay_inside_max_adapter_boundary():
-    allowed = {
-        "src/adapters/max/client_factory.py",
-        "src/adapters/max/events.py",
-        "src/adapters/max/lifecycle.py",
-        "src/adapters/max/media/attachments.py",
-        "src/adapters/max/raw_payload.py",
-        "src/adapters/max/send.py",
-    }
-
     offenders = []
     for path in (PROJECT_ROOT / "src").rglob("*.py"):
         relative = path.relative_to(PROJECT_ROOT).as_posix()
         content = path.read_text(encoding="utf-8")
         if "from pymax" not in content and "import pymax" not in content:
             continue
-        if relative not in allowed:
+        if not relative.startswith("src/adapters/max/backends/pymax/"):
             offenders.append(relative)
 
+    assert offenders == []
+
+
+def test_max_adapter_uses_composition_not_mixins():
+    adapter_source = (PROJECT_ROOT / "src/adapters/max/adapter.py").read_text(encoding="utf-8")
+    assert "class MaxAdapter(" not in adapter_source
+    assert "Mixin" not in adapter_source
+
+    offenders = []
+    for path in (PROJECT_ROOT / "src/adapters/max").rglob("*.py"):
+        relative = path.relative_to(PROJECT_ROOT).as_posix()
+        content = path.read_text(encoding="utf-8")
+        if "Mixin" in content:
+            offenders.append(relative)
+        if "MaxAdapter" in content and "def __init__(" in content and "MaxAdapter" in content.split("def __init__(", 1)[1].split(")", 1)[0]:
+            offenders.append(relative)
     assert offenders == []

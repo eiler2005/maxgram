@@ -85,16 +85,20 @@ src/
 │   ├── tg_adapter.py         compatibility import path
 │   │
 │   ├── max/
-│   │   ├── adapter.py        public MaxAdapter facade
-│   │   ├── client_factory.py pymax SocketMaxClient factory
-│   │   ├── lifecycle.py      start/reconnect/readiness lifecycle
-│   │   ├── events.py         pymax events -> MaxMessage normalization
-│   │   ├── raw_payload.py    pymax raw payload hooks/history fetch
-│   │   ├── send.py           outbound send with reconnect wait/ack handling
+│   │   ├── adapter.py        public MaxAdapter facade over operation services
+│   │   ├── state.py          connection/outbound/raw-history/recovery state
+│   │   ├── service_base.py   internal service registry/delegation helpers
+│   │   ├── lifecycle.py      start/reconnect/readiness lifecycle service
+│   │   ├── events.py         backend events -> MaxMessage normalization
+│   │   ├── raw_payload.py    raw payload hooks/history fetch service
+│   │   ├── send.py           outbound send with reconnect wait/ack service
 │   │   ├── media/
-│   │   │   ├── attachments.py pymax-bound attachment extraction/download
+│   │   │   ├── attachments.py attachment extraction/download service
 │   │   │   ├── downloader.py HTTP Range/.part downloader
 │   │   │   └── ua.py         MAX CDN srcAg -> User-Agent mapping
+│   │   ├── backends/
+│   │   │   ├── base.py       internal MaxBackend protocol
+│   │   │   └── pymax/        PymaxBackend; only place with pymax imports
 │   │   ├── payload.py        plain payload helpers
 │   │   ├── users.py          names and DM partner helpers
 │   │   ├── errors.py         outbound error classification
@@ -125,7 +129,7 @@ src/
 
 - `src/bridge/*`, `src/db/*`, `src/runtime/*`, `src/main.py` не импортируют `pymax` или `aiogram`.
 - `src/adapters/tg/*` — единственная aiogram boundary; старый путь `src.adapters.tg_adapter` оставлен для совместимости.
-- `src/adapters/max/*` — MAX boundary. `pymax` imports разрешены только в bounded modules, защищённых `tests/test_bridge_contracts.py`.
+- `src/adapters/max/*` — MAX boundary. `pymax` imports разрешены только в `src/adapters/max/backends/pymax/*`, защищено `tests/test_bridge_contracts.py`.
 - `src/startup/composition.py` — composition root: здесь допустимо соединять concrete adapters с `BridgeCore`.
 - Recovery auto-scan дельты не спамят Telegram: они попадают агрегатами в 4-часовой `/status`; отдельный alert остаётся только для `account_migration_required`.
 
@@ -256,20 +260,17 @@ from src.bridge.contracts import MaxMessage, MaxAttachment, MaxBridgePort, Teleg
 
 ### MAX Adapter (`src/adapters/max/`, compatibility `src/adapters/max_adapter.py`)
 
-Публичный класс `MaxAdapter` живёт в `src/adapters/max/adapter.py`; старый import path `src.adapters.max_adapter` сохранён как compatibility alias. Внутри adapter split по доменам:
+Публичный класс `MaxAdapter` живёт в `src/adapters/max/adapter.py`; старый import path `src.adapters.max_adapter` сохранён как compatibility alias. `MaxAdapter` больше не наследует набор mixin-ов: это facade, который собирает operation services поверх internal backend boundary. По умолчанию он lazily создаёт `PymaxBackend`, но tests/future backend replacement могут передать fake/alternate backend через internal injection point без изменения `BridgeCore`.
 
-- `adapter.py` — публичный facade and constructor/state wiring
-- `client_factory.py` — `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`
-- `lifecycle.py` — start loop, readiness, failfast ping
-- `events.py`, `raw_payload.py`, `voice_recovery.py` — raw/typed MAX events, raw history cache, empty voice recovery
-- `send.py` — TG→MAX send, reconnect wait window, outbound ack
-- `media/attachments.py` — pymax-bound media protocol downloads
-- `media/downloader.py`, `media/ua.py`, `payload.py`, `users.py`, `errors.py` — pymax-free helper leaves
-- `recovery.py`, `resolve.py`, `runtime_state.py` — recovery snapshots, name/title resolve, runtime issue state
+- `backends/base.py` — internal `MaxBackend` protocol: create client, make attachments/messages, opcodes, history/media payloads.
+- `backends/pymax/` — `PymaxBackend`; единственное место с `pymax` imports и `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`.
+- `state.py` — явный mutable state по доменам: connection, outbound, raw history, empty recovery.
+- `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Они не импортируют `pymax`; pymax-specific objects приходят через backend.
+- `media/downloader.py`, `media/ua.py`, `payload.py`, `users.py`, `errors.py` — pymax-free helper leaves.
 
-Pymax imports are allowed only inside the MAX adapter boundary files covered by tests. Bridge/runtime/db/startup/main and pymax-free leaves must stay free of `pymax`.
+Pymax imports are allowed only inside `src/adapters/max/backends/pymax/*`. Replacing `pymax` later means implementing another `MaxBackend`, not changing `BridgeCore`.
 
-The adapter wraps `pymax.SocketMaxClient` and manages:
+The adapter facade manages:
 - Соединением и аутентификацией (сессия в `data/session.db`)
 - Reconnect-циклом (fresh client на каждый reconnect — обход pymax OOM-бага)
 - Парсингом входящих сообщений → `MaxMessage` dataclass из `src.bridge.contracts`

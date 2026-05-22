@@ -8,6 +8,7 @@ from typing import Optional
 
 from . import constants as max_constants
 from . import payload as max_payload
+from .service_base import MaxService
 from .types import ForwardedPayload
 from ...bridge.contracts import MAX_PROBABLE_CLIENT_CID_MIN, is_probable_client_cid
 from ...logging_utils import build_max_flow_id, log_event
@@ -15,7 +16,7 @@ from ...logging_utils import build_max_flow_id, log_event
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxRawPayloadMixin:
+class MaxRawPayloadService(MaxService):
     def _extract_reply_to_msg_id(self, message) -> Optional[str]:
         link = getattr(message, "link", None)
         if not link:
@@ -277,13 +278,7 @@ class MaxRawPayloadMixin:
         return max_payload.payload_value(data, *keys)
 
     def _raw_opcode_name(self, opcode) -> Optional[str]:
-        opcode_value = getattr(opcode, "value", opcode)
-        try:
-            from pymax.static.enum import Opcode
-
-            return Opcode(opcode_value).name
-        except Exception:
-            return str(getattr(opcode, "name", "") or "") or None
+        return self._backend.opcode_name(opcode)
 
     def _is_safe_field_name(self, name: object) -> bool:
         return max_payload.is_safe_field_name(name)
@@ -629,9 +624,7 @@ class MaxRawPayloadMixin:
         }
         if not prefer_raw:
             try:
-                from pymax.types import Message
-
-                return Message.from_dict(payload)
+                return self._backend.make_message_from_dict(payload)
             except Exception:
                 pass
         normalized_message = payload["message"]
@@ -752,17 +745,14 @@ class MaxRawPayloadMixin:
         if not self._client or getattr(self._client, "_send_and_wait", None) is None:
             return None
         try:
-            from pymax.payloads import FetchHistoryPayload
-            from pymax.static.enum import Opcode
-
-            payload = FetchHistoryPayload(
+            payload = self._backend.fetch_history_payload(
                 chat_id=chat_id_int,
                 from_time=from_time,
                 forward=forward,
                 backward=backward,
-            ).model_dump(by_alias=True)
+            )
             data = await self._client._send_and_wait(
-                opcode=Opcode.CHAT_HISTORY,
+                opcode=self._backend.opcode("CHAT_HISTORY", 49),
                 payload=payload,
                 timeout=10,
             )

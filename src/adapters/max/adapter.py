@@ -1,17 +1,19 @@
 """
 MAX Adapter facade.
 
-The public `MaxAdapter` API stays here; transport-heavy behavior is split into
-domain mixins under `src.adapters.max`.
+The public `MaxAdapter` API stays here. Runtime behavior is composed from
+operation services over an internal MAX backend boundary; pymax is one backend
+implementation, not a dependency of bridge/core.
 """
 
 import asyncio
 import logging
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from aiohttp import ClientSession
 
+from .backends.base import MaxBackend
 from .constants import (
     MAX_DOWNLOAD_ATTEMPTS,
     MAX_DOWNLOAD_CHUNK_SIZE,
@@ -27,22 +29,25 @@ from .constants import (
     MAX_RAW_HISTORY_EXPECTED_TTL_SECONDS,
 )
 from .context import MaxAdapterContext
-from .events import MaxEventsMixin
-from .lifecycle import MaxLifecycleMixin
-from .media.attachments import MaxAttachmentMixin
+from .events import MaxEventsService
+from .lifecycle import MaxLifecycleService
+from .media.attachments import MaxMediaService
+from .media.downloader import fix_filename_encoding
 from .media.ua import (
     MAX_CDN_ANDROID_CHROME_USER_AGENT,
     MAX_CDN_CHROME_USER_AGENT,
     MAX_CDN_IOS_CHROME_USER_AGENT,
     MAX_CDN_USER_AGENT,
 )
-from .raw_payload import MaxRawPayloadMixin
-from .recovery import MaxRecoveryMixin
-from .resolve import MaxResolveMixin
-from .runtime_state import MaxRuntimeStateMixin
-from .send import MaxSendMixin
+from .raw_payload import MaxRawPayloadService
+from .recovery import MaxRecoveryService
+from .resolve import MaxResolveService
+from .runtime_state import MaxRuntimeService
+from .send import MaxSendService
+from .service_base import MaxServiceRegistry
+from .state import MaxRuntimeState
 from .types import ForwardedPayload, OutboundFailureState, PendingOutboundAck
-from .voice_recovery import MaxVoiceRecoveryMixin
+from .voice_recovery import MaxVoiceRecoveryService
 from ..max_session_store import MaxSessionStore
 from ...bridge.contracts import (
     IssueHandler,
@@ -59,58 +64,145 @@ from ...bridge.contracts import (
 logger = logging.getLogger("src.adapters.max_adapter")
 
 
-class MaxAdapter(
-    MaxRecoveryMixin,
-    MaxRuntimeStateMixin,
-    MaxRawPayloadMixin,
-    MaxVoiceRecoveryMixin,
-    MaxEventsMixin,
-    MaxSendMixin,
-    MaxResolveMixin,
-    MaxAttachmentMixin,
-    MaxLifecycleMixin,
-):
-    def __init__(self, phone: str, data_dir: str, session_name: str, tmp_dir: str):
-        self._phone = phone
-        self._data_dir = data_dir
-        self._session_name = Path(session_name).name
-        self._session_store = MaxSessionStore(data_dir, self._session_name)
-        self._tmp_dir = Path(tmp_dir)
-        self._context = MaxAdapterContext(
+class MaxAdapter:
+    def __init__(
+        self,
+        phone: str,
+        data_dir: str,
+        session_name: str,
+        tmp_dir: str,
+        *,
+        backend: MaxBackend | None = None,
+    ):
+        normalized_session_name = Path(session_name).name
+        tmp_path = Path(tmp_dir)
+        if backend is None:
+            from .backends.pymax import PymaxBackend
+
+            backend = PymaxBackend(
+                phone=phone,
+                data_dir=data_dir,
+                session_name=normalized_session_name,
+            )
+        state = MaxRuntimeState(
             phone=phone,
             data_dir=data_dir,
-            session_name=self._session_name,
-            tmp_dir=self._tmp_dir,
+            session_name=normalized_session_name,
+            session_store=MaxSessionStore(data_dir, normalized_session_name),
+            backend=backend,
+            tmp_dir=tmp_path,
+            context=MaxAdapterContext(
+                phone=phone,
+                data_dir=data_dir,
+                session_name=normalized_session_name,
+                tmp_dir=tmp_path,
+            ),
+            client_session_factory=ClientSession,
         )
-        self._client = None
-        self._handlers: list[MessageHandler] = []
-        self._started = False
-        self._start_handlers: list[Callable] = []
-        self._issue_handlers: list[IssueHandler] = []
-        self._own_id: Optional[str] = None
-        self._pending_outbound_acks: list[PendingOutboundAck] = []
-        self._expected_outbound_ids: dict[tuple[str, str], float] = {}
-        self._raw_unwrapped_message_ids: dict[tuple[str, str], float] = {}
-        self._interactive_ping_failure_limit = 3
-        self._last_outbound_failure = OutboundFailureState(error=None, attempts=0)
-        self._last_start_error: Optional[str] = None
-        self._last_issue: Optional[MaxIssue] = None
-        self._last_issue_notification_signature: Optional[str] = None
-        self._last_connected_at: Optional[int] = None
-        self._raw_processed_message_ids: dict[tuple[str, str], float] = {}
-        self._raw_history_messages: dict[tuple[str, str], tuple[float, object]] = {}
-        self._expected_raw_history_messages: dict[str, tuple[str, float]] = {}
-        self._pending_empty_recovery_tasks: dict[tuple[str, str], asyncio.Task] = {}
-        self._pending_empty_recoveries: dict[str, dict[str, object]] = {}
-        self._pending_empty_recovery_worker: Optional[asyncio.Task] = None
-        self._history_sweep_diagnostic_log_until: dict[tuple[str, str, str], float] = {}
-        self._load_pending_empty_recoveries()
+        services = MaxServiceRegistry(state=state)
+        services.runtime = MaxRuntimeService(state, services)
+        services.raw_payload = MaxRawPayloadService(state, services)
+        services.voice_recovery = MaxVoiceRecoveryService(state, services)
+        services.events = MaxEventsService(state, services)
+        services.send = MaxSendService(state, services)
+        services.resolver = MaxResolveService(state, services)
+        services.media = MaxMediaService(state, services)
+        services.recovery = MaxRecoveryService(state, services)
+        services.lifecycle = MaxLifecycleService(state, services)
+
+        object.__setattr__(self, "_state", state)
+        object.__setattr__(self, "_services", services)
+        services.overrides = {}
+        for name, value in {
+            name: value.__get__(self, type(self))
+            for name, value in type(self).__dict__.items()
+            if name.startswith("_")
+            and not name.startswith("__")
+            and callable(value)
+            and name not in MaxAdapter.__dict__
+        }.items():
+            self._install_override(name, value)
+        services.voice_recovery._load_pending_empty_recoveries()
+
+    def __getattr__(self, name: str):
+        return self._services.resolve(name)
+
+    def __setattr__(self, name: str, value):
+        if self._state.set_attr(name, value):
+            return
+        if name.startswith("_") and callable(value):
+            self._install_override(name, value)
+        object.__setattr__(self, name, value)
+
+    def _install_override(self, name: str, value):
+        self._services.overrides[name] = value
+        for service in self._services.services():
+            if getattr(type(service), name, None) is not None:
+                object.__setattr__(service, name, value)
+
+    @staticmethod
+    def _fix_filename_encoding(name: str) -> str:
+        return fix_filename_encoding(name)
 
     def on_message(self, handler: MessageHandler):
-        self._handlers.append(handler)
+        self._state.handlers.append(handler)
 
     def on_start(self, handler: Callable):
-        self._start_handlers.append(handler)
+        self._state.start_handlers.append(handler)
 
     def on_issue(self, handler: IssueHandler):
-        self._issue_handlers.append(handler)
+        self._state.issue_handlers.append(handler)
+
+    async def start(self):
+        return await self._services.lifecycle.start()
+
+    def is_ready(self) -> bool:
+        return self._services.lifecycle.is_ready()
+
+    async def send_message(self, *args, **kwargs):
+        return await self._services.send.send_message(*args, **kwargs)
+
+    async def resolve_user_name(self, *args, **kwargs):
+        return await self._services.resolver.resolve_user_name(*args, **kwargs)
+
+    async def resolve_chat_title(self, *args, **kwargs):
+        return await self._services.resolver.resolve_chat_title(*args, **kwargs)
+
+    def get_own_id(self):
+        return self._services.resolver.get_own_id()
+
+    def find_user_by_name(self, *args, **kwargs):
+        return self._services.resolver.find_user_by_name(*args, **kwargs)
+
+    def get_dm_partner_id(self, *args, **kwargs):
+        return self._services.resolver.get_dm_partner_id(*args, **kwargs)
+
+    def get_last_outbound_error(self):
+        return self._services.runtime.get_last_outbound_error()
+
+    def get_last_outbound_attempts(self):
+        return self._services.runtime.get_last_outbound_attempts()
+
+    def get_last_start_error(self):
+        return self._services.runtime.get_last_start_error()
+
+    def get_last_issue(self):
+        return self._services.runtime.get_last_issue()
+
+    def get_last_connected_at(self):
+        return self._services.runtime.get_last_connected_at()
+
+    async def collect_recovery_snapshot(self):
+        return await self._services.recovery.collect_recovery_snapshot()
+
+    async def download_video_reference(self, *args, **kwargs):
+        return await self._services.media.download_video_reference(*args, **kwargs)
+
+    async def download_audio_reference(self, *args, **kwargs):
+        return await self._services.media.download_audio_reference(*args, **kwargs)
+
+    async def replay_recent_history(self, *args, **kwargs):
+        return await self._services.voice_recovery.replay_recent_history(*args, **kwargs)
+
+    def get_pending_empty_recovery_stats(self):
+        return self._services.voice_recovery.get_pending_empty_recovery_stats()
