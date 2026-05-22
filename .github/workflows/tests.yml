@@ -28,6 +28,7 @@ jobs:
         run: |
           python -m compileall src tests
           ruff check .
+          ruff check src/bridge --select E9,F63,F7,F82,F401,F841,B,C4,SIM,RET
           mypy \
             src/bridge/contracts.py \
             src/db/migrations.py \
@@ -39,6 +40,16 @@ jobs:
             src/adapters/max/errors.py \
             src/adapters/max/media/ua.py \
             src/adapters/max/media/downloader.py
+          mypy \
+            --check-untyped-defs \
+            --no-implicit-optional \
+            --ignore-missing-imports \
+            --follow-imports=silent \
+            src/bridge/core.py \
+            src/bridge/status.py \
+            src/bridge/media_retry.py \
+            src/bridge/recovery/scheduler.py \
+            src/bridge/commands/dispatcher.py
           pytest -q
 
   ansible:

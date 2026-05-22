@@ -4,6 +4,7 @@ import json
 import shlex
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 
 from ...config.loader import AppConfig
@@ -75,10 +76,8 @@ async def handle_recovery(
             )
             return "✅ Export отправлен владельцу в DM" if sent else "❌ Не удалось отправить export"
         finally:
-            try:
+            with suppress(Exception):
                 path.unlink(missing_ok=True)
-            except Exception:
-                pass
 
     if action == "set":
         if len(tokens) < 3:

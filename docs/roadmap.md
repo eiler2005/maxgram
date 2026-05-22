@@ -140,6 +140,18 @@
 
 ---
 
+## Phase 9: Bridge core coordinator split ✅
+
+**Цель:** оставить `BridgeCore` runtime coordinator-ом, а смысловые операции держать в leaf modules.
+
+- [x] **Status/report rendering split** — `/status`, `/chats`, `/help` живут в `bridge/status.py`.
+- [x] **Recovery scheduler split** — debounce/cooldown scan state и notification digest живут в `bridge/recovery/scheduler.py`.
+- [x] **Media retry ownership** — enqueue/find/process/worker logic живёт в `bridge/media_retry.py`.
+- [x] **Command dispatcher** — Telegram command registration живёт в `bridge/commands/dispatcher.py`.
+- [x] **Scoped quality gates** — CI проверяет bridge boundary через scoped ruff и strict-ish mypy для touched bridge modules.
+
+---
+
 ## Известные ограничения (won't fix)
 
 | Ограничение | Причина |

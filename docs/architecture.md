@@ -50,19 +50,22 @@ src/
 │
 ├── bridge/                  business logic; no pymax/aiogram imports
 │   ├── contracts.py          transport-neutral dataclasses + Protocol ports
-│   ├── core.py               coordinator: registers callbacks, delegates to leaves
+│   ├── core.py               coordinator: wires callbacks, services, background jobs
+│   ├── status.py             /status, /chats and /help rendering
 │   ├── mapping.py            message_map / tg_reply_map idempotency helpers
 │   ├── topics.py             topic create/bind/rename decisions
 │   ├── forwarding.py         MAX -> TG text/media delivery
 │   ├── replies.py            TG replies -> MAX outbound messages
-│   ├── media_retry.py        durable MAX media retry worker
+│   ├── media_retry.py        durable MAX media retry enqueue/process/worker
 │   ├── delivery.py           delivery_log status helpers
 │   ├── background.py         status, watchdog, sweeps, cleanup, weekly recovery
 │   ├── commands/
+│   │   ├── dispatcher.py     registers command handlers on Telegram port
 │   │   ├── dm.py             /dm <user> <text>
 │   │   └── recovery.py       /recovery scan|report|export|set|remap
 │   └── recovery/
-│       ├── orchestrator.py   safe scans, debounce/cooldown, snapshot upsert
+│       ├── scheduler.py      scan task state, debounce/cooldown, notifications
+│       ├── orchestrator.py   pure safe scan orchestration and snapshot upsert
 │       └── reporter.py       report/status-summary/critical migration alert
 │
 ├── db/                      SQLite facade + subdomain repositories
@@ -343,11 +346,13 @@ Adapter управляет:
 
 Центральная логика без зависимости от concrete transports: зависит от `src.bridge.contracts`, а не от `pymax`, `aiogram`, `MaxAdapter` или `TelegramAdapter`.
 
-`core.py` координирует leaf modules:
+`core.py` — тонкий runtime coordinator: хранит зависимости, stats и ссылки на leaf services, регистрирует MAX/TG callbacks, запускает background entrypoints. Форматтеры статуса, recovery scheduler state, media retry business logic и command wiring живут вне `core.py`; это защищено architectural regression test.
+
+Leaf modules:
 - `mapping.py`, `delivery.py`, `topics.py`
-- `forwarding.py`, `replies.py`, `media_retry.py`
-- `commands/dm.py`, `commands/recovery.py`
-- `recovery/orchestrator.py`, `recovery/reporter.py`
+- `forwarding.py`, `replies.py`, `media_retry.py`, `status.py`
+- `commands/dispatcher.py`, `commands/dm.py`, `commands/recovery.py`
+- `recovery/scheduler.py`, `recovery/orchestrator.py`, `recovery/reporter.py`
 - `background.py`
 
 Ключевые инварианты прежние: `message_map` пишется до отправки в Telegram; event-driven recovery scans выполняются background task и не блокируют forwarding/topic creation/rename; `/recovery export` остаётся owner-only DM.
@@ -370,7 +375,7 @@ Adapter управляет:
 - `max_connect` и `weekly` остаются safety net: scan после успешного connect/reconnect и weekly background scan.
 - `manual` (`/recovery scan`) выполняется сразу и возвращает видимый оператору результат со свежестью.
 
-Планировщик в `BridgeCore` использует `asyncio.create_task`: message forwarding, topic creation и rename не ждут snapshot. Несколько событий схлопываются в один scan task; snapshot errors логируются безопасно, без raw payload и без invite links. Этот же scan обновляет `dm_contact_recovery_registry` из `MaxRecoverySnapshot.contacts`; источником являются только `client.dialogs` и уже привязанные DM topics, не `client.contacts` и не `known_users`.
+Планировщик в `bridge/recovery/scheduler.py` использует `asyncio.create_task`: message forwarding, topic creation и rename не ждут snapshot. Несколько событий схлопываются в один scan task; snapshot errors логируются безопасно, без raw payload и без invite links. Этот же scan обновляет `dm_contact_recovery_registry` из `MaxRecoverySnapshot.contacts`; источником являются только `client.dialogs` и уже привязанные DM topics, не `client.contacts` и не `known_users`.
 
 Routine recovery deltas from auto scans are quiet: новые registry rows, unmapped MAX chats, `needs_invite`, `manual_admin_required` и DM contact status changes попадают агрегатами в 4-часовой `/status`, где `/recovery report` остаётся detail view. Immediate owner/ops alert сохраняется только для `account_migration_required`. Любой recovery status/notification текст содержит только counts/statuses; invite links, manual notes, phone numbers, message text, titles, DM contact names и raw MAX fields не попадают в notification/log/health.
 

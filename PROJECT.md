@@ -90,7 +90,7 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 На 2 апреля 2026 репозиторий `PyMax` на GitHub помечен как archived/read-only, поэтому проект использует pinned dependency в `requirements.txt` и не рассчитывает на быстрые upstream-фиксы.
 
 **Bridge Core** (`src/bridge/contracts.py`, `src/bridge/core.py`, `src/bridge/*`)
-Вся бизнес-логика без зависимости от транспорта. `BridgeCore` зависит от transport-neutral contracts, а не от concrete adapters. Leaf modules (`forwarding.py`, `replies.py`, `topics.py`, `media_retry.py`, `commands/`, `recovery/`, `background.py`) держат routing, topic, command, recovery and background behavior с явными зависимостями.
+Вся бизнес-логика без зависимости от транспорта. `BridgeCore` зависит от transport-neutral contracts, а не от concrete adapters. Сам `core.py` — runtime coordinator: wiring callbacks, stats, service references и background entrypoints. Leaf modules (`forwarding.py`, `replies.py`, `topics.py`, `status.py`, `media_retry.py`, `commands/`, `recovery/`, `background.py`) держат routing, topic, status, command, recovery and background behavior с явными зависимостями.
 
 **Telegram Adapter** (`src/adapters/tg/`, compatibility `src/adapters/tg_adapter.py`)
 Обёртка над `aiogram`. `tg/adapter.py` управляет Forum Supergroup Topics, send/receive и command dispatch. `tg/notifier.py` отвечает за owner DM, ops topic fanout and alert outbox flush. Старый import path `src.adapters.tg_adapter` сохранён.
@@ -246,7 +246,7 @@ MAX не даёт штатно поменять телефон в профиле
 - `last_scan_at` показывает свежесть snapshot для каждой registry row; `/recovery report` показывает возраст последнего snapshot
 - `chat_recovery_events` хранит append-only audit scan/set/remap/account-change без message text/raw MAX payload
 - `MaxAdapter.collect_recovery_snapshot()` читает `client.chats`, `client.channels`, `client.dialogs`, enrich через `get_chat()`
-- `BridgeCore` запускает safe scan после MAX connect/reconnect, затем раз в неделю, а также event-driven при `new_binding`, `title_changed` и MAX `CONTROL`
+- `bridge/recovery/scheduler.py` запускает safe scan после MAX connect/reconnect, затем раз в неделю, а также event-driven при `new_binding`, `title_changed` и MAX `CONTROL`
 - Event-driven scans работают асинхронно: background task с debounce/cooldown не задерживает обычную пересылку, создание topics или rename
 - Обычные recovery auto-scan дельты попадают агрегатами в 4-часовой `/status`; отдельный owner/ops alert остаётся только для `account_migration_required`. Invite links, notes, phone numbers, message text и raw MAX payload не выводятся в status/notification/log/health
 
@@ -291,7 +291,7 @@ for _ in range(3):
 
 ### Тесты
 
-В проекте есть regression-набор на `pytest` (**175 тестов**):
+В проекте есть regression-набор на `pytest` (**177 тестов**):
 
 - `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих, recovery snapshot collector
 - `tests/test_max_adapter_leaves.py` — pymax-free helper leaves и `SocketMaxClient` flags
@@ -310,7 +310,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 Автоматизация:
 
-- локально: `PYTHONPATH=. .venv/bin/pytest -q`, `compileall`, `ruff check .`, scoped `mypy`
+- локально: `PYTHONPATH=. .venv/bin/pytest -q`, `compileall`, `ruff check .`, scoped bridge `ruff`, scoped MAX/bridge `mypy`
 - в CI: GitHub Actions workflow `tests.yml` запускает тот же test/lint/typecheck gate
 - в production: startup self-check запускается после первого успешного `MAX connected`
 

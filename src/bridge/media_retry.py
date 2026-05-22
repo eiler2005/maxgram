@@ -1,5 +1,7 @@
 """MAX media retry helpers."""
 
+import asyncio
+from contextlib import suppress
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -39,6 +41,124 @@ def pending_media_retry_delay(attempts_after_failure: int) -> int:
     return min(6 * 3600, 60 * (2 ** exponent))
 
 
+async def enqueue_retryable_media_failures(
+    *,
+    repo: Repository,
+    msg,
+    topic_id: int,
+    flow_id: str | None = None,
+) -> tuple[int, list[MaxAttachmentFailure]]:
+    enqueued = 0
+    display_failures: list[MaxAttachmentFailure] = []
+    now = int(time.time())
+    first_retry_at = now + 60
+    for failure in msg.attachment_failures:
+        if not is_retryable_media_failure(failure):
+            display_failures.append(failure)
+            continue
+
+        existing = await find_existing_pending_media_for_failure(
+            repo=repo,
+            msg=msg,
+            failure=failure,
+        )
+        if existing is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.media_retry.enqueued",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="media_retry",
+                outcome="existing",
+                reason="pending_media_already_exists",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+                pending_media_id=existing.id,
+                attachment_index=failure.index,
+                kind=failure.kind,
+                reference_kind=failure.reference_kind,
+            )
+            continue
+
+        job_id = await repo.enqueue_pending_media(
+            PendingMediaDownload(
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+                attachment_index=failure.index,
+                kind=failure.kind,
+                source_type=failure.source_type,
+                media_chat_id=failure.media_chat_id or msg.chat_id,
+                media_msg_id=failure.media_msg_id or msg.msg_id,
+                reference_kind=failure.reference_kind or "video_id",
+                reference_id=failure.reference_id or "",
+                filename=failure.filename,
+                duration=failure.duration,
+                width=failure.width,
+                height=failure.height,
+                next_attempt_at=first_retry_at,
+                last_error=failure.reason,
+            )
+        )
+        enqueued += 1
+        display_failures.append(failure)
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.media_retry.enqueued",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="media_retry",
+            outcome="enqueued",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            tg_topic_id=topic_id,
+            pending_media_id=job_id,
+            attachment_index=failure.index,
+            kind=failure.kind,
+            reference_kind=failure.reference_kind,
+        )
+    return enqueued, display_failures
+
+
+async def find_existing_pending_media_for_failure(
+    *,
+    repo: Repository,
+    msg,
+    failure: MaxAttachmentFailure,
+) -> PendingMediaDownload | None:
+    finder = getattr(repo, "find_active_pending_media", None)
+    if callable(finder):
+        existing = await finder(
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            attachment_index=failure.index,
+            kind=failure.kind,
+        )
+        if existing is not None:
+            return existing
+
+    ref_finder = getattr(repo, "find_active_pending_media_by_reference", None)
+    if (
+        callable(ref_finder)
+        and failure.reference_kind
+        and failure.reference_id
+        and (failure.media_chat_id or msg.chat_id)
+        and (failure.media_msg_id or msg.msg_id)
+    ):
+        return await ref_finder(
+            media_chat_id=failure.media_chat_id or msg.chat_id,
+            media_msg_id=failure.media_msg_id or msg.msg_id,
+            attachment_index=failure.index,
+            kind=failure.kind,
+            reference_kind=failure.reference_kind,
+            reference_id=failure.reference_id,
+        )
+    return None
+
+
 async def mark_pending_media_retry(
     *,
     repo: Repository,
@@ -46,6 +166,8 @@ async def mark_pending_media_retry(
     error: str,
     flow_id: str,
 ):
+    if job.id is None:
+        return
     attempts_after_failure = int(job.attempts or 0) + 1
     delay = pending_media_retry_delay(attempts_after_failure)
     next_attempt_at = int(time.time()) + delay
@@ -84,7 +206,7 @@ async def process_pending_media_download(
     flow_id = build_max_flow_id(
         job.max_chat_id,
         f"{job.max_msg_id}:media:{job.attachment_index}",
-    )
+    ) or "mx:pending-media"
     if not job.id:
         return
     if not job.reference_id or not (
@@ -270,7 +392,56 @@ async def process_pending_media_download(
             attempts=int(job.attempts or 0) + 1,
         )
     finally:
-        try:
+        with suppress(Exception):
             Path(attachment.local_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+
+
+async def run_pending_media_downloads(
+    *,
+    repo: Repository,
+    cfg: AppConfig,
+    max_adapter: MaxBridgePort,
+    tg: TelegramBridgePort,
+    poll_interval: int = 60,
+    lease_seconds: int = 600,
+):
+    log_event(
+        logger,
+        logging.INFO,
+        "bridge.media_retry.worker_started",
+        stage="media_retry",
+        outcome="started",
+        poll_interval_seconds=poll_interval,
+        lease_seconds=lease_seconds,
+    )
+    while True:
+        try:
+            now = int(time.time())
+            jobs = await repo.get_due_pending_media(now=now, limit=5)
+            for job in jobs:
+                if not job.id:
+                    continue
+                leased = await repo.lease_pending_media(
+                    job.id,
+                    lease_until=now + lease_seconds,
+                    now=now,
+                )
+                if not leased:
+                    continue
+                await process_pending_media_download(
+                    cfg=cfg,
+                    repo=repo,
+                    max_adapter=max_adapter,
+                    tg=tg,
+                    job=job,
+                )
+        except Exception as e:
+            log_event(
+                logger,
+                logging.ERROR,
+                "bridge.media_retry.worker_failed",
+                stage="media_retry",
+                outcome="failed",
+                error=str(e),
+            )
+        await asyncio.sleep(poll_interval)

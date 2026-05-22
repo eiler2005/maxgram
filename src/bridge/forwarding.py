@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 
@@ -252,10 +253,8 @@ async def forward_to_telegram(
         )
 
     for attachment in msg.attachments:
-        try:
+        with suppress(Exception):
             Path(attachment.local_path).unlink(missing_ok=True)
-        except Exception:
-            pass
 
     return tg_msg_id
 

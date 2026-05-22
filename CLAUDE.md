@@ -31,7 +31,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 | `src/adapters/tg/adapter.py` (`src/adapters/tg_adapter.py`) | aiogram бот: топики, send, recv reply; старый import path сохранён |
 | `src/adapters/tg/notifier.py` | Owner DM / ops topic notifications and alert outbox flush |
 | `src/bridge/contracts.py` | Транспортно-нейтральные dataclass-модели и Protocol-порты между core и adapters |
-| `src/bridge/core.py` + `src/bridge/{forwarding,replies,topics,...}.py` | Роутинг, dedup, topic auto-create, commands, recovery registry; core координирует leaf modules |
+| `src/bridge/core.py` + `src/bridge/{forwarding,replies,topics,status,media_retry,...}.py` | Core — runtime coordinator; forwarding/replies/topics/status/media-retry/commands/recovery живут в leaf modules |
 | `src/runtime/health/` | Health snapshot, health events, alert outbox, heartbeat; package-level imports сохранены |
 | `src/runtime/supervisor.py` | Worker restart loop, heartbeat, crash alerts |
 | `src/config/loader.py` | YAML конфиг + env переменные |

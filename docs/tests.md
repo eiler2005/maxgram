@@ -7,16 +7,18 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/ruff check .
+.venv/bin/ruff check src/bridge --select E9,F63,F7,F82,F401,F841,B,C4,SIM,RET
 .venv/bin/mypy src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
+.venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **175 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **177 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
-GitHub Actions выполняет тот же базовый gate: `compileall`, `ruff check`, scoped `mypy`, затем `pytest -q`.
+GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
 ---
 
-## test_bridge_contracts.py — архитектурная граница (6 тестов)
+## test_bridge_contracts.py — архитектурная граница (7 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -26,6 +28,7 @@ GitHub Actions выполняет тот же базовый gate: `compileall`,
 | `test_pymax_imports_stay_inside_max_adapter_boundary` | `pymax` imports разрешены только в `src/adapters/max/backends/pymax/*`; bridge/contracts/services остаются transport-neutral. |
 | `test_max_adapter_uses_composition_not_mixins` | `MaxAdapter` собран composition/facade-ом, не через mixin inheritance; сервисы не принимают полный `MaxAdapter`. |
 | `test_max_services_use_explicit_dependencies` | MAX services не используют `MaxServiceRegistry`/service `__getattr__`, не принимают `MaxAdapter`, а adapter tests не subclass-ят real adapter для private overrides. |
+| `test_bridge_core_keeps_heavy_leaf_logic_outside_coordinator` | `BridgeCore` не содержит status/recovery/media-retry command-heavy methods/state, не импортирует recovery reporter напрямую и регистрирует команды через dispatcher. |
 
 ---
 
@@ -170,7 +173,7 @@ GitHub Actions выполняет тот же базовый gate: `compileall`,
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (48 тестов)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (49 тестов)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 

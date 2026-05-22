@@ -95,3 +95,38 @@ def test_max_services_use_explicit_dependencies():
                     offenders.append(f"tests/test_max_adapter.py: {node.name} subclasses {base.id}")
 
     assert offenders == []
+
+
+def test_bridge_core_keeps_heavy_leaf_logic_outside_coordinator():
+    source = (PROJECT_ROOT / "src/bridge/core.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    method_names = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    forbidden_methods = {
+        "_build_status_message",
+        "_build_recovery_report_message",
+        "_parse_recovery_set_fields",
+        "_enqueue_retryable_media_failures",
+        "_find_existing_pending_media_for_failure",
+        "_safe_recovery_scan",
+        "_cmd_recovery",
+        "_cmd_dm",
+    }
+    forbidden_attrs = {
+        "_recovery_scan_task",
+        "_recovery_event_scan_task",
+        "_recovery_event_scan_at",
+        "_recovery_event_scan_reasons",
+        "_recovery_event_last_scan_at",
+        "_last_recovery_notification_digest",
+    }
+    targets = _import_targets("src/bridge/core.py")
+
+    assert forbidden_methods.isdisjoint(method_names)
+    assert not any(attr in source for attr in forbidden_attrs)
+    assert not any(target.endswith("recovery.reporter") for target in targets)
+    assert any(target.endswith("commands.dispatcher") for target in targets)

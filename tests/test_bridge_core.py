@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.bridge import media_retry as bridge_media_retry
 from src.bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
@@ -270,6 +271,7 @@ class DummyTelegram:
         self.calls = []
         self.commands = {}
         self.arg_commands = {}
+        self.arg_command_options = {}
         self.fail_voice = False
         self.delete_topic_result = True
         self.close_topic_result = True
@@ -282,6 +284,7 @@ class DummyTelegram:
 
     def on_arg_command(self, cmd: str, handler, **kwargs):
         self.arg_commands[cmd] = handler
+        self.arg_command_options[cmd] = kwargs
 
     async def send_photo(self, topic_id, path, caption="", flow_id=None):
         self.calls.append(("photo", caption))
@@ -359,6 +362,28 @@ def make_bridge(repo=None, max_adapter=None, tg_adapter=None):
         max_adapter=max_adapter or DummyMax(),
         tg_adapter=tg_adapter or DummyTelegram(),
     )
+
+
+async def process_pending_media_for_bridge(bridge: BridgeCore, job: PendingMediaDownload):
+    await bridge_media_retry.process_pending_media_download(
+        cfg=bridge._cfg,
+        repo=bridge._repo,
+        max_adapter=bridge._max,
+        tg=bridge._tg,
+        job=job,
+    )
+
+
+def test_command_dispatcher_registers_expected_commands():
+    tg = DummyTelegram()
+    bridge = make_bridge(tg_adapter=tg)
+
+    assert set(tg.commands) == {"status", "chats", "help"}
+    assert set(tg.arg_commands) == {"dm", "recovery"}
+    assert tg.commands["status"] == bridge._status.build_status_message
+    assert tg.arg_commands["dm"] == bridge._commands.handle_dm
+    assert tg.arg_commands["recovery"] == bridge._recovery.handle_command
+    assert tg.arg_command_options["dm"] == {"allow_group_general": True}
 
 
 @pytest.mark.asyncio
@@ -451,7 +476,7 @@ async def test_dm_history_sweep_replays_active_direct_chats(monkeypatch):
     async def stop_after_first_sleep(_delay):
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("src.bridge.core.asyncio.sleep", stop_after_first_sleep)
+    monkeypatch.setattr("src.bridge.background.asyncio.sleep", stop_after_first_sleep)
     with pytest.raises(asyncio.CancelledError):
         await bridge.run_dm_history_sweep(poll_interval=120, limit=30, backfill_seconds=48 * 60 * 60)
 
@@ -1055,7 +1080,7 @@ async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
     )
     repo.pending_media.append(job)
 
-    await bridge._process_pending_media_download(job)
+    await process_pending_media_for_bridge(bridge, job)
 
     assert tg_adapter.calls == [
         ("video", "Докачанное видео MAX #5", "retry.mp4", 10, 640, 360),
@@ -1110,7 +1135,7 @@ async def test_pending_media_worker_delivers_audio_as_voice_and_maps_reply(tmp_p
     )
     repo.pending_media.append(job)
 
-    await bridge._process_pending_media_download(job)
+    await process_pending_media_for_bridge(bridge, job)
 
     assert tg_adapter.calls == [
         ("voice", "Докачанное голосовое MAX #1", 9),
@@ -1155,7 +1180,7 @@ async def test_pending_media_worker_reschedules_download_failure():
     )
     repo.pending_media.append(job)
 
-    await bridge._process_pending_media_download(job)
+    await process_pending_media_for_bridge(bridge, job)
 
     assert job.status == "retry"
     assert job.attempts == 1
@@ -1196,7 +1221,7 @@ async def test_pending_media_worker_marks_missing_reference_terminal():
     )
     repo.pending_media.append(job)
 
-    await bridge._process_pending_media_download(job)
+    await process_pending_media_for_bridge(bridge, job)
 
     assert job.status == "failed"
     assert job.last_error == "missing_stable_media_reference"
@@ -1523,7 +1548,7 @@ async def test_build_chats_message_lists_topics_with_activity():
         tg_adapter=DummyTelegram(),
     )
 
-    text = await bridge._build_chats_message(period_hours=24)
+    text = await bridge._status.build_chats_message(period_hours=24)
 
     assert "🗂 Чаты: 2 (активных: 1)" in text
     assert "✅ #101 Школьный чат · ↓3 ↑1" in text
@@ -1563,7 +1588,7 @@ async def test_build_status_message_includes_max_issue_summary():
 
     bridge = _make_bridge(repo=repo, max_adapter=IssueAwareMax())
 
-    text = await bridge._build_status_message(period_hours=4)
+    text = await bridge._status.build_status_message(period_hours=4)
 
     assert "⚠️ Проблема MAX" in text
     assert "MAX сессия недействительна, нужна повторная авторизация" in text
@@ -1620,7 +1645,7 @@ async def test_build_status_message_uses_shared_health_snapshot(tmp_path):
         health_store=health,
     )
 
-    text = await bridge._build_status_message(period_hours=4)
+    text = await bridge._status.build_status_message(period_hours=4)
 
     assert "🩺 Runtime Health" in text
     assert "MAX сессия недействительна" in text
@@ -1866,14 +1891,14 @@ async def test_cmd_recovery_scan_report_set_remap_and_export(tmp_path, caplog):
 
     try:
         with caplog.at_level(logging.INFO, logger="src.bridge.core"):
-            scan = await bridge._cmd_recovery("scan")
-        report = await bridge._cmd_recovery("report")
-        set_result = await bridge._cmd_recovery(
-            'set 77 priority=9 note="call admin" status=manual_admin_required admin="Admin:501"'
-        )
-        remap = await bridge._cmd_recovery("remap 77 -new-chat")
-        post_remap_report = await bridge._cmd_recovery("report")
-        export = await bridge._cmd_recovery("export")
+            scan = await bridge._recovery.handle_command("scan")
+            report = await bridge._recovery.handle_command("report")
+            set_result = await bridge._recovery.handle_command(
+                'set 77 priority=9 note="call admin" status=manual_admin_required admin="Admin:501"'
+            )
+            remap = await bridge._recovery.handle_command("remap 77 -new-chat")
+            post_remap_report = await bridge._recovery.handle_command("report")
+            export = await bridge._recovery.handle_command("export")
 
         assert "snapshot обновлён" in scan
         assert "Свежесть snapshot:" in report
@@ -1920,7 +1945,7 @@ async def test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding(
     max_adapter = DummyRecoveryMax(snapshot, snapshot_delay=0.05)
     tg_adapter = DummyTelegram()
     bridge = make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
-    bridge._recovery_event_scan_delays["new_binding"] = 0.05
+    bridge._recovery._event_scan_delays["new_binding"] = 0.05
 
     try:
         await bridge._on_max_message(
@@ -1946,13 +1971,13 @@ async def test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding(
         assert ("text", "[Мария] hello") in tg_adapter.calls
         assert max_adapter.snapshot_calls == 0
 
-        await asyncio.wait_for(bridge._recovery_event_scan_task, timeout=1)
+        await asyncio.wait_for(bridge._recovery._event_scan_task, timeout=1)
         assert max_adapter.snapshot_calls == 1
         report = await repo.get_recovery_report()
         assert report["stats"]["total"] == 1
         assert report["stats"]["dm_contacts"] == 1
     finally:
-        task = bridge._recovery_event_scan_task
+        task = bridge._recovery._event_scan_task
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -1979,8 +2004,8 @@ async def test_control_events_debounce_into_one_recovery_scan(tmp_path):
     max_adapter = DummyRecoveryMax(snapshot)
     tg_adapter = DummyTelegram()
     bridge = make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
-    bridge._recovery_event_scan_delays["control_event"] = 0.05
-    bridge._recovery_event_scan_cooldowns["control_event"] = 0
+    bridge._recovery._event_scan_delays["control_event"] = 0.05
+    bridge._recovery._event_scan_cooldowns["control_event"] = 0
 
     try:
         for index in range(2):
@@ -2004,10 +2029,10 @@ async def test_control_events_debounce_into_one_recovery_scan(tmp_path):
             )
 
         assert max_adapter.snapshot_calls == 0
-        await asyncio.wait_for(bridge._recovery_event_scan_task, timeout=1)
+        await asyncio.wait_for(bridge._recovery._event_scan_task, timeout=1)
         assert max_adapter.snapshot_calls == 1
     finally:
-        task = bridge._recovery_event_scan_task
+        task = bridge._recovery._event_scan_task
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -2041,14 +2066,14 @@ async def test_recovery_auto_changes_are_summarized_in_status_not_notified(tmp_p
 
     try:
         with caplog.at_level(logging.INFO, logger="src.bridge.core"):
-            result = await bridge._safe_recovery_scan(reason="control_event", notify=False)
-            await bridge._maybe_notify_recovery_changes(reason="control_event", result=result)
-            await bridge._maybe_notify_recovery_changes(reason="control_event", result=result)
+            result = await bridge._recovery.safe_scan(reason="control_event", notify=False)
+            await bridge._recovery.maybe_notify_changes(reason="control_event", result=result)
+            await bridge._recovery.maybe_notify_changes(reason="control_event", result=result)
 
         notifications = [call[1] for call in tg_adapter.calls if call[0] == "notification"]
         assert notifications == []
 
-        status = await bridge._build_status_message(period_hours=4)
+        status = await bridge._status.build_status_message(period_hours=4)
         assert "🧭 MAX recovery snapshot" in status
         assert "unmapped: 1" in status
         assert "invite/admin: 0/0" in status
@@ -2089,11 +2114,11 @@ async def test_recovery_account_migration_notification_is_redacted_and_deduped(t
     bridge = make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
 
     try:
-        await bridge._safe_recovery_scan(reason="max_connect", notify=False)
+        await bridge._recovery.safe_scan(reason="max_connect", notify=False)
         max_adapter.snapshot = second_snapshot
-        result = await bridge._safe_recovery_scan(reason="max_connect", notify=False)
-        await bridge._maybe_notify_recovery_changes(reason="max_connect", result=result)
-        await bridge._maybe_notify_recovery_changes(reason="max_connect", result=result)
+        result = await bridge._recovery.safe_scan(reason="max_connect", notify=False)
+        await bridge._recovery.maybe_notify_changes(reason="max_connect", result=result)
+        await bridge._recovery.maybe_notify_changes(reason="max_connect", result=result)
 
         notifications = [call[1] for call in tg_adapter.calls if call[0] == "notification"]
         assert len(notifications) == 1
@@ -2140,8 +2165,8 @@ async def test_recovery_scan_updates_dm_contact_registry_and_report(tmp_path):
     )
 
     try:
-        scan = await bridge._cmd_recovery("scan")
-        report = await bridge._cmd_recovery("report")
+        scan = await bridge._recovery.handle_command("scan")
+        report = await bridge._recovery.handle_command("report")
         export = await repo.export_recovery_registry()
 
         assert "DM contacts: 1" in scan
@@ -2176,7 +2201,7 @@ async def test_cmd_dm_finds_user_in_db_and_sends():
     repo.find_user_by_name = find_by_name_specific
     bridge = _make_bridge(repo=repo, max_adapter=max_adapter)
 
-    result = await bridge._cmd_dm("Татьяна Геннадиевна Ладина Добрый день!")
+    result = await bridge._commands.handle_dm("Татьяна Геннадиевна Ладина Добрый день!")
 
     assert "✅" in result
     assert "Татьяна Геннадиевна Ладина" in result
@@ -2192,7 +2217,7 @@ async def test_cmd_dm_falls_back_to_pymax_cache_when_db_empty():
     max_adapter._find_user_result = "99999"  # pymax cache hit
     bridge = _make_bridge(repo=repo, max_adapter=max_adapter)
 
-    result = await bridge._cmd_dm("Мария Иванова привет")
+    result = await bridge._commands.handle_dm("Мария Иванова привет")
 
     assert "✅" in result
     assert max_adapter.sent[0] == "99999"
@@ -2203,7 +2228,7 @@ async def test_cmd_dm_falls_back_to_pymax_cache_when_db_empty():
 async def test_cmd_dm_returns_error_when_user_not_found():
     bridge = _make_bridge()  # both DB and pymax return None
 
-    result = await bridge._cmd_dm("Несуществующий Человек текст")
+    result = await bridge._commands.handle_dm("Несуществующий Человек текст")
 
     assert "❌" in result
     assert "не найден" in result
@@ -2213,10 +2238,10 @@ async def test_cmd_dm_returns_error_when_user_not_found():
 async def test_cmd_dm_returns_usage_hint_when_no_args():
     bridge = _make_bridge()
 
-    result = await bridge._cmd_dm("")
+    result = await bridge._commands.handle_dm("")
     assert "Формат" in result
 
-    result = await bridge._cmd_dm("ОдноСлово")
+    result = await bridge._commands.handle_dm("ОдноСлово")
     assert "Формат" in result
 
 
@@ -2237,7 +2262,7 @@ async def test_cmd_dm_tries_longest_name_prefix_first():
     repo.find_user_by_name = find_by_name_db
     bridge = _make_bridge(repo=repo, max_adapter=max_adapter)
 
-    result = await bridge._cmd_dm("Татьяна Геннадиевна Ладина вечер")
+    result = await bridge._commands.handle_dm("Татьяна Геннадиевна Ладина вечер")
 
     # Input is 4 words: min(4, 4-1)=3, so first attempt IS the 3-word name
     assert call_log[0] == ("db", "Татьяна Геннадиевна Ладина")

@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 
@@ -132,10 +133,8 @@ async def handle_tg_reply(
             f"🚫 {placeholder} (лимит: {max_size_mb}MB)",
             flow_id=flow_id,
         )
-        try:
+        with suppress(Exception):
             Path(media_path).unlink(missing_ok=True)
-        except Exception:
-            pass
         stats["failed_outbound"] += 1
         await bridge_delivery.log_outbound_failure(
             repo,
@@ -212,10 +211,8 @@ async def handle_tg_reply(
     )
 
     if media_path:
-        try:
+        with suppress(Exception):
             Path(media_path).unlink(missing_ok=True)
-        except Exception:
-            pass
 
     if sent_id is None:
         get_last_error = getattr(max_adapter, "get_last_outbound_error", None)
