@@ -10,7 +10,7 @@ from ..config.loader import AppConfig
 from ..db.repository import ChatBinding, Repository
 from ..logging_utils import log_event
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("src.bridge.core")
 
 
 async def get_or_create_topic(

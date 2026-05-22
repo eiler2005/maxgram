@@ -22,7 +22,10 @@ from pathlib import Path
 from typing import Optional
 
 from . import delivery as bridge_delivery
+from . import forwarding as bridge_forwarding
 from . import mapping as bridge_mapping
+from . import media_retry as bridge_media_retry
+from . import replies as bridge_replies
 from . import topics as bridge_topics
 from .contracts import (
     MAX_DM_SWEEP_BACKFILL_SECONDS,
@@ -499,55 +502,22 @@ class BridgeCore:
         )
 
     def _compose_message_text(self, primary: str, secondary: str = "") -> str:
-        parts = [part.strip() for part in [primary, secondary] if part and part.strip()]
-        return "\n".join(parts)
+        return bridge_forwarding.compose_message_text(primary, secondary)
 
     def _compose_attachment_failure_text(
         self,
         failures: list[MaxAttachmentFailure],
     ) -> str:
-        lines = []
-        for failure in failures:
-            label = failure.filename or f"{failure.kind} #{failure.index + 1}"
-            if self._is_retryable_media_failure(failure):
-                media_label = "Голосовое MAX" if failure.kind == "audio" else "Видео MAX"
-                lines.append(
-                    f"⏳ {media_label} #{failure.index + 1} докачивается "
-                    "и будет дослано позже"
-                )
-            else:
-                lines.append(f"⚠️ Не удалось скачать вложение MAX: {label}")
-        return "\n".join(lines)
+        return bridge_forwarding.compose_attachment_failure_text(failures)
 
     def _is_retryable_media_failure(self, failure: MaxAttachmentFailure) -> bool:
-        if not (
-            failure.retryable
-            and failure.reference_id
-            and failure.media_chat_id
-            and failure.media_msg_id
-        ):
-            return False
-        if failure.kind == "video":
-            return failure.reference_kind == "video_id"
-        if failure.kind == "audio":
-            return failure.reference_kind in {"audio_id", "file_id"}
-        return False
+        return bridge_media_retry.is_retryable_media_failure(failure)
 
     def _pending_media_retry_delay(self, attempts_after_failure: int) -> int:
-        # Бесконечный retry с cap: 1m, 2m, 4m ... до 6h.
-        exponent = max(0, min(attempts_after_failure - 1, 8))
-        return min(6 * 3600, 60 * (2 ** exponent))
+        return bridge_media_retry.pending_media_retry_delay(attempts_after_failure)
 
     def _format_duration_compact(self, seconds: int) -> str:
-        if seconds < 60:
-            return f"{seconds}с"
-        minutes = seconds // 60
-        if minutes < 60:
-            return f"{minutes}м"
-        hours = minutes // 60
-        if hours < 48:
-            return f"{hours}ч"
-        return f"{hours // 24}д"
+        return bridge_forwarding.format_duration_compact(seconds)
 
     def _build_failed_outbound_id(self, topic_id: int, tg_msg_id: Optional[int]) -> str:
         return bridge_delivery.build_failed_outbound_id(topic_id, tg_msg_id)
@@ -564,107 +534,16 @@ class BridgeCore:
         )
 
     def _is_file_too_large(self, path: str) -> bool:
-        max_size_mb = self._cfg.bridge.max_file_size_mb
-        if max_size_mb <= 0:
-            return False
-        try:
-            return Path(path).stat().st_size > max_size_mb * 1024 * 1024
-        except OSError:
-            return False
+        return bridge_forwarding.is_file_too_large(self._cfg, path)
 
     async def _send_attachment(self, topic_id: int, attachment: MaxAttachment,
                                caption: str, *, flow_id: Optional[str] = None) -> Optional[int]:
-        """Отправить одно вложение в Telegram."""
-        if attachment.kind == "photo":
-            return await self._tg.send_photo(topic_id, attachment.local_path, caption, flow_id=flow_id)
-
-        if attachment.kind == "document":
-            return await self._tg.send_document(
-                topic_id, attachment.local_path, caption, attachment.filename or "", flow_id=flow_id
-            )
-
-        if attachment.kind == "video":
-            return await self._tg.send_video(
-                topic_id,
-                attachment.local_path,
-                caption,
-                attachment.filename or "",
-                duration=attachment.duration,
-                width=attachment.width,
-                height=attachment.height,
-                flow_id=flow_id,
-            )
-
-        if attachment.kind == "audio":
-            source_type = str(attachment.source_type or "").upper()
-            if "VOICE" in source_type or "AUDIO" in source_type:
-                if not getattr(self._cfg.content, "forward_voice", True):
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "bridge.inbound.media_skipped",
-                        flow_id=flow_id,
-                        direction="inbound",
-                        stage="forward",
-                        outcome="skipped",
-                        reason="forward_voice_disabled",
-                        media_type="voice",
-                        source_type=source_type,
-                    )
-                    placeholder = self._cfg.content.placeholder_unsupported.format(
-                        type=attachment.source_type or "voice"
-                    )
-                    return await self._tg.send_text(
-                        topic_id,
-                        self._compose_message_text(caption, placeholder),
-                        flow_id=flow_id,
-                    )
-
-                sent_id = await self._tg.send_voice(
-                    topic_id,
-                    attachment.local_path,
-                    caption,
-                    duration=attachment.duration,
-                    flow_id=flow_id,
-                )
-                if sent_id:
-                    return sent_id
-
-                log_event(
-                    logger,
-                    logging.WARNING,
-                    "bridge.inbound.voice_fallback",
-                    flow_id=flow_id,
-                    direction="inbound",
-                    stage="forward",
-                    outcome="retry",
-                    reason="send_voice_failed",
-                    media_type="voice",
-                    source_type=source_type,
-                )
-                return await self._tg.send_audio(
-                    topic_id,
-                    attachment.local_path,
-                    caption,
-                    attachment.filename or "",
-                    duration=attachment.duration,
-                    flow_id=flow_id,
-                )
-            return await self._tg.send_audio(
-                topic_id,
-                attachment.local_path,
-                caption,
-                attachment.filename or "",
-                duration=attachment.duration,
-                flow_id=flow_id,
-            )
-
-        placeholder = self._cfg.content.placeholder_unsupported.format(
-            type=attachment.source_type or attachment.kind
-        )
-        return await self._tg.send_text(
-            topic_id,
-            self._compose_message_text(caption, placeholder),
+        return await bridge_forwarding.send_attachment(
+            cfg=self._cfg,
+            tg=self._tg,
+            topic_id=topic_id,
+            attachment=attachment,
+            caption=caption,
             flow_id=flow_id,
         )
 
@@ -676,330 +555,38 @@ class BridgeCore:
         flow_id: Optional[str] = None,
         attachment_failures: Optional[list[MaxAttachmentFailure]] = None,
     ) -> Optional[int]:
-        """Отправить сообщение в Telegram топик. Возвращает tg_msg_id."""
-
-        # Формируем заголовок отправителя
-        sender_prefix = ""
-        if msg.is_own:
-            sender_prefix = "[Вы] "
-        elif not msg.is_dm and msg.sender_name:
-            sender_prefix = f"[{msg.sender_name}] "
-
-        body_text = f"{sender_prefix}{msg.text}".strip() if msg.text else ""
-        media_caption = body_text or (sender_prefix.strip() if msg.attachments else "")
-        extra_text = "\n".join(part for part in msg.rendered_texts if part).strip()
-        tg_msg_id = None
-        emitted_anything = False
-
-        for attachment in msg.attachments:
-            attachment_path = Path(attachment.local_path)
-            if not attachment_path.exists():
-                continue
-
-            if self._is_file_too_large(attachment.local_path):
-                placeholder = self._cfg.content.placeholder_file_too_large.format(
-                    filename=attachment.filename or attachment_path.name
-                )
-                text = self._compose_message_text("" if emitted_anything else media_caption, placeholder)
-                sent_id = await self._tg.send_text(topic_id, text, flow_id=flow_id)
-            else:
-                caption = "" if emitted_anything else media_caption
-                sent_id = await self._send_attachment(topic_id, attachment, caption, flow_id=flow_id)
-
-            if sent_id:
-                emitted_anything = True
-                if tg_msg_id is None:
-                    tg_msg_id = sent_id
-
-        if extra_text:
-            text = self._compose_message_text("" if emitted_anything else body_text, extra_text)
-            sent_id = await self._tg.send_text(topic_id, text, flow_id=flow_id)
-            if sent_id:
-                emitted_anything = True
-                if tg_msg_id is None:
-                    tg_msg_id = sent_id
-
-        failures_to_display = (
-            msg.attachment_failures
-            if attachment_failures is None
-            else attachment_failures
+        return await bridge_forwarding.forward_to_telegram(
+            cfg=self._cfg,
+            tg=self._tg,
+            msg=msg,
+            topic_id=topic_id,
+            flow_id=flow_id,
+            attachment_failures=attachment_failures,
         )
-        failure_text = self._compose_attachment_failure_text(failures_to_display)
-        if failure_text:
-            text = self._compose_message_text("" if emitted_anything else body_text, failure_text)
-            sent_id = await self._tg.send_text(topic_id, text, flow_id=flow_id)
-            if sent_id:
-                emitted_anything = True
-                if tg_msg_id is None:
-                    tg_msg_id = sent_id
-
-        if not emitted_anything and body_text:
-            tg_msg_id = await self._tg.send_text(topic_id, body_text, flow_id=flow_id)
-
-        elif not emitted_anything:
-            cfg = self._cfg.content
-            media_type = next((atype.lower() for atype in msg.attachment_types if atype), "unknown")
-            placeholder = cfg.placeholder_unsupported.format(type=media_type)
-            tg_msg_id = await self._tg.send_text(
-                topic_id,
-                self._compose_message_text(body_text, placeholder),
-                flow_id=flow_id,
-            )
-
-        # Удаляем временный файл после отправки (TTL-политика)
-        for attachment in msg.attachments:
-            try:
-                Path(attachment.local_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-
-        return tg_msg_id
 
     # ── Telegram → MAX ────────────────────────────────────────────────────
 
     def _compose_tg_outbound_text(self, text: str, sender_name: Optional[str]) -> str:
-        clean_text = text.strip()
-        if not sender_name:
-            return clean_text
-        return f"[{sender_name}]\n{clean_text}" if clean_text else f"[{sender_name}]"
+        return bridge_replies.compose_tg_outbound_text(text, sender_name)
 
     async def _on_tg_reply(self, topic_id: int, tg_msg_id: Optional[int], text: str,
                            reply_to_tg_msg_id: Optional[int],
                            sender_name: Optional[str],
                            media_path: Optional[str] = None,
                            media_type: Optional[str] = None):
-        """Reply из Telegram → отправляем в MAX."""
-        flow_id = build_tg_flow_id(topic_id, tg_msg_id)
-        log_event(
-            logger,
-            logging.INFO,
-            "bridge.outbound.forward_started",
-            flow_id=flow_id,
-            direction="outbound",
-            stage="received",
-            outcome="accepted",
-            tg_topic_id=topic_id,
+        await bridge_replies.handle_tg_reply(
+            cfg=self._cfg,
+            repo=self._repo,
+            max_adapter=self._max,
+            tg=self._tg,
+            stats=self._stats,
+            send_ops_notification=self._send_ops_notification,
+            topic_id=topic_id,
             tg_msg_id=tg_msg_id,
+            text=text,
             reply_to_tg_msg_id=reply_to_tg_msg_id,
-            media_type=media_type,
-            has_text=bool(text.strip()),
-            filename=sanitize_path(media_path),
-        )
-
-        binding = await self._repo.get_binding_by_topic(topic_id)
-        if not binding:
-            await self._send_ops_notification(f"⚠️ Не найден MAX чат для топика {topic_id}")
-            await self._log_outbound_failure(
-                topic_id=topic_id,
-                tg_msg_id=tg_msg_id,
-                max_chat_id=f"tg_topic:{topic_id}",
-                error="no_topic",
-                attempts=1,
-            )
-            log_event(
-                logger,
-                logging.ERROR,
-                "bridge.outbound.forward_finished",
-                flow_id=flow_id,
-                direction="outbound",
-                stage="routing",
-                outcome="failed",
-                reason="no_topic",
-                tg_topic_id=topic_id,
-                tg_msg_id=tg_msg_id,
-            )
-            return
-
-        if binding.mode == "readonly":
-            await self._tg.send_text(
-                topic_id,
-                "🚫 Этот чат настроен как readonly — ответы не отправляются в MAX",
-                flow_id=flow_id,
-            )
-            log_event(
-                logger,
-                logging.INFO,
-                "bridge.outbound.forward_finished",
-                flow_id=flow_id,
-                direction="outbound",
-                stage="routing",
-                outcome="skipped",
-                reason="readonly",
-                tg_topic_id=topic_id,
-                tg_msg_id=tg_msg_id,
-                max_chat_id=binding.max_chat_id,
-            )
-            return
-
-        if binding.mode == "disabled":
-            log_event(
-                logger,
-                logging.INFO,
-                "bridge.outbound.forward_finished",
-                flow_id=flow_id,
-                direction="outbound",
-                stage="routing",
-                outcome="skipped",
-                reason="disabled",
-                tg_topic_id=topic_id,
-                tg_msg_id=tg_msg_id,
-                max_chat_id=binding.max_chat_id,
-            )
-            return
-
-        if media_path and self._is_file_too_large(media_path):
-            max_size_mb = self._cfg.bridge.max_file_size_mb
-            placeholder = self._cfg.content.placeholder_file_too_large.format(
-                filename=Path(media_path).name
-            )
-            await self._tg.send_text(
-                topic_id,
-                f"🚫 {placeholder} (лимит: {max_size_mb}MB)",
-                flow_id=flow_id,
-            )
-            try:
-                Path(media_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-            self._stats["failed_outbound"] += 1
-            await self._log_outbound_failure(
-                topic_id=topic_id,
-                tg_msg_id=tg_msg_id,
-                max_chat_id=binding.max_chat_id,
-                error=f"too_large:{Path(media_path).name}",
-                attempts=1,
-            )
-            log_event(
-                logger,
-                logging.ERROR,
-                "bridge.outbound.forward_finished",
-                flow_id=flow_id,
-                direction="outbound",
-                stage="validation",
-                outcome="failed",
-                reason="too_large",
-                tg_topic_id=topic_id,
-                tg_msg_id=tg_msg_id,
-                max_chat_id=binding.max_chat_id,
-                filename=sanitize_path(media_path),
-            )
-            return
-
-        # Найти max_msg_id для reply (если есть)
-        reply_to_max_id = None
-        if reply_to_tg_msg_id:
-            get_mapping = getattr(self._repo, "get_tg_reply_mapping", None)
-            if callable(get_mapping):
-                mapping = await get_mapping(reply_to_tg_msg_id)
-                if mapping and mapping.max_chat_id == binding.max_chat_id:
-                    reply_to_max_id = mapping.max_msg_id
-                elif mapping:
-                    log_event(
-                        logger,
-                        logging.INFO,
-                        "bridge.outbound.reply_resolved",
-                        flow_id=flow_id,
-                        direction="outbound",
-                        stage="routing",
-                        outcome="skipped",
-                        reason="stale_remap_chat",
-                        tg_topic_id=topic_id,
-                        tg_msg_id=tg_msg_id,
-                        reply_to_tg_msg_id=reply_to_tg_msg_id,
-                        max_chat_id=binding.max_chat_id,
-                        mapped_max_chat_id=mapping.max_chat_id,
-                    )
-            else:
-                reply_to_max_id = await self._repo.get_max_msg_id_by_tg(reply_to_tg_msg_id)
-        log_event(
-            logger,
-            logging.INFO,
-            "bridge.outbound.reply_resolved",
-            flow_id=flow_id,
-            direction="outbound",
-            stage="routing",
-            outcome="found" if reply_to_max_id else "missing",
-            tg_topic_id=topic_id,
-            tg_msg_id=tg_msg_id,
-            reply_to_tg_msg_id=reply_to_tg_msg_id,
-            max_chat_id=binding.max_chat_id,
-            reply_to_max_id=reply_to_max_id,
-        )
-
-        outbound_text = self._compose_tg_outbound_text(text, sender_name)
-        sent_id = await self._max.send_message(
-            chat_id=binding.max_chat_id,
-            text=outbound_text,
-            reply_to_msg_id=reply_to_max_id,
+            sender_name=sender_name,
             media_path=media_path,
-            media_type=media_type,
-            flow_id=flow_id,
-        )
-
-        # Удаляем скачанный TG-файл после отправки
-        if media_path:
-            try:
-                Path(media_path).unlink(missing_ok=True)
-            except Exception:
-                pass
-
-        if sent_id is None:
-            get_last_error = getattr(self._max, "get_last_outbound_error", None)
-            get_last_attempts = getattr(self._max, "get_last_outbound_attempts", None)
-            max_error = get_last_error() if callable(get_last_error) else None
-            attempts = get_last_attempts() if callable(get_last_attempts) else 0
-            delivery_error = max_error or "max_send_failed"
-            if attempts > 1:
-                delivery_error = f"{delivery_error} (attempts={attempts})"
-            await self._log_outbound_failure(
-                topic_id=topic_id,
-                tg_msg_id=tg_msg_id,
-                max_chat_id=binding.max_chat_id,
-                error=delivery_error,
-                attempts=attempts or 1,
-            )
-            await self._tg.send_text(topic_id, "❌ Не удалось отправить сообщение в MAX", flow_id=flow_id)
-            self._stats["failed_outbound"] += 1
-            log_event(
-                logger,
-                logging.ERROR,
-                "bridge.outbound.forward_finished",
-                flow_id=flow_id,
-                direction="outbound",
-                stage="forward",
-                outcome="failed",
-                reason="max_send_failed",
-                tg_topic_id=topic_id,
-                tg_msg_id=tg_msg_id,
-                max_chat_id=binding.max_chat_id,
-                error=max_error,
-                attempts=attempts,
-            )
-            return
-
-        await bridge_mapping.save_outbound_mapping(
-            self._repo,
-            max_msg_id=sent_id,
-            max_chat_id=binding.max_chat_id,
-            tg_topic_id=topic_id,
-        )
-        await self._repo.log_delivery(sent_id, binding.max_chat_id, "outbound", "delivered")
-        if media_path:
-            self._stats["outbound_media"] += 1
-        else:
-            self._stats["outbound_text"] += 1
-        log_event(
-            logger,
-            logging.INFO,
-            "bridge.outbound.forward_finished",
-            flow_id=flow_id,
-            direction="outbound",
-            stage="forward",
-            outcome="delivered",
-            tg_topic_id=topic_id,
-            tg_msg_id=tg_msg_id,
-            max_chat_id=binding.max_chat_id,
-            max_msg_id=sent_id,
             media_type=media_type,
         )
 
@@ -1012,219 +599,21 @@ class BridgeCore:
         error: str,
         flow_id: str,
     ):
-        attempts_after_failure = int(job.attempts or 0) + 1
-        delay = self._pending_media_retry_delay(attempts_after_failure)
-        next_attempt_at = int(time.time()) + delay
-        await self._repo.mark_pending_media_retry(
-            job.id,
+        await bridge_media_retry.mark_pending_media_retry(
+            repo=self._repo,
+            job=job,
             error=error,
-            next_attempt_at=next_attempt_at,
-        )
-        log_event(
-            logger,
-            logging.WARNING,
-            "bridge.media_retry.retry_scheduled",
             flow_id=flow_id,
-            direction="inbound",
-            stage="media_retry",
-            outcome="retry",
-            reason=error,
-            max_chat_id=job.max_chat_id,
-            max_msg_id=job.max_msg_id,
-            tg_topic_id=job.tg_topic_id,
-            pending_media_id=job.id,
-            attachment_index=job.attachment_index,
-            attempts=attempts_after_failure,
-            retry_in_seconds=delay,
         )
 
     async def _process_pending_media_download(self, job: PendingMediaDownload):
-        flow_id = build_max_flow_id(
-            job.max_chat_id,
-            f"{job.max_msg_id}:media:{job.attachment_index}",
+        await bridge_media_retry.process_pending_media_download(
+            cfg=self._cfg,
+            repo=self._repo,
+            max_adapter=self._max,
+            tg=self._tg,
+            job=job,
         )
-        if not job.id:
-            return
-        if not job.reference_id or not (
-            (job.kind == "video" and job.reference_kind == "video_id")
-            or (job.kind == "audio" and job.reference_kind in {"audio_id", "file_id"})
-        ):
-            await self._repo.mark_pending_media_failed(
-                job.id,
-                error="missing_stable_media_reference",
-            )
-            log_event(
-                logger,
-                logging.ERROR,
-                "bridge.media_retry.failed",
-                flow_id=flow_id,
-                direction="inbound",
-                stage="media_retry",
-                outcome="failed",
-                reason="missing_stable_media_reference",
-                max_chat_id=job.max_chat_id,
-                max_msg_id=job.max_msg_id,
-                pending_media_id=job.id,
-            )
-            return
-
-        log_event(
-            logger,
-            logging.INFO,
-            "bridge.media_retry.attempt_started",
-            flow_id=flow_id,
-            direction="inbound",
-            stage="media_retry",
-            outcome="started",
-            max_chat_id=job.max_chat_id,
-            max_msg_id=job.max_msg_id,
-            tg_topic_id=job.tg_topic_id,
-            pending_media_id=job.id,
-            attachment_index=job.attachment_index,
-            attempts=int(job.attempts or 0) + 1,
-            kind=job.kind,
-            reference_kind=job.reference_kind,
-        )
-
-        download_method_name = (
-            "download_audio_reference"
-            if job.kind == "audio"
-            else "download_video_reference"
-        )
-        download_media = getattr(self._max, download_method_name, None)
-        if not callable(download_media):
-            await self._mark_pending_media_retry(
-                job,
-                error=f"max_adapter_missing_{job.kind}_retry",
-                flow_id=flow_id,
-            )
-            return
-
-        try:
-            if job.kind == "audio":
-                attachment = await download_media(
-                    chat_id=job.media_chat_id,
-                    msg_id=job.media_msg_id,
-                    reference_id=job.reference_id,
-                    reference_kind=job.reference_kind,
-                    attachment_index=job.attachment_index,
-                    filename_hint=job.filename,
-                    duration=job.duration,
-                    source_type=job.source_type or "AUDIO",
-                    flow_id=flow_id,
-                )
-            else:
-                attachment = await download_media(
-                    chat_id=job.media_chat_id,
-                    msg_id=job.media_msg_id,
-                    video_id=job.reference_id,
-                    attachment_index=job.attachment_index,
-                    filename_hint=job.filename,
-                    duration=job.duration,
-                    width=job.width,
-                    height=job.height,
-                    source_type=job.source_type or "VIDEO",
-                    flow_id=flow_id,
-                )
-        except Exception as e:
-            await self._mark_pending_media_retry(
-                job,
-                error=f"download_exception:{e.__class__.__name__}",
-                flow_id=flow_id,
-            )
-            return
-        if attachment is None:
-            await self._mark_pending_media_retry(
-                job,
-                error="download_failed",
-                flow_id=flow_id,
-            )
-            return
-
-        try:
-            if self._is_file_too_large(attachment.local_path):
-                placeholder = self._cfg.content.placeholder_file_too_large.format(
-                    filename=attachment.filename or Path(attachment.local_path).name
-                )
-                await self._tg.send_text(job.tg_topic_id, placeholder, flow_id=flow_id)
-                await self._repo.mark_pending_media_failed(
-                    job.id,
-                    error="file_too_large",
-                )
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "bridge.media_retry.failed",
-                    flow_id=flow_id,
-                    direction="inbound",
-                    stage="media_retry",
-                    outcome="failed",
-                    reason="file_too_large",
-                    max_chat_id=job.max_chat_id,
-                    max_msg_id=job.max_msg_id,
-                    tg_topic_id=job.tg_topic_id,
-                    pending_media_id=job.id,
-                    attachment_index=job.attachment_index,
-                )
-                return
-
-            media_label = "голосовое" if job.kind == "audio" else "видео"
-            caption = f"Докачанное {media_label} MAX #{job.attachment_index + 1}"
-            try:
-                tg_msg_id = await self._send_attachment(
-                    job.tg_topic_id,
-                    attachment,
-                    caption,
-                    flow_id=flow_id,
-                )
-            except Exception as e:
-                await self._mark_pending_media_retry(
-                    job,
-                    error=f"tg_send_exception:{e.__class__.__name__}",
-                    flow_id=flow_id,
-                )
-                return
-            if not tg_msg_id:
-                await self._mark_pending_media_retry(
-                    job,
-                    error="tg_send_failed",
-                    flow_id=flow_id,
-                )
-                return
-
-            await bridge_mapping.save_tg_reply_mapping(
-                self._repo,
-                tg_msg_id=tg_msg_id,
-                max_chat_id=job.max_chat_id,
-                max_msg_id=job.max_msg_id,
-                tg_topic_id=job.tg_topic_id,
-                source="pending_media",
-            )
-            await self._repo.mark_pending_media_delivered(
-                job.id,
-                tg_msg_id=tg_msg_id,
-            )
-            log_event(
-                logger,
-                logging.INFO,
-                "bridge.media_retry.delivered",
-                flow_id=flow_id,
-                direction="inbound",
-                stage="media_retry",
-                outcome="delivered",
-                max_chat_id=job.max_chat_id,
-                max_msg_id=job.max_msg_id,
-                tg_topic_id=job.tg_topic_id,
-                tg_msg_id=tg_msg_id,
-                pending_media_id=job.id,
-                attachment_index=job.attachment_index,
-                attempts=int(job.attempts or 0) + 1,
-            )
-        finally:
-            try:
-                Path(attachment.local_path).unlink(missing_ok=True)
-            except Exception:
-                pass
 
     async def run_pending_media_downloads(
         self,
