@@ -14,17 +14,24 @@ import asyncio
 import hashlib
 import json
 import logging
-import mimetypes
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Optional
-from urllib.parse import urlparse
-from urllib.parse import parse_qs
 
-from aiohttp import ClientResponseError, ClientSession
+from aiohttp import ClientSession
 
+from .max import errors as max_errors
+from .max import payload as max_payload
+from .max import users as max_users
+from .max.media import downloader as max_downloader
+from .max.media.ua import (
+    MAX_CDN_ANDROID_CHROME_USER_AGENT,
+    MAX_CDN_CHROME_USER_AGENT,
+    MAX_CDN_IOS_CHROME_USER_AGENT,
+    MAX_CDN_USER_AGENT,
+)
 from .max_session_store import MaxSessionStore
 from ..bridge.contracts import (
     MAX_DM_SWEEP_BACKFILL_SECONDS,
@@ -50,26 +57,6 @@ from ..logging_utils import (
 
 logger = logging.getLogger(__name__)
 
-MAX_CDN_USER_AGENT = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 "
-    "Mobile/15E148 Safari/604.1"
-)
-MAX_CDN_CHROME_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/136.0.0.0 Safari/537.36"
-)
-MAX_CDN_IOS_CHROME_USER_AGENT = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/136.0.0.0 "
-    "Mobile/15E148 Safari/604.1"
-)
-MAX_CDN_ANDROID_CHROME_USER_AGENT = (
-    "Mozilla/5.0 (Linux; Android 14; Mobile) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/136.0.0.0 Mobile Safari/537.36"
-)
 MAX_DOWNLOAD_ATTEMPTS = 7
 MAX_DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 MAX_RAW_HISTORY_CACHE_TTL_SECONDS = 180
@@ -185,42 +172,16 @@ class MaxAdapter:
         return digest.hexdigest()
 
     def _enum_value(self, value) -> Optional[str]:
-        if value is None:
-            return None
-        raw = getattr(value, "value", value)
-        raw = getattr(raw, "name", raw)
-        text = str(raw).strip()
-        return text or None
+        return max_users.enum_value(value)
 
     def _extract_user_id(self, user_obj) -> Optional[str]:
-        if user_obj is None:
-            return None
-        if isinstance(user_obj, (int, str)):
-            text = str(user_obj).strip()
-            return text or None
-        for attr in ("id", "user_id", "account_id"):
-            value = getattr(user_obj, attr, None)
-            if value is not None:
-                text = str(value).strip()
-                if text:
-                    return text
-        return None
+        return max_users.extract_user_id(user_obj)
 
     def _iter_userish(self, value):
-        if value is None:
-            return
-        if isinstance(value, dict):
-            for key, item in value.items():
-                if self._extract_user_id(item) or self._extract_user_name(item):
-                    yield item
-                else:
-                    yield key
-            return
-        if isinstance(value, (list, tuple, set)):
-            for item in value:
-                yield item
-            return
-        yield value
+        yield from max_users.iter_userish(
+            value,
+            extract_user_name=self._extract_user_name,
+        )
 
     async def _resolve_recovery_user_name(self, user_id: Optional[str], user_obj=None) -> Optional[str]:
         direct_name = self._extract_user_name(user_obj)
@@ -238,37 +199,17 @@ class MaxAdapter:
         return await self.resolve_user_name(str(user_id))
 
     def _normalize_recovery_chat_kind(self, chat_obj) -> str:
-        raw_type = self._enum_value(getattr(chat_obj, "type", None))
-        if raw_type:
-            lowered = raw_type.lower()
-            if "channel" in lowered:
-                return "channel"
-            if "dialog" in lowered or "dm" in lowered or "private" in lowered:
-                return "dm"
-            if "chat" in lowered or "group" in lowered:
-                return "group"
-
-        try:
-            chat_id_int = int(getattr(chat_obj, "id", 0))
-            if chat_id_int < 0:
-                return "group"
-        except (TypeError, ValueError):
-            pass
-        return "unknown"
+        return max_users.normalize_recovery_chat_kind(chat_obj)
 
     def _chat_title(self, chat_obj, fallback: str) -> str:
-        for attr in ("title", "name"):
-            value = getattr(chat_obj, attr, None)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return fallback
+        return max_users.chat_title(chat_obj, fallback)
 
     def _dialog_partner_id(self, dialog_obj, own_id: Optional[str]) -> Optional[str]:
-        for participant in self._iter_userish(getattr(dialog_obj, "participants", None)):
-            candidate = self._extract_user_id(participant)
-            if candidate and candidate != own_id:
-                return candidate
-        return None
+        return max_users.dialog_partner_id(
+            dialog_obj,
+            own_id,
+            extract_user_name=self._extract_user_name,
+        )
 
     async def _recovery_snapshot_for_chat(self, chat_obj) -> Optional[MaxRecoveryChatSnapshot]:
         chat_id = getattr(chat_obj, "id", None)
@@ -454,44 +395,7 @@ class MaxAdapter:
         self._last_issue_notification_signature = None
 
     def _classify_runtime_error(self, error: BaseException) -> Optional[MaxIssue]:
-        raw_error = str(error).strip() or error.__class__.__name__
-        lowered = raw_error.lower()
-
-        corrupt_session_markers = (
-            "unsupported file format",
-            "database disk image is malformed",
-        )
-        if any(marker in lowered for marker in corrupt_session_markers):
-            return MaxIssue(
-                kind="session_corrupt",
-                summary="MAX session.db повреждён или не читается",
-                raw_error=raw_error,
-                requires_reauth=True,
-            )
-
-        invalid_token_markers = (
-            "invalid token",
-            "login.token",
-            "авторизируйтесь снова",
-            "please, login again",
-        )
-        if any(marker in lowered for marker in invalid_token_markers):
-            return MaxIssue(
-                kind="session_invalid",
-                summary="MAX сессия недействительна, нужна повторная авторизация",
-                raw_error=raw_error,
-                requires_reauth=True,
-            )
-
-        if "must be online session" in lowered or "недопустимое состояние сессии" in lowered:
-            return MaxIssue(
-                kind="session_offline",
-                summary="MAX сессия не перешла в ONLINE-состояние",
-                raw_error=raw_error,
-                requires_reauth=False,
-            )
-
-        return None
+        return max_errors.classify_runtime_error(error)
 
     def _remember_runtime_issue(self, issue: MaxIssue) -> MaxIssue:
         now = int(time.time())
@@ -557,34 +461,7 @@ class MaxAdapter:
         setattr(client, attr_name, wrapped)
 
     def _is_retryable_send_error(self, error: BaseException) -> bool:
-        if isinstance(
-            error,
-            (
-                asyncio.TimeoutError,
-                TimeoutError,
-                ConnectionError,
-                BrokenPipeError,
-                ConnectionResetError,
-            ),
-        ):
-            return True
-
-        error_text = str(error).lower()
-        retryable_markers = (
-            "socket is not connected",
-            "must be online session",
-            "недопустимое состояние сессии",
-            "broken pipe",
-            "connection reset",
-            "no route to host",
-            "network is unreachable",
-            "timed out",
-            "timeout",
-            "temporarily unavailable",
-            "tlsv1 alert",
-            "ssl:",
-        )
-        return any(marker in error_text for marker in retryable_markers)
+        return max_errors.is_retryable_send_error(error)
 
     def _cleanup_pending_state(self):
         now = time.monotonic()
@@ -908,15 +785,7 @@ class MaxAdapter:
         return (str(chat_id), str(msg_id)) in self._raw_processed_message_ids
 
     def _payload_value(self, data: dict, *keys: str):
-        normalized = {
-            str(k).lower().replace("_", ""): v
-            for k, v in data.items()
-        }
-        for key in keys:
-            candidate = key.lower().replace("_", "")
-            if candidate in normalized:
-                return normalized[candidate]
-        return None
+        return max_payload.payload_value(data, *keys)
 
     def _raw_opcode_name(self, opcode) -> Optional[str]:
         opcode_value = getattr(opcode, "value", opcode)
@@ -928,54 +797,14 @@ class MaxAdapter:
             return str(getattr(opcode, "name", "") or "") or None
 
     def _is_safe_field_name(self, name: object) -> bool:
-        lowered = str(name).lower()
-        blocked = ("url", "token", "text", "raw")
-        return not any(marker in lowered for marker in blocked)
+        return max_payload.is_safe_field_name(name)
 
     def _safe_field_paths(self, value, *, max_depth: int = 2, max_items: int = 80) -> list[str]:
-        paths: list[str] = []
-        seen: set[int] = set()
-
-        def iter_items(node):
-            if isinstance(node, dict):
-                return node.items()
-            raw_fields = getattr(node, "__dict__", None)
-            if isinstance(raw_fields, dict):
-                return raw_fields.items()
-            return ()
-
-        def walk(node, prefix: str, depth: int):
-            if node is None or depth > max_depth or len(paths) >= max_items:
-                return
-            if isinstance(node, (str, bytes, int, float, bool)):
-                return
-            if isinstance(node, (dict, list, tuple, set)) or hasattr(node, "__dict__"):
-                node_id = id(node)
-                if node_id in seen:
-                    return
-                seen.add(node_id)
-
-            if isinstance(node, (list, tuple, set)):
-                if prefix:
-                    list_path = f"{prefix}[]"
-                    if list_path not in paths:
-                        paths.append(list_path)
-                for item in list(node)[:5]:
-                    walk(item, f"{prefix}[]" if prefix else "[]", depth + 1)
-                return
-
-            for key, child in iter_items(node):
-                name = str(key)
-                if name.startswith("_") or not self._is_safe_field_name(name):
-                    continue
-                path = f"{prefix}.{name}" if prefix else name
-                paths.append(path)
-                if len(paths) >= max_items:
-                    return
-                walk(child, path, depth + 1)
-
-        walk(value, "", 0)
-        return sorted(dict.fromkeys(paths))
+        return max_payload.safe_field_paths(
+            value,
+            max_depth=max_depth,
+            max_items=max_items,
+        )
 
     def _normalize_message_dict(self, data: dict) -> dict:
         normalized = dict(data)
@@ -3374,32 +3203,18 @@ class MaxAdapter:
         Heuristic: if the string fits in latin-1 and decodes cleanly as cp1251, use it.
         Pure ASCII and already-correct UTF-8 strings pass through unchanged.
         """
-        try:
-            fixed = name.encode("latin-1").decode("cp1251")
-            return fixed if fixed != name else name
-        except (UnicodeEncodeError, UnicodeDecodeError):
-            return name
+        return max_downloader.fix_filename_encoding(name)
 
     def _build_filename(self, prefix: str, filename_hint: Optional[str],
                         url: Optional[str], content_type: Optional[str],
                         default_extension: str = "") -> str:
-        base_name = Path(filename_hint).name if filename_hint else ""
-        stem = Path(base_name).stem if base_name else prefix
-        suffix = Path(base_name).suffix
-
-        if not suffix and url:
-            suffix = Path(urlparse(url).path).suffix
-
-        if not suffix and content_type:
-            guessed = mimetypes.guess_extension(content_type)
-            if guessed == ".jpe":
-                guessed = ".jpg"
-            suffix = guessed or ""
-
-        if not suffix and default_extension:
-            suffix = default_extension if default_extension.startswith(".") else f".{default_extension}"
-
-        return f"{stem}{suffix}" if suffix else stem
+        return max_downloader.build_filename(
+            prefix,
+            filename_hint,
+            url,
+            content_type,
+            default_extension,
+        )
 
     def _extract_video_url(self, value, *, key_hint: Optional[str] = None) -> Optional[str]:
         """Найти реальный URL видео в сыром payload VIDEO_PLAY.
@@ -3408,132 +3223,17 @@ class MaxAdapter:
         которое не EXTERNAL/cache. На практике сервер может вернуть вложенную
         структуру или сначала preview/thumbnail. Здесь ищем лучший URL сами.
         """
-        candidates: list[tuple[int, str]] = []
-
-        def score_url(url: str, key: Optional[str]) -> int:
-            score = 0
-            lowered_url = url.lower()
-            lowered_key = (key or "").lower()
-
-            if lowered_key in {"url", "src", "source"} or lowered_key.isdigit():
-                score += 4
-            if "video" in lowered_key or "stream" in lowered_key:
-                score += 3
-            if "mp4" in lowered_key or "m3u8" in lowered_key or "hls" in lowered_key:
-                score += 6
-            if any(resolution in lowered_key for resolution in ("144", "240", "360", "480", "720", "1080", "1440", "2160")):
-                score += 2
-            if any(ext in lowered_url for ext in (".mp4", ".mov", ".m4v", ".webm", ".m3u8")):
-                score += 5
-            if lowered_key == "external":
-                score -= 12
-            if any(marker in lowered_key for marker in ("thumbnail", "thumb", "preview")):
-                score -= 5
-            if "m.ok.ru/video/" in lowered_url or "ok.ru/video/" in lowered_url:
-                score -= 8
-            if any(ext in lowered_url for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
-                score -= 6
-
-            return score
-
-        def walk(node, key: Optional[str] = None):
-            if isinstance(node, str):
-                if node.startswith(("http://", "https://")):
-                    candidates.append((score_url(node, key), node))
-                return
-
-            if isinstance(node, dict):
-                for nested_key, nested_value in node.items():
-                    walk(nested_value, str(nested_key))
-                return
-
-            if isinstance(node, (list, tuple, set)):
-                for nested_value in node:
-                    walk(nested_value, key)
-                return
-
-            url_attr = getattr(node, "url", None)
-            if url_attr is not None and url_attr is not node:
-                walk(url_attr, "url")
-
-            if hasattr(node, "__dict__"):
-                walk(vars(node), key)
-
-        walk(value, key_hint)
-        if not candidates:
-            return None
-
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return candidates[0][1]
+        return max_downloader.extract_video_url(value, key_hint=key_hint)
 
     def _extract_audio_url(self, value, *, key_hint: Optional[str] = None) -> Optional[str]:
         """Найти реальный URL голосового/audio в сыром MAX payload."""
-        candidates: list[tuple[int, str]] = []
-
-        def score_url(url: str, key: Optional[str]) -> int:
-            score = 0
-            lowered_url = url.lower()
-            lowered_key = (key or "").lower()
-
-            if lowered_key in {"url", "src", "source", "download"} or lowered_key.isdigit():
-                score += 4
-            if any(marker in lowered_key for marker in ("audio", "voice", "file", "media")):
-                score += 5
-            if any(ext in lowered_key for ext in ("ogg", "opus", "mp3", "m4a", "aac", "wav")):
-                score += 6
-            if any(ext in lowered_url for ext in (".ogg", ".opus", ".mp3", ".m4a", ".aac", ".wav")):
-                score += 6
-            if any(marker in lowered_key for marker in ("thumb", "preview", "image", "photo")):
-                score -= 6
-            if any(ext in lowered_url for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
-                score -= 8
-            if "video" in lowered_key or any(ext in lowered_url for ext in (".mp4", ".mov", ".m3u8")):
-                score -= 4
-
-            return score
-
-        def walk(node, key: Optional[str] = None):
-            if isinstance(node, str):
-                if node.startswith(("http://", "https://")):
-                    candidates.append((score_url(node, key), node))
-                return
-            if isinstance(node, dict):
-                for nested_key, nested_value in node.items():
-                    walk(nested_value, str(nested_key))
-                return
-            if isinstance(node, (list, tuple, set)):
-                for nested_value in node:
-                    walk(nested_value, key)
-                return
-            url_attr = getattr(node, "url", None)
-            if url_attr is not None and url_attr is not node:
-                walk(url_attr, "url")
-            if hasattr(node, "__dict__"):
-                walk(vars(node), key)
-
-        walk(value, key_hint)
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return candidates[0][1]
+        return max_downloader.extract_audio_url(value, key_hint=key_hint)
 
     def _safe_payload_error_code(self, payload) -> Optional[str]:
-        if not isinstance(payload, dict):
-            return None
-        error = self._payload_value(payload, "error", "errorCode", "code")
-        if isinstance(error, dict):
-            code = self._payload_value(error, "code", "name", "type", "error")
-            return str(code)[:80] if code is not None else error.__class__.__name__
-        if error is not None:
-            return str(error)[:80]
-        return None
+        return max_payload.safe_payload_error_code(payload)
 
     def _is_socket_probe_error(self, exc: Exception) -> bool:
-        return exc.__class__.__name__ in {
-            "SocketSendError",
-            "SocketNotConnectedError",
-            "WebSocketNotConnectedError",
-        }
+        return max_errors.is_socket_probe_error(exc)
 
     def _audio_get_sources_opcode(self):
         """Opcode 301 is used by MAX Web for audioGetSources but is absent in pymax 1.2.5."""
@@ -3798,127 +3498,32 @@ class MaxAdapter:
         return None, None, False
 
     def _download_client_profile_for_url(self, url: str) -> tuple[dict[str, str], Optional[str], str]:
-        src_ag = (
-            parse_qs(urlparse(url).query).get("srcAg", [None])[0]
-            if url else None
-        )
-        normalized = str(src_ag or "").upper()
-        if "CHROME" in normalized and "ANDROID" in normalized:
-            user_agent = MAX_CDN_ANDROID_CHROME_USER_AGENT
-            ua_family = "chrome_android"
-        elif "CHROME" in normalized and ("IPHONE" in normalized or "IOS" in normalized):
-            user_agent = MAX_CDN_IOS_CHROME_USER_AGENT
-            ua_family = "chrome_ios"
-        elif "CHROME" in normalized:
-            user_agent = MAX_CDN_CHROME_USER_AGENT
-            ua_family = "chrome_desktop"
-        else:
-            user_agent = MAX_CDN_USER_AGENT
-            ua_family = "safari_mobile"
-        return {"User-Agent": user_agent}, src_ag, ua_family
+        from .max.media.ua import download_client_profile_for_url
+
+        return download_client_profile_for_url(url)
 
     def _download_headers_for_url(self, url: str) -> dict[str, str]:
-        headers, _src_ag, _ua_family = self._download_client_profile_for_url(url)
-        return headers
+        from .max.media.ua import download_headers_for_url
+
+        return download_headers_for_url(url)
 
     def _detect_magic_type(self, content: bytes) -> str:
-        if not content:
-            return "unknown"
-
-        head = content[:64]
-
-        if head.startswith(b"\xff\xd8\xff"):
-            return "image"
-        if head.startswith(b"\x89PNG\r\n\x1a\n"):
-            return "image"
-        if head.startswith((b"GIF87a", b"GIF89a")):
-            return "image"
-        if head.startswith(b"RIFF") and b"WEBP" in content[8:16]:
-            return "image"
-
-        if len(content) > 12 and content[4:8] == b"ftyp":
-            return "video"
-        if head.startswith(b"\x1a\x45\xdf\xa3"):
-            return "video"  # webm/mkv
-
-        if head.startswith(b"OggS"):
-            return "audio"
-        if head.startswith(b"ID3"):
-            return "audio"
-
-        if head.startswith(b"%PDF"):
-            return "document"
-        if head.startswith(b"PK\x03\x04"):
-            return "document"
-
-        lowered = content[:256].lstrip().lower()
-        if lowered.startswith((b"<!doctype html", b"<html", b"<head", b"<body")):
-            return "html"
-        return "unknown"
+        return max_downloader.detect_magic_type(content)
 
     def _classify_downloaded_content(self, content_type: Optional[str], content: bytes) -> str:
-        magic_type = self._detect_magic_type(content)
-        if magic_type != "unknown":
-            return magic_type
-
-        normalized = str(content_type or "").lower()
-        if normalized.startswith("image/"):
-            return "image"
-        if normalized.startswith("video/"):
-            return "video"
-        if normalized.startswith("audio/"):
-            return "audio"
-        if normalized.startswith("text/html"):
-            return "html"
-        if normalized.startswith("text/"):
-            return "text"
-        if normalized.startswith("application/"):
-            return "document"
-        return "unknown"
+        return max_downloader.classify_downloaded_content(content_type, content)
 
     def _is_download_valid(self, expected_kind: Optional[str], detected_kind: str) -> bool:
-        if detected_kind == "html":
-            return False
-
-        expected = str(expected_kind or "").lower()
-        if not expected:
-            if detected_kind == "text":
-                return False
-            return True
-
-        if detected_kind == "text":
-            return expected == "document"
-
-        expected_map = {
-            "photo": {"image"},
-            "video": {"video"},
-            "audio": {"audio"},
-            "document": {"document", "image", "video", "audio", "unknown"},
-        }
-        allowed = expected_map.get(expected)
-        if not allowed:
-            return True
-        if detected_kind in allowed:
-            return True
-        if detected_kind == "unknown":
-            return True
-        return False
+        return max_downloader.is_download_valid(expected_kind, detected_kind)
 
     def _is_retryable_download_error(self, error: Exception) -> bool:
-        if isinstance(error, ClientResponseError):
-            return error.status not in {401, 403, 404, 410}
-        return True
+        return max_downloader.is_retryable_download_error(error)
 
     def _download_error_for_log(self, error: Exception) -> str:
-        if isinstance(error, ClientResponseError):
-            message = str(error.message or "").strip()
-            return f"HTTP {error.status}" + (f" {message}" if message else "")
-        return str(error)
+        return max_downloader.download_error_for_log(error)
 
     def _download_error_status(self, error: Exception) -> Optional[int]:
-        if isinstance(error, ClientResponseError):
-            return error.status
-        return None
+        return max_downloader.download_error_status(error)
 
     async def _write_download_response(self, response, part_path: Path, mode: str) -> int:
         written = 0
@@ -3937,7 +3542,7 @@ class MaxAdapter:
         return written
 
     def _download_retry_delay(self, attempt: int) -> int:
-        return min(2 ** (attempt - 1), 8)
+        return max_downloader.download_retry_delay(attempt)
 
     async def _download_from_url(self, url: str, prefix: str,
                                  filename_hint: Optional[str] = None,
