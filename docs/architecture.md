@@ -1,5 +1,134 @@
 # Архитектура MAX→Telegram Bridge
 
+## Архитектура после рефакторинга (вид сверху)
+
+### Поток данных
+
+```text
+                       ┌──────────────────────────────────────────────┐
+                       │                СУПЕРВАЙЗЕР                  │
+                       │  runtime/supervisor.py — restart worker      │
+                       │  runtime/health/* — state/events/outbox      │
+                       └──────────────────────────────────────────────┘
+                                          │ управляет
+                                          ▼
+   ┌─────────────┐     события     ┌──────────────────┐    события     ┌──────────────┐
+   │             │ ──────────────► │                  │ ──────────────►│              │
+   │   MAX       │                 │   BRIDGE CORE    │                │  TELEGRAM    │
+   │  pymax      │                 │   coordinator    │                │  aiogram     │
+   │             │ ◄────────────── │                  │ ◄──────────────│              │
+   └─────────────┘     send        └──────────────────┘     reply      └──────────────┘
+         ▲                                  │                                  ▲
+         │                                  │ читает/пишет                     │
+         │                                  ▼                                  │
+         │                          ┌──────────────────┐                       │
+         │                          │  SQLite + files  │                       │
+         │                          │ bindings/maps/   │                       │
+         │                          │ delivery/queue/  │                       │
+         │                          │ recovery/health  │                       │
+         │                          └──────────────────┘                       │
+         │                                                                     │
+         └──── pymax bounded modules ───────────── aiogram adapter/notifier ───┘
+```
+
+`BridgeCore` не импортирует `pymax`, `aiogram` или concrete adapters. Он зависит от
+`src/bridge/contracts.py`: dataclass-моделей (`MaxMessage`, `MaxAttachment`,
+recovery snapshots) и Protocol-портов (`MaxBridgePort`, `TelegramBridgePort`,
+`OpsNotifierPort`). Runtime wiring живёт в `src/startup/composition.py`.
+
+### Карта модулей
+
+```text
+src/
+│
+├── main.py                  entrypoint: logging, config, health store, supervisor
+├── startup/
+│   └── composition.py        composition root: Repository + adapters + BridgeCore
+│
+├── config/
+│   └── loader.py             config.yaml + config.local.yaml + env/secrets
+│
+├── bridge/                  business logic; no pymax/aiogram imports
+│   ├── contracts.py          transport-neutral dataclasses + Protocol ports
+│   ├── core.py               coordinator: registers callbacks, delegates to leaves
+│   ├── mapping.py            message_map / tg_reply_map idempotency helpers
+│   ├── topics.py             topic create/bind/rename decisions
+│   ├── forwarding.py         MAX -> TG text/media delivery
+│   ├── replies.py            TG replies -> MAX outbound messages
+│   ├── media_retry.py        durable MAX media retry worker
+│   ├── delivery.py           delivery_log status helpers
+│   ├── background.py         status, watchdog, sweeps, cleanup, weekly recovery
+│   ├── commands/
+│   │   ├── dm.py             /dm <user> <text>
+│   │   └── recovery.py       /recovery scan|report|export|set|remap
+│   └── recovery/
+│       ├── orchestrator.py   safe scans, debounce/cooldown, snapshot upsert
+│       └── reporter.py       report/status-summary/critical migration alert
+│
+├── db/                      SQLite facade + subdomain repositories
+│   ├── models.py             schema and migrations
+│   ├── types.py              repository dataclasses
+│   ├── repository.py         public Repository facade
+│   └── repos/
+│       ├── bindings.py       chat_bindings
+│       ├── messages.py       message_map, tg_reply_map
+│       ├── delivery.py       delivery_log and activity counters
+│       ├── pending_media.py  durable media retry queue
+│       ├── users.py          known_users for /dm
+│       ├── generations.py    max_account_generations
+│       └── recovery.py       chat/dm recovery registry + audit events
+│
+├── adapters/
+│   ├── tg/
+│   │   ├── adapter.py        aiogram bot, topic ops, send/receive callbacks
+│   │   └── notifier.py       owner DM, ops topic fanout, alert outbox flush
+│   ├── tg_adapter.py         compatibility import path
+│   │
+│   ├── max/
+│   │   ├── adapter.py        public MaxAdapter facade
+│   │   ├── client_factory.py pymax SocketMaxClient factory
+│   │   ├── lifecycle.py      start/reconnect/readiness lifecycle
+│   │   ├── events.py         pymax events -> MaxMessage normalization
+│   │   ├── raw_payload.py    pymax raw payload hooks/history fetch
+│   │   ├── send.py           outbound send with reconnect wait/ack handling
+│   │   ├── media/
+│   │   │   ├── attachments.py pymax-bound attachment extraction/download
+│   │   │   ├── downloader.py HTTP Range/.part downloader
+│   │   │   └── ua.py         MAX CDN srcAg -> User-Agent mapping
+│   │   ├── payload.py        plain payload helpers
+│   │   ├── users.py          names and DM partner helpers
+│   │   ├── errors.py         outbound error classification
+│   │   ├── recovery.py       recovery snapshot collection helpers
+│   │   ├── resolve.py        chat/user title resolution helpers
+│   │   ├── runtime_state.py  last issue / readiness metadata
+│   │   ├── voice_recovery.py empty voice/raw history recovery helpers
+│   │   ├── context.py        adapter context dataclass
+│   │   ├── constants.py      MAX adapter constants
+│   │   └── types.py          adapter-local types
+│   ├── max_adapter.py        compatibility import path
+│   └── max_session_store.py  persistent MAX session blob storage
+│
+└── runtime/
+    ├── supervisor.py         worker restart loop and lifecycle boundaries
+    ├── healthcheck.py        Docker healthcheck endpoint
+    └── health/
+        ├── state.py          HealthSnapshot, HealthIssue, Severity
+        ├── store.py          public RuntimeHealthStore facade
+        ├── writer.py         atomic persisted writes
+        ├── events.py         health event log
+        ├── outbox.py         durable alert outbox
+        ├── heartbeat.py      heartbeat file writer
+        └── rendering.py      operator-facing health messages
+```
+
+### Границы зависимостей
+
+- `src/bridge/*`, `src/db/*`, `src/runtime/*`, `src/main.py` не импортируют `pymax` или `aiogram`.
+- `src/adapters/tg/*` — единственная aiogram boundary; старый путь `src.adapters.tg_adapter` оставлен для совместимости.
+- `src/adapters/max/*` — MAX boundary. `pymax` imports разрешены только в bounded modules, защищённых `tests/test_bridge_contracts.py`.
+- `src/startup/composition.py` — composition root: здесь допустимо соединять concrete adapters с `BridgeCore`.
+- Recovery auto-scan дельты не спамят Telegram: они попадают агрегатами в 4-часовой `/status`; отдельный alert остаётся только для `account_migration_required`.
+
 ## Обзор
 
 ```
