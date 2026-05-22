@@ -29,3 +29,11 @@ def test_bridge_contracts_stay_transport_neutral():
 
     forbidden = ("pymax", "aiogram", "adapters.")
     assert not any(any(name in target for name in forbidden) for target in targets)
+
+
+def test_main_keeps_runtime_wiring_in_composition_root():
+    targets = _import_targets("src/main.py")
+
+    forbidden = ("adapters.max_adapter", "adapters.tg_adapter", "bridge.core")
+    assert not any(any(name in target for name in forbidden) for target in targets)
+    assert any(target.endswith("startup.composition") for target in targets)
