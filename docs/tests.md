@@ -191,6 +191,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_build_chats_message_lists_topics_with_activity` | `/chats` показывает чат, topic_id, режим и счётчики `↓/↑` за период. |
 | `test_build_status_message_includes_max_issue_summary` | `/status` показывает текущую MAX-проблему и необходимость `reauth`, если адаптер сообщил о деградации сессии. |
 | `test_build_status_message_uses_shared_health_snapshot` | `/status` читает единый persisted health snapshot и отражает runtime/max health из supervisor-контура. |
+| `test_recovery_auto_changes_are_summarized_in_status_not_notified` | Обычные recovery auto-scan дельты не отправляют отдельный alert, но `/status` показывает агрегаты без invite/title/phone/raw payload. |
 | `test_watchdog_sends_gap_notice_after_reconnect` | После offline-окна watchdog отправляет и alert про downtime, и уведомление о возможном `missed messages gap` после восстановления. |
 
 ### Кодировка файлов
@@ -218,7 +219,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_cmd_recovery_scan_report_set_remap_and_export` | Owner-only recovery flow: scan, report со свежестью snapshot, отсутствие invite link в report/logs, ручной `set`, `remap`, owner-DM export и обновление binding. |
 | `test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding` | Новый `ChatBinding` ставит recovery scan в background task; Telegram topic/message создаются сразу и не ждут snapshot, а auto scan обновляет DM contact registry асинхронно. |
 | `test_control_events_debounce_into_one_recovery_scan` | Повторные MAX `CONTROL` события схлопываются в один recovery scan. |
-| `test_recovery_auto_notification_is_important_only_redacted_and_deduped` | Important-only notification отправляет только агрегаты, не раскрывает invite/title/phone/raw payload и дедупится в памяти. |
+| `test_recovery_account_migration_notification_is_redacted_and_deduped` | Срочный recovery alert остаётся только для MAX account migration-required, не раскрывает phone/session hash и дедупится в памяти. |
 | `test_recovery_scan_updates_dm_contact_registry_and_report` | `/recovery scan` обновляет chat registry и DM contact registry вместе; `/recovery report` показывает только агрегаты DM contacts, а owner-only export содержит контактный snapshot. |
 
 ### Персистирование пользователей

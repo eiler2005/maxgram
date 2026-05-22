@@ -98,6 +98,51 @@ async def build_report_message(
     return "\n".join(lines)
 
 
+async def build_status_summary(
+    *,
+    repo: Repository,
+    format_freshness_fn: Callable[[int | None], str],
+) -> list[str]:
+    get_report = getattr(repo, "get_recovery_report", None)
+    if not callable(get_report):
+        return []
+
+    report = await get_report()
+    stats = report.get("stats", {})
+    total = int(stats.get("total") or 0)
+    dm_contacts = int(stats.get("dm_contacts") or 0)
+    if not total and not dm_contacts and not stats.get("last_scan_at"):
+        return []
+
+    needs_invite = int(stats.get("needs_invite") or 0)
+    manual_admin_required = int(stats.get("manual_admin_required") or 0)
+    dm_contacts_needs_remap = int(stats.get("dm_contacts_needs_remap") or 0)
+    needs_attention = (
+        int(stats.get("unmapped") or 0)
+        + needs_invite
+        + manual_admin_required
+        + dm_contacts_needs_remap
+    )
+
+    lines = [
+        "🧭 MAX recovery snapshot",
+        (
+            f"  TG topics: {int(stats.get('topics') or 0)}/{total} · "
+            f"unmapped: {int(stats.get('unmapped') or 0)} · "
+            f"invite/admin: {needs_invite}/{manual_admin_required}"
+        ),
+        (
+            f"  DM contacts: {dm_contacts} · "
+            f"linked: {int(stats.get('dm_contacts_linked') or 0)} · "
+            f"needs contact/remap: {dm_contacts_needs_remap}"
+        ),
+        f"  Свежесть: {format_freshness_fn(stats.get('last_scan_at'))}",
+    ]
+    if needs_attention:
+        lines.append("  Детали: /recovery report")
+    return lines
+
+
 def parse_set_fields(entry, tokens: list[str]) -> dict[str, object]:
     updates: dict[str, object] = {}
     for token in tokens:
@@ -169,6 +214,10 @@ def changes_are_important(result: dict[str, object]) -> bool:
     return False
 
 
+def changes_need_immediate_notification(result: dict[str, object]) -> bool:
+    return bool(result.get("migration_required"))
+
+
 def notification_digest(result: dict[str, object]) -> str:
     payload = {
         "inserted": int(result.get("inserted") or 0),
@@ -190,6 +239,22 @@ async def maybe_notify_changes(
     send_ops_notification: Callable[[str], Awaitable[None]],
 ) -> tuple[str, float] | None:
     if not changes_are_important(result):
+        return None
+    if not changes_need_immediate_notification(result):
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.recovery.notification",
+            stage="recovery",
+            outcome="skipped",
+            reason=reason,
+            skip_reason="periodic_status_summary",
+            inserted=int(result.get("inserted") or 0),
+            unmapped=int(result.get("unmapped") or 0),
+            needs_invite=int(result.get("needs_invite") or 0),
+            manual_admin_required=int(result.get("manual_admin_required") or 0),
+            dm_contacts_status_changed=int(result.get("dm_contacts_status_changed") or 0),
+        )
         return None
 
     now = time.monotonic()
@@ -219,7 +284,7 @@ async def maybe_notify_changes(
     if result.get("migration_required"):
         parts.append("account migration: required")
     text = (
-        "🧭 MAX recovery snapshot изменился\n"
+        "⚠️ MAX account migration required\n"
         f"Триггер: {reason}\n"
         f"{' · '.join(parts)}\n"
         "Открой /recovery report для деталей."

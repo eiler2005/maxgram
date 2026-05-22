@@ -217,7 +217,7 @@ Adapter управляет:
 
 Планировщик в `BridgeCore` использует `asyncio.create_task`: message forwarding, topic creation и rename не ждут snapshot. Несколько событий схлопываются в один scan task; snapshot errors логируются безопасно, без raw payload и без invite links. Этот же scan обновляет `dm_contact_recovery_registry` из `MaxRecoverySnapshot.contacts`; источником являются только `client.dialogs` и уже привязанные DM topics, не `client.contacts` и не `known_users`.
 
-Important-only уведомления отправляются owner/ops только если auto scan нашёл meaningful change: новые registry rows, unmapped MAX chats, `needs_invite`, `manual_admin_required`, `account_migration_required` или изменение статуса DM contacts. Текст уведомления содержит только counts/statuses и подсказку открыть `/recovery report`; invite links, manual notes, phone numbers, message text, titles, DM contact names и raw MAX fields не попадают в notification/log/health.
+Routine recovery deltas from auto scans are quiet: новые registry rows, unmapped MAX chats, `needs_invite`, `manual_admin_required` и DM contact status changes попадают агрегатами в 4-часовой `/status`, где `/recovery report` остаётся detail view. Immediate owner/ops alert сохраняется только для `account_migration_required`. Любой recovery status/notification текст содержит только counts/statuses; invite links, manual notes, phone numbers, message text, titles, DM contact names и raw MAX fields не попадают в notification/log/health.
 
 ### Repository (`src/db/repository.py`, `src/db/repos/*.py`)
 

@@ -121,7 +121,7 @@
 - [x] **Owner-only recovery commands** — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, `/recovery remap`
 - [x] **Hybrid snapshot triggers** — safe scan после MAX connect/reconnect, weekly safety-net и event-driven scans на `new_binding`, `title_changed`, MAX `CONTROL`
 - [x] **Async debounced scheduler** — event-driven scans выполняются background task'ом, схлопывают повторные события и не задерживают forwarding/topic creation
-- [x] **Important-only recovery notifications** — owner/ops получает только агрегаты по meaningful changes; invite links, notes, phones, message text и raw payload не попадают в уведомления/логи
+- [x] **Quiet recovery status summary** — обычные auto-scan дельты попадают в 4-часовой `/status`, отдельный alert остаётся для migration-required; invite links, notes, phones, message text и raw payload не попадают в статус/уведомления/логи
 - [x] **Remap safety** — Telegram topic сохраняется; stale reply mapping после remap не отправляет `reply_to` на старый `max_chat_id`
 - [x] **Privacy tests** — report/logs не раскрывают invite links, notes, phone numbers, message text или raw MAX payloads
 

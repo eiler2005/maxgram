@@ -248,7 +248,7 @@ MAX не даёт штатно поменять телефон в профиле
 - `MaxAdapter.collect_recovery_snapshot()` читает `client.chats`, `client.channels`, `client.dialogs`, enrich через `get_chat()`
 - `BridgeCore` запускает safe scan после MAX connect/reconnect, затем раз в неделю, а также event-driven при `new_binding`, `title_changed` и MAX `CONTROL`
 - Event-driven scans работают асинхронно: background task с debounce/cooldown не задерживает обычную пересылку, создание topics или rename
-- Important-only notifications уходят owner/ops только по meaningful changes и содержат агрегаты; invite links, notes, phone numbers, message text и raw MAX payload не выводятся в notification/log/health
+- Обычные recovery auto-scan дельты попадают агрегатами в 4-часовой `/status`; отдельный owner/ops alert остаётся только для `account_migration_required`. Invite links, notes, phone numbers, message text и raw MAX payload не выводятся в status/notification/log/health
 
 Owner-only команды:
 
@@ -745,7 +745,7 @@ fly logs -f
 | Chat recovery registry + `last_scan_at` freshness | ✅ |
 | Hybrid recovery snapshots: connect/reconnect + weekly + event-driven | ✅ |
 | Async debounce/cooldown scheduler без задержки forwarding | ✅ |
-| Important-only recovery notifications | ✅ |
+| Quiet recovery status summary + migration alert | ✅ |
 | Owner-only `/recovery scan/report/export/set/remap` | ✅ |
 | Remap safety для stale reply mapping | ✅ |
 | Privacy tests для report/logs/export path | ✅ |

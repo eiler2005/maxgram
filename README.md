@@ -71,13 +71,13 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Per-chat modes: `active` / `readonly` / `disabled`
 - Deduplication — no duplicate messages on reconnect
 - Stable reconnect — no OOM, no SSL storm
-- `/status` command — uptime, message stats, top active chats; works in forum group and personal DM with bot
+- `/status` command — uptime, message stats, recovery snapshot summary, top active chats; works in forum group and personal DM with bot
 - `/chats` command — list of bridged chats with topic id, mode, and inbound/outbound counters
-- Periodic 4-hour status report — automatic delivery stats sent to owner DM, with optional fanout to a dedicated forum topic
+- Periodic 4-hour status report — automatic delivery/recovery stats sent to owner DM, with optional fanout to a dedicated forum topic
 - MAX account recovery snapshots — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, and `/recovery remap` help migrate existing Telegram topics to a new MAX phone/account without storing message contents
 - Hybrid recovery refresh: scan after successful MAX connect/reconnect, weekly safety-net scan, and event-driven scans after new topic bindings, title changes, and MAX control events; reports include `last_scan_at` freshness
 - DM contact recovery snapshot — stores only personal contacts that have real MAX DM dialogs or bound DM topics, never the full MAX address book
-- Important-only recovery notifications — automatic scans notify owner/ops only on meaningful recovery changes and include counts/statuses only, with details behind `/recovery report`
+- Quiet recovery notifications — routine scan deltas (`unmapped`, `needs_invite`, DM contact changes) are folded into the 4-hour status summary; owner/ops gets an immediate alert only for MAX account migration-required
 - MAX offline watchdog — alert if MAX unreachable > 60 seconds
 - Reconnect gap warning — after recovery, owner gets a reminder about possible missed messages during downtime
 - Telegram API retry with exponential backoff (3 attempts, respects `Retry-After`)
@@ -127,7 +127,7 @@ Owner-only commands:
 /recovery remap <topic_id> <new_max_chat_id>
 ```
 
-Normal operation runs a safe registry scan after successful MAX connect/reconnect and then once a week. It also refreshes snapshots asynchronously when important MAX-side changes are observed: new Telegram topic binding, fallback title update, or MAX `CONTROL` event. These event-driven scans are debounced in `BridgeCore`, run in background tasks, and never block message forwarding or topic creation. The same scan updates DM contact recovery from `client.dialogs` only; `client.contacts` and `known_users` are not copied into the recovery contact registry. If an automatic scan finds new/unmapped chats, invite/admin-required states, account migration, or DM contact status changes, owner/ops gets an aggregate notification that points to `/recovery report`.
+Normal operation runs a safe registry scan after successful MAX connect/reconnect and then once a week. It also refreshes snapshots asynchronously when important MAX-side changes are observed: new Telegram topic binding, fallback title update, or MAX `CONTROL` event. These event-driven scans are debounced in `BridgeCore`, run in background tasks, and never block message forwarding or topic creation. The same scan updates DM contact recovery from `client.dialogs` only; `client.contacts` and `known_users` are not copied into the recovery contact registry. Routine automatic scan deltas are summarized in the 4-hour `/status` report with aggregate counts and `/recovery report` as the detail view; owner/ops gets an immediate alert only when a new MAX account requires the migration flow.
 
 If you lose the old MAX account, reauthorize with the new phone, run `/recovery scan`, inspect `/recovery report`, ask admins for invites where needed, and then use `/recovery remap <topic_id> <new_max_chat_id>` to keep the existing Telegram topic while routing replies to the new MAX chat.
 

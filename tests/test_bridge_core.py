@@ -202,6 +202,9 @@ class DummyMax:
     def on_message(self, handler):
         self.handler = handler
 
+    def is_ready(self):
+        return True
+
     def get_own_id(self) -> str | None:
         return "999"
 
@@ -2012,7 +2015,7 @@ async def test_control_events_debounce_into_one_recovery_scan(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_recovery_auto_notification_is_important_only_redacted_and_deduped(tmp_path, caplog):
+async def test_recovery_auto_changes_are_summarized_in_status_not_notified(tmp_path, caplog):
     repo = Repository(str(tmp_path / "bridge.db"))
     await repo.connect()
     secret_link = "https://max.ru/join/secret-token"
@@ -2043,17 +2046,62 @@ async def test_recovery_auto_notification_is_important_only_redacted_and_deduped
             await bridge._maybe_notify_recovery_changes(reason="control_event", result=result)
 
         notifications = [call[1] for call in tg_adapter.calls if call[0] == "notification"]
-        assert len(notifications) == 1
-        assert "/recovery report" in notifications[0]
-        redacted_text = "\n".join(notifications)
+        assert notifications == []
+
+        status = await bridge._build_status_message(period_hours=4)
+        assert "🧭 MAX recovery snapshot" in status
+        assert "unmapped: 1" in status
+        assert "invite/admin: 0/0" in status
+        assert "/recovery report" in status
+
+        redacted_text = "\n".join([status, *notifications])
         assert secret_link not in redacted_text
         assert "Secret Client Room" not in redacted_text
         assert "+7" not in redacted_text
 
         logged = "\n".join(str(getattr(record, "event_fields", {})) for record in caplog.records)
+        assert "periodic_status_summary" in logged
         assert secret_link not in logged
         assert "Secret Client Room" not in logged
         assert "raw payload" not in logged
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_account_migration_notification_is_redacted_and_deduped(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    first_snapshot = MaxRecoverySnapshot(
+        max_user_id="100",
+        masked_phone="+7******1234",
+        session_fingerprint_hash="hash-1",
+        chats=[],
+    )
+    second_snapshot = MaxRecoverySnapshot(
+        max_user_id="200",
+        masked_phone="+7******9999",
+        session_fingerprint_hash="hash-2",
+        chats=[],
+    )
+    max_adapter = DummyRecoveryMax(first_snapshot)
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    try:
+        await bridge._safe_recovery_scan(reason="max_connect", notify=False)
+        max_adapter.snapshot = second_snapshot
+        result = await bridge._safe_recovery_scan(reason="max_connect", notify=False)
+        await bridge._maybe_notify_recovery_changes(reason="max_connect", result=result)
+        await bridge._maybe_notify_recovery_changes(reason="max_connect", result=result)
+
+        notifications = [call[1] for call in tg_adapter.calls if call[0] == "notification"]
+        assert len(notifications) == 1
+        assert "MAX account migration required" in notifications[0]
+        assert "MAX recovery snapshot изменился" not in notifications[0]
+        assert "/recovery report" in notifications[0]
+        assert "+7" not in notifications[0]
+        assert "hash" not in notifications[0]
     finally:
         await repo.close()
 

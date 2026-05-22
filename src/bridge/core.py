@@ -531,6 +531,10 @@ class BridgeCore:
             f"🗂 Всего чатов: {total_chats}  (активных: {active_chats})",
         ]
 
+        recovery_status_lines = await self._build_recovery_status_summary()
+        if recovery_status_lines:
+            lines += ["", *recovery_status_lines]
+
         if self._health is not None:
             snapshot = await self._health.get_snapshot()
             lines += ["", *render_health_summary(snapshot)]
@@ -708,6 +712,23 @@ class BridgeCore:
             last_scan_at,
             format_duration_compact=self._format_duration_compact,
         )
+
+    async def _build_recovery_status_summary(self) -> list[str]:
+        try:
+            return await recovery_reporter.build_status_summary(
+                repo=self._repo,
+                format_freshness_fn=self._format_recovery_freshness,
+            )
+        except Exception as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "bridge.recovery.status_summary_failed",
+                stage="recovery",
+                outcome="failed",
+                error_type=type(e).__name__,
+            )
+            return []
 
     async def _build_recovery_report_message(self) -> str:
         return await recovery_reporter.build_report_message(

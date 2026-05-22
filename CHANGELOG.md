@@ -11,7 +11,7 @@ All notable changes to Maxgram are documented here.
 - **DM contact recovery snapshot** — recovery now stores personal contacts only from real MAX DM dialogs or already bound DM topics, with old/current DM chat ids, linked topic, status, and freshness; it does not copy the full MAX address book or `known_users`.
 - **Owner-only `/recovery` commands** — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, and `/recovery remap` support guided migration of existing Telegram topics to newly visible MAX chats.
 - **Hybrid recovery snapshots** — bridge scans recovery metadata after successful MAX connect/reconnect, weekly as a safety net, and asynchronously after important MAX-side events: new bindings, title changes, and `CONTROL` events.
-- **Important-only recovery notifications** — automatic recovery scans notify owner/ops only on meaningful changes such as new/unmapped chats, invite/admin-required states, or account migration; notifications contain aggregate counts only and point to `/recovery report`.
+- **Quiet recovery status summary** — automatic recovery scans fold routine deltas into the 4-hour status report; owner/ops gets an immediate alert only when a MAX account migration is required.
 - **Architecture decision ADR-005** — documents the account migration recovery registry, privacy constraints, remap behavior, and V1 non-automation boundaries.
 
 ### Changed
@@ -30,7 +30,7 @@ All notable changes to Maxgram are documented here.
 
 ### Tests
 - Added coverage for DM title resolution order, cached contact name lookup, raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
-- Added coverage for SQLite recovery migrations/idempotency/deltas, DM contact recovery upsert/export/privacy, recovery report/export/remap, MAX recovery snapshot collection, async event-driven recovery scans, important-only notification privacy/deduplication, owner-only `/recovery`, command allowlist privacy, stale reply routing after remap, and privacy of recovery reports/logs.
+- Added coverage for SQLite recovery migrations/idempotency/deltas, DM contact recovery upsert/export/privacy, recovery report/export/remap, MAX recovery snapshot collection, async event-driven recovery scans, quiet status-summary recovery alerts, account-migration notification privacy/deduplication, owner-only `/recovery`, command allowlist privacy, stale reply routing after remap, and privacy of recovery reports/logs.
 
 ---
 

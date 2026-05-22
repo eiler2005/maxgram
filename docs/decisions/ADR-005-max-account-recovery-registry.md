@@ -48,7 +48,7 @@ Event-driven scans are scheduled in `BridgeCore` via background `asyncio` tasks.
 
 Show snapshot freshness via `last_scan_at`, including aggregate DM contact freshness in `/recovery report`.
 
-Use important-only notifications for automatic scans. Notify owner/ops only for meaningful changes: new registry rows, unmapped MAX chats, invite/admin-required states, account migration, or DM contact status changes. Notification text contains aggregate counts/statuses and points to `/recovery report`; it must not contain invite links, manual notes, phone numbers, DM contact names, message text, titles, raw MAX fields, media URLs, signed URLs, or tokens. Identical notification digests may be deduplicated in memory for about 24 hours.
+Use quiet automatic scan notifications. Routine changes such as new registry rows, unmapped MAX chats, invite/admin-required states, or DM contact status changes are summarized in the 4-hour `/status` report with `/recovery report` as the detail view. Notify owner/ops immediately only when account migration is required. Status/notification text contains aggregate counts/statuses; it must not contain invite links, manual notes, phone numbers, DM contact names, message text, titles, raw MAX fields, media URLs, signed URLs, or tokens. Identical migration notification digests may be deduplicated in memory for about 24 hours.
 
 When a remap changes a topic from an old MAX chat to a new MAX chat, preserve the Telegram topic and old `message_map`. If the operator replies to an old Telegram message whose mapped MAX message belongs to the old chat id, send the new MAX message without `reply_to_msg_id`.
 
@@ -75,7 +75,7 @@ Covered by tests for:
 
 - SQLite migrations/upsert/report/export/remap idempotency.
 - DM contact recovery upsert/export/privacy and snapshot collection from fake group/channel/DM/dialog objects.
-- Event-driven scheduler: new bindings do not delay forwarding, CONTROL events debounce into one scan, and important-only notifications are redacted/deduplicated.
+- Event-driven scheduler: new bindings do not delay forwarding, CONTROL events debounce into one scan, routine deltas are summarized in status, and migration alerts are redacted/deduplicated.
 - Owner-only `/recovery` command flow.
 - Telegram command allowlist: `/dm` public in General, `/recovery` owner-only.
 - Stale reply mapping after remap.
