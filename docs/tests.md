@@ -14,11 +14,29 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **177 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **178 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
 Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`). Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
+
+```text
+                         pytest -q
+                            │
+              ┌─────────────┴─────────────┐
+              │                           │
+  business / functional          architecture / service-boundary
+  pytest -m "not architecture"   pytest -m architecture
+              │                           │
+              ▼                           ▼
+  runtime behavior, configs,     import boundaries, pymax isolation,
+  DB flows, MAX/TG forwarding,   composition-not-mixins, no god base,
+  media retry, commands          pymax-free helper leaves
+              │                           │
+              └─────────────┬─────────────┘
+                            ▼
+                 full pre-merge / pre-deploy gate
+```
 
 ---
 
