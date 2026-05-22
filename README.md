@@ -46,6 +46,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Supervisor runtime shell** — PID1 is now a supervisor that keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
 - **Resilient delivery** — Telegram API calls retry with exponential backoff; temporary TG→MAX transport failures retry automatically; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; retryable MAX video downloads are persisted until delivered; `/status` gives live health snapshot on demand
 - **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
+- **Account migration recovery registry** — hybrid MAX account snapshots preserve Telegram topic routing, invite/admin metadata, DM partner ids, and snapshot freshness for guided recovery after a phone/account loss
 
 ---
 
@@ -72,6 +73,9 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - `/status` command — uptime, message stats, top active chats; works in forum group and personal DM with bot
 - `/chats` command — list of bridged chats with topic id, mode, and inbound/outbound counters
 - Periodic 4-hour status report — automatic delivery stats sent to owner DM, with optional fanout to a dedicated forum topic
+- MAX account recovery snapshots — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, and `/recovery remap` help migrate existing Telegram topics to a new MAX phone/account without storing message contents
+- Hybrid recovery refresh: scan after successful MAX connect/reconnect, weekly safety-net scan, and event-driven scans after new topic bindings, title changes, and MAX control events; reports include `last_scan_at` freshness
+- Important-only recovery notifications — automatic scans notify owner/ops only on meaningful recovery changes and include counts/statuses only, with details behind `/recovery report`
 - MAX offline watchdog — alert if MAX unreachable > 60 seconds
 - Reconnect gap warning — after recovery, owner gets a reminder about possible missed messages during downtime
 - Telegram API retry with exponential backoff (3 attempts, respects `Retry-After`)
@@ -97,6 +101,38 @@ MAX WebSocket ──► MAX Adapter ──► Bridge Core ──► TG Adapter �
 One Python service with two layers: a long-lived supervisor plus a restartable bridge worker. No external queues or services. SQLite and persisted health files are the only state stores.
 
 Details: [docs/architecture.md](docs/architecture.md)
+
+---
+
+## MAX Account Migration Recovery
+
+MAX does not support changing the phone number attached to a profile. In practice, a new phone number means a new MAX account, and private/admin-only chats may need a fresh invite from their owner or an admin.
+
+Maxgram cannot clone a MAX account or restore MAX-side message history. Instead, it preserves the bridge recovery context needed to keep Telegram continuity:
+
+- Telegram topic bindings: stable `tg_topic:<topic_id>` keys, old/current `max_chat_id`, title, mode, and recovery status
+- MAX account generations: `max_user_id`, masked phone, session fingerprint hash, active/retired/lost status, first/last seen timestamps
+- Chat access metadata: chat kind, invite link, owner/admin ids and names, DM partner id/name, participant count, manual notes
+- Freshness metadata: every registry row has `last_scan_at`; `/recovery report` shows how old the latest snapshot is
+- Audit trail: scan, note, account-change, and remap events are appended without message text or raw MAX payloads
+
+Owner-only commands:
+
+```text
+/recovery scan
+/recovery report
+/recovery export
+/recovery set <topic_id> key=value ...
+/recovery remap <topic_id> <new_max_chat_id>
+```
+
+Normal operation runs a safe registry scan after successful MAX connect/reconnect and then once a week. It also refreshes snapshots asynchronously when important MAX-side changes are observed: new Telegram topic binding, fallback title update, or MAX `CONTROL` event. These event-driven scans are debounced in `BridgeCore`, run in background tasks, and never block message forwarding or topic creation. If an automatic scan finds new/unmapped chats, invite/admin-required states, or account migration, owner/ops gets an aggregate notification that points to `/recovery report`.
+
+If you lose the old MAX account, reauthorize with the new phone, run `/recovery scan`, inspect `/recovery report`, ask admins for invites where needed, and then use `/recovery remap <topic_id> <new_max_chat_id>` to keep the existing Telegram topic while routing replies to the new MAX chat.
+
+Privacy rule: the registry stores recovery metadata only. It does not store message contents, media URLs, signed tokens, or raw MAX payloads. Group-visible reports, logs, health state, and automatic notifications do not include invite links, manual notes, phone numbers, message text, or raw MAX fields. `/recovery export` may include invite links and admin notes, so it is sent only to the owner DM.
+
+Full runbook: [docs/runbooks/operations.md#max-account-recovery-registry](docs/runbooks/operations.md#max-account-recovery-registry)
 
 ---
 
@@ -176,7 +212,7 @@ maxgram/
 │   │   ├── supervisor.py     ← worker restart loop + alert integration
 │   │   └── healthcheck.py    ← Docker healthcheck entry point
 │   └── db/
-│       ├── models.py          ← SQLite schema (3 tables)
+│       ├── models.py          ← SQLite schema: bindings, messages, health/retry, recovery registry
 │       └── repository.py
 │
 ├── docs/
@@ -202,8 +238,9 @@ maxgram/
 ## Known Limitations
 
 - Messages during downtime are **lost** — pymax has no history replay API
+- A new MAX phone/account still requires manual invites for private/admin-only chats; the recovery registry guides the process but does not auto-join chats
 - Unofficial userbot — potential ToS violation with MAX
-- Bot commands (`/status`, `/chats`, `/reauth`) are owner-only
+- Bot commands (`/status`, `/chats`, `/reauth`, `/recovery ...`) are owner-only
 - `ops_topic_id` is optional; without it, ops alerts go only to owner DM
 
 ---

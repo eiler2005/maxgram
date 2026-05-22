@@ -244,15 +244,20 @@ class DummyMax:
 
 
 class DummyRecoveryMax(DummyMax):
-    def __init__(self, snapshot: MaxRecoverySnapshot):
+    def __init__(self, snapshot: MaxRecoverySnapshot, *, snapshot_delay: float = 0):
         super().__init__()
         self.snapshot = snapshot
+        self.snapshot_delay = snapshot_delay
+        self.snapshot_calls = 0
         self.start_handlers = []
 
     def on_start(self, handler):
         self.start_handlers.append(handler)
 
     async def collect_recovery_snapshot(self):
+        self.snapshot_calls += 1
+        if self.snapshot_delay:
+            await asyncio.sleep(self.snapshot_delay)
         return self.snapshot
 
 
@@ -1879,6 +1884,165 @@ async def test_cmd_recovery_scan_report_set_remap_and_export(tmp_path, caplog):
         assert "Export отправлен" in export
         assert any(call[0] == "owner_document" for call in tg_adapter.calls)
         assert (await repo.get_binding_by_topic(77)).max_chat_id == "-new-chat"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    snapshot = MaxRecoverySnapshot(
+        max_user_id="100",
+        masked_phone="+7******1234",
+        session_fingerprint_hash="hash",
+        chats=[
+            MaxRecoveryChatSnapshot(
+                max_chat_id="-async-chat",
+                title="Async group",
+                chat_kind="group",
+            ),
+        ],
+    )
+    max_adapter = DummyRecoveryMax(snapshot, snapshot_delay=0.05)
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+    bridge._recovery_event_scan_delays["new_binding"] = 0.05
+
+    try:
+        await bridge._on_max_message(
+            MaxMessage(
+                msg_id="mx-async-1",
+                chat_id="-async-chat",
+                chat_title="Async group",
+                sender_id="10",
+                sender_name="Мария",
+                text="hello",
+                attachments=[],
+                attachment_types=[],
+                rendered_texts=[],
+                message_type="USER",
+                status=None,
+                is_dm=False,
+                is_own=False,
+                raw=SimpleNamespace(secret="raw payload must not be inspected"),
+            )
+        )
+
+        assert ("create_topic", "Async group", "mx:-async-chat:mx-async-1") in tg_adapter.calls
+        assert ("text", "[Мария] hello") in tg_adapter.calls
+        assert max_adapter.snapshot_calls == 0
+
+        await asyncio.wait_for(bridge._recovery_event_scan_task, timeout=1)
+        assert max_adapter.snapshot_calls == 1
+        report = await repo.get_recovery_report()
+        assert report["stats"]["total"] == 1
+    finally:
+        task = bridge._recovery_event_scan_task
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_control_events_debounce_into_one_recovery_scan(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    await repo.save_binding(ChatBinding("-control-chat", 77, "Control group", "active", 1))
+    snapshot = MaxRecoverySnapshot(
+        max_user_id="100",
+        masked_phone="+7******1234",
+        session_fingerprint_hash="hash",
+        chats=[
+            MaxRecoveryChatSnapshot(
+                max_chat_id="-control-chat",
+                title="Control group",
+                chat_kind="group",
+            ),
+        ],
+    )
+    max_adapter = DummyRecoveryMax(snapshot)
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+    bridge._recovery_event_scan_delays["control_event"] = 0.05
+    bridge._recovery_event_scan_cooldowns["control_event"] = 0
+
+    try:
+        for index in range(2):
+            await bridge._on_max_message(
+                MaxMessage(
+                    msg_id=f"mx-control-{index}",
+                    chat_id="-control-chat",
+                    chat_title="Control group",
+                    sender_id="10",
+                    sender_name="Мария",
+                    text=None,
+                    attachments=[],
+                    attachment_types=["CONTROL"],
+                    rendered_texts=["Control event"],
+                    message_type="USER",
+                    status=None,
+                    is_dm=False,
+                    is_own=False,
+                    raw=SimpleNamespace(payload={"token": "secret"}),
+                )
+            )
+
+        assert max_adapter.snapshot_calls == 0
+        await asyncio.wait_for(bridge._recovery_event_scan_task, timeout=1)
+        assert max_adapter.snapshot_calls == 1
+    finally:
+        task = bridge._recovery_event_scan_task
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_auto_notification_is_important_only_redacted_and_deduped(tmp_path, caplog):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    secret_link = "https://max.ru/join/secret-token"
+    snapshot = MaxRecoverySnapshot(
+        max_user_id="100",
+        masked_phone="+7******1234",
+        session_fingerprint_hash="hash",
+        chats=[
+            MaxRecoveryChatSnapshot(
+                max_chat_id="-secret-chat",
+                title="Secret Client Room",
+                chat_kind="group",
+                access_type="LINK",
+                invite_link=secret_link,
+                admin_contacts=[{"user_id": "501", "name": "Admin"}],
+                participant_count=3,
+            ),
+        ],
+    )
+    max_adapter = DummyRecoveryMax(snapshot)
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    try:
+        with caplog.at_level(logging.INFO, logger="src.bridge.core"):
+            result = await bridge._safe_recovery_scan(reason="control_event", notify=False)
+            await bridge._maybe_notify_recovery_changes(reason="control_event", result=result)
+            await bridge._maybe_notify_recovery_changes(reason="control_event", result=result)
+
+        notifications = [call[1] for call in tg_adapter.calls if call[0] == "notification"]
+        assert len(notifications) == 1
+        assert "/recovery report" in notifications[0]
+        redacted_text = "\n".join(notifications)
+        assert secret_link not in redacted_text
+        assert "Secret Client Room" not in redacted_text
+        assert "+7" not in redacted_text
+
+        logged = "\n".join(str(getattr(record, "event_fields", {})) for record in caplog.records)
+        assert secret_link not in logged
+        assert "Secret Client Room" not in logged
+        assert "raw payload" not in logged
     finally:
         await repo.close()
 

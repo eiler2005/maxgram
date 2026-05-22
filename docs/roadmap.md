@@ -1,10 +1,11 @@
 # Roadmap — Maxgram
 
-## Статус: v1.2.0 в production ✅
+## Статус: v1.3.0 в production ✅
 
 Дата запуска MVP: 2026-04-02  
 Дата v1.1.0: 2026-04-03  
 Дата v1.2.0: 2026-04-08
+Дата v1.3.0: 2026-05-22
 
 ---
 
@@ -49,7 +50,7 @@
 - [x] **sender_name из live API** — `get_cached_user` + live `get_users()` fallback; имена в группах работают
 - [x] **Own-message echo dedup** — реальный `max_msg_id` сохраняется перед отправкой; эхо подавляется
 - [x] **`/status` в личном чате** — команды принимаются от владельца и в форум-группе, и в DM с ботом
-- [x] **39 regression-тестов** — все проходят; описание: `docs/tests.md`
+- [x] **152 regression-теста** — все проходят; описание: `docs/tests.md`
 
 ### Phase 3: Cloud Migration ✅
 - [x] Dockerfile + docker-compose.prod.yml
@@ -107,11 +108,32 @@
 
 ---
 
+## Phase 7: MAX account migration recovery ✅
+
+**Цель:** если старый телефон/MAX account потерян, сохранить Telegram continuity и иметь полный registry для ручного восстановления доступа к MAX чатам.
+
+- [x] **Account generations** — `max_account_generations` хранит `max_user_id`, masked phone, session fingerprint hash, статус `active|retired|lost`, first/last seen
+- [x] **Chat recovery registry** — `chat_recovery_registry` хранит stable key `tg_topic:<topic_id>`, old/current `max_chat_id`, chat kind, mode, access, invite link, owner/admin contacts, DM partner metadata, participant count, manual note, recovery status
+- [x] **Snapshot freshness** — у каждой registry row есть `last_scan_at`; `/recovery report` показывает возраст последнего snapshot
+- [x] **Append-only recovery events** — scan/set/remap/account-change пишутся в `chat_recovery_events`, без message text/raw payload
+- [x] **MAX snapshot collector** — `MaxAdapter.collect_recovery_snapshot()` собирает `client.chats`, `client.channels`, `client.dialogs`, enrich через `get_chat()`
+- [x] **Owner-only recovery commands** — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, `/recovery remap`
+- [x] **Hybrid snapshot triggers** — safe scan после MAX connect/reconnect, weekly safety-net и event-driven scans на `new_binding`, `title_changed`, MAX `CONTROL`
+- [x] **Async debounced scheduler** — event-driven scans выполняются background task'ом, схлопывают повторные события и не задерживают forwarding/topic creation
+- [x] **Important-only recovery notifications** — owner/ops получает только агрегаты по meaningful changes; invite links, notes, phones, message text и raw payload не попадают в уведомления/логи
+- [x] **Remap safety** — Telegram topic сохраняется; stale reply mapping после remap не отправляет `reply_to` на старый `max_chat_id`
+- [x] **Privacy tests** — report/logs не раскрывают invite links, notes, phone numbers, message text или raw MAX payloads
+
+Детали: [docs/runbooks/operations.md#max-account-recovery-registry](runbooks/operations.md#max-account-recovery-registry)
+
+---
+
 ## Известные ограничения (won't fix)
 
 | Ограничение | Причина |
 |-------------|---------|
 | Сообщения за время downtime теряются | pymax не имеет history replay API |
+| Новый телефон/MAX account не восстанавливает закрытые чаты автоматически | MAX требует новый invite/link/admin approval; bridge хранит registry и remap-команды, но не делает auto-join |
 | Команды бота доступны только владельцу | Намеренно — личный инструмент |
 | Нет поддержки реакций, опросов, пинов | Out of scope |
 | Нет полной истории при старте | Слишком сложно, не нужно |
@@ -122,6 +144,5 @@
 
 | Задача | Приоритет |
 |--------|-----------|
-| Тесты для retry-логики `_tg_retry` | Medium |
-| Тесты для `_build_status_message` | Medium |
 | Per-chat управление из TG | Medium |
+| Более удобный guided UI поверх `/recovery report` для массового remap | Medium |

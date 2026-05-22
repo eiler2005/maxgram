@@ -395,9 +395,19 @@ class Repository:
         if commit:
             await self._db.commit()
 
-    async def upsert_recovery_snapshot(self, entries: list[dict[str, object]]) -> dict[str, int]:
+    async def upsert_recovery_snapshot(
+        self,
+        entries: list[dict[str, object]],
+        *,
+        reason: str = "scan",
+    ) -> dict[str, int]:
         now = int(time.time())
         scanned = 0
+        inserted = 0
+        status_changed = 0
+        unmapped = 0
+        needs_invite = 0
+        manual_admin_required = 0
         for entry in entries:
             registry_key = str(entry["registry_key"])
             tg_topic_id = entry.get("tg_topic_id")
@@ -408,6 +418,22 @@ class Repository:
             else:
                 admin_contacts_json = _json_compact(admin_contacts or [])
             recovery_status = str(entry.get("recovery_status") or "visible")
+
+            async with self._db.execute(
+                "SELECT recovery_status FROM chat_recovery_registry WHERE registry_key = ?",
+                (registry_key,),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing is None:
+                inserted += 1
+            elif existing["recovery_status"] != recovery_status:
+                status_changed += 1
+            if tg_topic_id is None and recovery_status != "remapped":
+                unmapped += 1
+            if recovery_status in {"needs_invite", "account_migration_required"}:
+                needs_invite += 1
+            if recovery_status == "manual_admin_required":
+                manual_admin_required += 1
 
             await self._db.execute(
                 """INSERT INTO chat_recovery_registry
@@ -472,6 +498,7 @@ class Repository:
                 tg_topic_id=int(tg_topic_id) if tg_topic_id is not None else None,
                 event_type="scan",
                 details={
+                    "reason": reason,
                     "status": recovery_status,
                     "chat_kind": str(entry.get("chat_kind") or "unknown"),
                     "has_invite_link": bool(entry.get("invite_link")),
@@ -481,7 +508,14 @@ class Repository:
             scanned += 1
 
         await self._db.commit()
-        return {"scanned": scanned}
+        return {
+            "scanned": scanned,
+            "inserted": inserted,
+            "status_changed": status_changed,
+            "unmapped": unmapped,
+            "needs_invite": needs_invite,
+            "manual_admin_required": manual_admin_required,
+        }
 
     async def list_recovery_entries(self) -> list[ChatRecoveryEntry]:
         async with self._db.execute(

@@ -5,7 +5,7 @@
 ## Что это
 
 Личный bridge-сервис: сообщения из российского мессенджера **MAX** → **Telegram Forum Supergroup**.
-Один пользователь, один аккаунт MAX, один Telegram бот. Не SaaS, не multi-tenant.
+Один пользователь, один активный MAX account, один Telegram бот. Не SaaS, не multi-tenant.
 
 **Цель:** не устанавливать MAX, получать все сообщения в Telegram и отвечать обратно.
 
@@ -26,21 +26,38 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 | `src/main.py` | Supervisor entry point + bootstrap worker |
 | `src/adapters/max_adapter.py` | pymax userbot: connect, recv, send, reconnect |
 | `src/adapters/tg_adapter.py` | aiogram бот: топики, send, recv reply, ops notifications |
-| `src/bridge/core.py` | Роутинг: MAX→TG, TG→MAX, dedup, topic auto-create, health-aware status |
+| `src/bridge/core.py` | Роутинг: MAX→TG, TG→MAX, dedup, topic auto-create, health-aware status, recovery registry |
 | `src/runtime/health.py` | Health snapshot, health events, alert outbox, heartbeat |
 | `src/runtime/supervisor.py` | Worker restart loop, heartbeat, crash alerts |
 | `src/config/loader.py` | YAML конфиг + env переменные |
-| `src/db/models.py` | SQLite схема (3 таблицы) |
+| `src/db/models.py` | SQLite схема: routing, delivery, retry, users, recovery registry |
 | `src/db/repository.py` | Data access layer |
 | `infra/ansible/` | Ansible playbooks: deploy, backup, recover, bootstrap, hardening (см. `infra/ansible/README.md`) |
 
 ## База данных (SQLite)
 
-**3 таблицы, никакого контента сообщений:**
+**Никакого контента сообщений:**
 
 - `chat_bindings` — `max_chat_id ↔ tg_topic_id`, режим чата
 - `message_map` — `max_msg_id ↔ tg_msg_id` (дедупликация + reply routing)
+- `tg_reply_map` — дополнительные TG message ids для reply routing поздно досланных медиа
 - `delivery_log` — статусы доставки (meta only)
+- `pending_media_downloads` — durable retry meta для MAX media
+- `known_users` — справочник имён MAX для `/dm`
+- `max_account_generations` — поколения MAX account; новый телефон = новый account
+- `chat_recovery_registry` — recovery metadata для переноса Telegram topics на новый MAX account (`last_scan_at`, invite/admin/DM metadata, manual notes)
+- `chat_recovery_events` — append-only audit recovery lifecycle без message text/raw payload
+
+## Recovery registry / новый телефон
+
+- MAX phone migration трактуется как новый MAX account.
+- Bridge сохраняет Telegram continuity, но не клонирует MAX account и не возвращает закрытые чаты без invite/admin approval.
+- Safe recovery scan запускается после MAX connect/reconnect, раз в неделю и event-driven при `new_binding`, `title_changed`, MAX `CONTROL`.
+- Event-driven scans ставятся через `asyncio.create_task`, debounce/cooldown и не должны задерживать forwarding, topic creation или rename.
+- Auto notifications — important-only: только counts/statuses для new/unmapped/needs-invite/manual-admin/account-migration; без invite links, notes, phones, message text, titles или raw MAX fields.
+- Команды владельца: `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set <topic_id> key=value ...`, `/recovery remap <topic_id> <new_max_chat_id>`.
+- `/recovery export` уходит только owner DM и может содержать invite links/admin notes.
+- После remap reply на старое TG сообщение отправляется без `reply_to_msg_id`, если mapped MAX message принадлежит старому `max_chat_id`.
 
 ## Критические особенности pymax
 
@@ -104,6 +121,7 @@ TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE
 - Telegram Bot API: max 30 msg/sec, файлы до 50 MB
 - Topics в Telegram: названия до 128 символов
 - Бот принимает команды **только от `TG_OWNER_ID`**
+- Исключение: `/dm` в General может быть public для участников группы; `/recovery ...` всегда owner-only
 - Если MAX-вложение после всех retry не скачалось, Telegram должен получить текстовый fallback, а `delivery_log.status` — `partial`, не ложный `delivered`
 
 ## Дальнейшее развитие

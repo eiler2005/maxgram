@@ -43,6 +43,18 @@ from ..runtime.health import (
 
 logger = logging.getLogger(__name__)
 
+RECOVERY_EVENT_SCAN_DELAYS = {
+    "new_binding": 60,
+    "title_changed": 30,
+    "control_event": 120,
+}
+RECOVERY_EVENT_SCAN_COOLDOWNS = {
+    "new_binding": 0,
+    "title_changed": 5 * 60,
+    "control_event": 15 * 60,
+}
+RECOVERY_NOTIFICATION_DEDUP_SECONDS = 24 * 60 * 60
+
 
 class BridgeCore:
     def __init__(self, config: AppConfig, repo: Repository,
@@ -77,6 +89,15 @@ class BridgeCore:
         self._tg.on_arg_command("recovery", self._cmd_recovery)
 
         self._recovery_scan_task: Optional[asyncio.Task] = None
+        self._recovery_event_scan_task: Optional[asyncio.Task] = None
+        self._recovery_event_scan_at: Optional[float] = None
+        self._recovery_event_scan_reasons: set[str] = set()
+        self._recovery_event_last_scan_at: dict[str, float] = {}
+        self._recovery_event_scan_delays = dict(RECOVERY_EVENT_SCAN_DELAYS)
+        self._recovery_event_scan_cooldowns = dict(RECOVERY_EVENT_SCAN_COOLDOWNS)
+        self._recovery_scan_lock = asyncio.Lock()
+        self._last_recovery_notification_digest: Optional[str] = None
+        self._last_recovery_notification_at = 0.0
         on_max_start = getattr(self._max, "on_start", None)
         if callable(on_max_start):
             on_max_start(self._schedule_recovery_scan_after_connect)
@@ -207,6 +228,8 @@ class BridgeCore:
             await self._repo.log_delivery(msg.msg_id, msg.chat_id, "inbound", "failed",
                                           "no_topic")
             return
+        if self._message_has_recovery_control_event(msg):
+            self._schedule_recovery_event_scan("control_event")
 
         # Проверяем режим чата
         binding = await self._repo.get_binding(msg.chat_id)
@@ -474,6 +497,7 @@ class BridgeCore:
                 if not real_title.startswith("Чат "):
                     await self._tg.rename_topic(binding.tg_topic_id, real_title, flow_id=flow_id)
                     await self._repo.update_title(msg.chat_id, real_title)
+                    self._schedule_recovery_event_scan("title_changed")
                     log_event(
                         logger,
                         logging.INFO,
@@ -535,6 +559,7 @@ class BridgeCore:
             mode=mode,
             created_at=int(time.time()),
         ))
+        self._schedule_recovery_event_scan("new_binding")
         log_event(
             logger,
             logging.INFO,
@@ -1655,9 +1680,107 @@ class BridgeCore:
         if self._recovery_scan_task is not None and not self._recovery_scan_task.done():
             return
         self._recovery_scan_task = asyncio.create_task(
-            self._safe_recovery_scan(reason="max_connect"),
+            self._run_recovery_scan_after_connect(),
             name="recovery_snapshot_after_connect",
         )
+
+    async def _run_recovery_scan_after_connect(self):
+        try:
+            await self._safe_recovery_scan(reason="max_connect", notify=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._log_recovery_scan_failure(reason="max_connect", error=e)
+
+    def _message_has_recovery_control_event(self, msg: MaxMessage) -> bool:
+        values = [
+            *(msg.attachment_types or []),
+            msg.message_type,
+        ]
+        return any(str(value or "").upper() == "CONTROL" for value in values)
+
+    def _schedule_recovery_event_scan(self, reason: str):
+        collect = getattr(self._max, "collect_recovery_snapshot", None)
+        if not callable(collect):
+            return
+
+        now = time.monotonic()
+        cooldown = float(self._recovery_event_scan_cooldowns.get(reason, 0))
+        last_scan_at = self._recovery_event_last_scan_at.get(reason)
+        if last_scan_at is not None and cooldown > 0 and now - last_scan_at < cooldown:
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.recovery.scan_scheduled",
+                stage="recovery",
+                outcome="skipped",
+                reason=reason,
+                skip_reason="cooldown",
+                cooldown_seconds=int(cooldown),
+            )
+            return
+
+        delay = max(0.0, float(self._recovery_event_scan_delays.get(reason, 60)))
+        target_at = now + delay
+        self._recovery_event_scan_reasons.add(reason)
+        if self._recovery_event_scan_task is not None and not self._recovery_event_scan_task.done():
+            if self._recovery_event_scan_at is not None and target_at >= self._recovery_event_scan_at:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "bridge.recovery.scan_scheduled",
+                    stage="recovery",
+                    outcome="coalesced",
+                    reason=reason,
+                    scheduled_in_seconds=max(0, int(self._recovery_event_scan_at - now)),
+                )
+                return
+            self._recovery_event_scan_task.cancel()
+
+        self._recovery_event_scan_at = target_at
+        self._recovery_event_scan_task = asyncio.create_task(
+            self._run_scheduled_recovery_event_scan(delay),
+            name="recovery_snapshot_event",
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.recovery.scan_scheduled",
+            stage="recovery",
+            outcome="scheduled",
+            reason=reason,
+            scheduled_in_seconds=int(delay),
+        )
+
+    def _log_recovery_scan_failure(self, *, reason: str, error: Exception):
+        error_type = type(error).__name__
+        logger.warning("recovery snapshot failed: %s", error_type)
+        log_event(
+            logger,
+            logging.WARNING,
+            "bridge.recovery.scan_finished",
+            stage="recovery",
+            outcome="failed",
+            reason=reason,
+            error_type=error_type,
+        )
+
+    async def _run_scheduled_recovery_event_scan(self, delay_seconds: float):
+        reason_text = "event"
+        try:
+            await asyncio.sleep(delay_seconds)
+            reasons = sorted(self._recovery_event_scan_reasons)
+            self._recovery_event_scan_reasons.clear()
+            self._recovery_event_scan_at = None
+            reason_text = ",".join(reasons) if reasons else "event"
+            now = time.monotonic()
+            for reason in reasons:
+                self._recovery_event_last_scan_at[reason] = now
+            await self._safe_recovery_scan(reason=reason_text, notify=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self._log_recovery_scan_failure(reason=reason_text, error=e)
 
     def _entry_admin_contacts(self, entry) -> list[dict[str, str]]:
         if not entry:
@@ -1705,102 +1828,181 @@ class BridgeCore:
             "recovery_status": status,
         }
 
-    async def _safe_recovery_scan(self, *, reason: str = "manual") -> dict[str, object]:
+    async def _safe_recovery_scan(self, *, reason: str = "manual", notify: bool = False) -> dict[str, object]:
         collect = getattr(self._max, "collect_recovery_snapshot", None)
         if not callable(collect):
             return {"scanned": 0, "error": "snapshot_not_supported"}
 
-        snapshot = await collect()
-        account_result = {"migration_required": False, "max_user_id": snapshot.max_user_id}
-        if snapshot.max_user_id:
-            account_result = await self._repo.upsert_max_account_generation(
-                max_user_id=snapshot.max_user_id,
-                masked_phone=snapshot.masked_phone,
-                session_fingerprint_hash=snapshot.session_fingerprint_hash,
-            )
+        async with self._recovery_scan_lock:
+            snapshot = await collect()
+            account_result = {"migration_required": False, "max_user_id": snapshot.max_user_id}
+            if snapshot.max_user_id:
+                account_result = await self._repo.upsert_max_account_generation(
+                    max_user_id=snapshot.max_user_id,
+                    masked_phone=snapshot.masked_phone,
+                    session_fingerprint_hash=snapshot.session_fingerprint_hash,
+                )
 
-        migration_required = bool(account_result.get("migration_required"))
-        snapshot_by_chat = {str(chat.max_chat_id): chat for chat in snapshot.chats}
-        matched_chat_ids: set[str] = set()
+            migration_required = bool(account_result.get("migration_required"))
+            snapshot_by_chat = {str(chat.max_chat_id): chat for chat in snapshot.chats}
+            matched_chat_ids: set[str] = set()
 
-        existing_by_topic = {
-            entry.tg_topic_id: entry
-            for entry in await self._repo.list_recovery_entries()
-            if entry.tg_topic_id is not None
-        }
+            existing_by_topic = {
+                entry.tg_topic_id: entry
+                for entry in await self._repo.list_recovery_entries()
+                if entry.tg_topic_id is not None
+            }
 
-        entries: list[dict[str, object]] = []
-        bindings = await self._repo.list_bindings()
-        for binding in bindings:
-            chat = snapshot_by_chat.get(str(binding.max_chat_id))
-            existing = existing_by_topic.get(binding.tg_topic_id)
-            if chat:
-                matched_chat_ids.add(chat.max_chat_id)
+            entries: list[dict[str, object]] = []
+            bindings = await self._repo.list_bindings()
+            for binding in bindings:
+                chat = snapshot_by_chat.get(str(binding.max_chat_id))
+                existing = existing_by_topic.get(binding.tg_topic_id)
+                if chat:
+                    matched_chat_ids.add(chat.max_chat_id)
+                    entries.append(
+                        self._recovery_snapshot_entry_from_chat(
+                            chat,
+                            registry_key=f"tg_topic:{binding.tg_topic_id}",
+                            tg_topic_id=binding.tg_topic_id,
+                            binding=binding,
+                            status="visible",
+                        )
+                    )
+                    continue
+
+                entries.append(
+                    {
+                        "registry_key": f"tg_topic:{binding.tg_topic_id}",
+                        "tg_topic_id": binding.tg_topic_id,
+                        "title": binding.title,
+                        "old_max_chat_id": getattr(existing, "old_max_chat_id", None) or binding.max_chat_id,
+                        "current_max_chat_id": binding.max_chat_id,
+                        "chat_kind": getattr(existing, "chat_kind", "unknown") if existing else "unknown",
+                        "mode": binding.mode,
+                        "recovery_status": self._status_for_missing_recovery_chat(
+                            existing,
+                            migration_required=migration_required,
+                        ),
+                    }
+                )
+
+            for chat in snapshot.chats:
+                if chat.max_chat_id in matched_chat_ids:
+                    continue
                 entries.append(
                     self._recovery_snapshot_entry_from_chat(
                         chat,
-                        registry_key=f"tg_topic:{binding.tg_topic_id}",
-                        tg_topic_id=binding.tg_topic_id,
-                        binding=binding,
-                        status="visible",
+                        registry_key=f"max_chat:{chat.max_chat_id}",
+                        tg_topic_id=None,
+                        status="unmapped",
                     )
                 )
-                continue
 
-            entries.append(
-                {
-                    "registry_key": f"tg_topic:{binding.tg_topic_id}",
-                    "tg_topic_id": binding.tg_topic_id,
-                    "title": binding.title,
-                    "old_max_chat_id": getattr(existing, "old_max_chat_id", None) or binding.max_chat_id,
-                    "current_max_chat_id": binding.max_chat_id,
-                    "chat_kind": getattr(existing, "chat_kind", "unknown") if existing else "unknown",
-                    "mode": binding.mode,
-                    "recovery_status": self._status_for_missing_recovery_chat(
-                        existing,
-                        migration_required=migration_required,
-                    ),
-                }
+            result = await self._repo.upsert_recovery_snapshot(entries, reason=reason)
+            result = {
+                **result,
+                "topics": len(bindings),
+                "visible": len(matched_chat_ids),
+                "migration_required": migration_required,
+            }
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.recovery.scan_completed",
+                stage="recovery",
+                outcome="completed",
+                reason=reason,
+                scanned=result.get("scanned", 0),
+                inserted=result.get("inserted", 0),
+                status_changed=result.get("status_changed", 0),
+                unmapped=result.get("unmapped", 0),
+                needs_invite=result.get("needs_invite", 0),
+                manual_admin_required=result.get("manual_admin_required", 0),
+                topics=len(bindings),
+                visible=len(matched_chat_ids),
+                migration_required=migration_required,
             )
+        if notify:
+            await self._maybe_notify_recovery_changes(reason=reason, result=result)
+        return result
 
-        for chat in snapshot.chats:
-            if chat.max_chat_id in matched_chat_ids:
-                continue
-            entries.append(
-                self._recovery_snapshot_entry_from_chat(
-                    chat,
-                    registry_key=f"max_chat:{chat.max_chat_id}",
-                    tg_topic_id=None,
-                    status="unmapped",
-                )
+    def _recovery_changes_are_important(self, result: dict[str, object]) -> bool:
+        if bool(result.get("migration_required")):
+            return True
+        for key in ("inserted", "unmapped", "needs_invite", "manual_admin_required"):
+            if int(result.get(key) or 0) > 0:
+                return True
+        return False
+
+    def _recovery_notification_digest(self, result: dict[str, object]) -> str:
+        payload = {
+            "inserted": int(result.get("inserted") or 0),
+            "unmapped": int(result.get("unmapped") or 0),
+            "needs_invite": int(result.get("needs_invite") or 0),
+            "manual_admin_required": int(result.get("manual_admin_required") or 0),
+            "migration_required": bool(result.get("migration_required")),
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    async def _maybe_notify_recovery_changes(self, *, reason: str, result: dict[str, object]):
+        if not self._recovery_changes_are_important(result):
+            return
+
+        now = time.monotonic()
+        digest = self._recovery_notification_digest(result)
+        if (
+            digest == self._last_recovery_notification_digest
+            and now - self._last_recovery_notification_at < RECOVERY_NOTIFICATION_DEDUP_SECONDS
+        ):
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.recovery.notification",
+                stage="recovery",
+                outcome="skipped",
+                reason=reason,
+                skip_reason="dedup",
             )
+            return
 
-        result = await self._repo.upsert_recovery_snapshot(entries)
+        self._last_recovery_notification_digest = digest
+        self._last_recovery_notification_at = now
+        parts = [
+            f"new: {int(result.get('inserted') or 0)}",
+            f"unmapped: {int(result.get('unmapped') or 0)}",
+            f"needs invite: {int(result.get('needs_invite') or 0)}",
+            f"admin/manual: {int(result.get('manual_admin_required') or 0)}",
+        ]
+        if result.get("migration_required"):
+            parts.append("account migration: required")
+        text = (
+            "🧭 MAX recovery snapshot изменился\n"
+            f"Триггер: {reason}\n"
+            f"{' · '.join(parts)}\n"
+            "Открой /recovery report для деталей."
+        )
+        await self._send_ops_notification(text)
         log_event(
             logger,
             logging.INFO,
-            "bridge.recovery.scan_completed",
+            "bridge.recovery.notification",
             stage="recovery",
-            outcome="completed",
+            outcome="sent",
             reason=reason,
-            scanned=result.get("scanned", 0),
-            topics=len(bindings),
-            visible=len(matched_chat_ids),
-            migration_required=migration_required,
+            inserted=int(result.get("inserted") or 0),
+            unmapped=int(result.get("unmapped") or 0),
+            needs_invite=int(result.get("needs_invite") or 0),
+            manual_admin_required=int(result.get("manual_admin_required") or 0),
+            migration_required=bool(result.get("migration_required")),
         )
-        return {
-            **result,
-            "topics": len(bindings),
-            "visible": len(matched_chat_ids),
-            "migration_required": migration_required,
-        }
 
     async def run_weekly_recovery_snapshot(self, interval_seconds: int = 7 * 24 * 3600):
         """Periodic recovery registry refresh. Default cadence: weekly."""
         await asyncio.sleep(max(1, int(interval_seconds)))
         while True:
             try:
-                await self._safe_recovery_scan(reason="weekly")
+                await self._safe_recovery_scan(reason="weekly", notify=True)
                 if self._health is not None:
                     await self._health.mark_healthy(
                         "scheduler",
@@ -1810,13 +2012,13 @@ class BridgeCore:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error("weekly recovery snapshot failed: %s", e, exc_info=True)
+                self._log_recovery_scan_failure(reason="weekly", error=e)
                 if self._health is not None:
                     await self._health.report_issue(
                         "scheduler",
                         code="recovery_snapshot_failed",
                         summary="Weekly MAX recovery snapshot не обновился",
-                        raw_cause=str(e),
+                        raw_cause=type(e).__name__,
                         severity=Severity.WARNING,
                         impact="Recovery registry может устареть до следующей успешной попытки.",
                         operator_hint="Проверь MAX-сессию и выполни /recovery scan вручную.",
@@ -1954,7 +2156,11 @@ class BridgeCore:
 
         action = tokens[0].lower()
         if action == "scan":
-            result = await self._safe_recovery_scan(reason="manual")
+            try:
+                result = await self._safe_recovery_scan(reason="manual")
+            except Exception as e:
+                self._log_recovery_scan_failure(reason="manual", error=e)
+                return f"❌ Recovery snapshot не обновлён: {type(e).__name__}"
             report = await self._repo.get_recovery_report()
             freshness = self._format_recovery_freshness(report["stats"].get("last_scan_at"))
             return (
@@ -2132,6 +2338,7 @@ class BridgeCore:
             if name:
                 await self._tg.rename_topic(binding.tg_topic_id, name)
                 await self._repo.update_title(binding.max_chat_id, name)
+                self._schedule_recovery_event_scan("title_changed")
                 log_event(
                     logger,
                     logging.INFO,

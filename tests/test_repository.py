@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from src.db.repository import ChatBinding, MessageRecord, PendingMediaDownload, Repository, KnownUser
@@ -86,24 +88,28 @@ async def test_recovery_registry_snapshot_report_and_export_are_idempotent(tmp_p
         assert second_account["migration_required"] is True
         assert second_account["previous_max_user_id"] == "100"
 
-        result = await repo.upsert_recovery_snapshot([
-            {
-                "registry_key": "tg_topic:77",
-                "tg_topic_id": 77,
-                "title": "VIP group",
-                "old_max_chat_id": "-old",
-                "current_max_chat_id": "-old",
-                "chat_kind": "group",
-                "mode": "active",
-                "access_type": "LINK",
-                "invite_link": "https://max.ru/join/example",
-                "owner_user_id": "500",
-                "owner_name": "Owner",
-                "admin_contacts": [{"user_id": "501", "name": "Admin"}],
-                "participant_count": 12,
-                "recovery_status": "visible",
-            }
-        ])
+        invite_link = "https://max.ru/join/example"
+        result = await repo.upsert_recovery_snapshot(
+            [
+                {
+                    "registry_key": "tg_topic:77",
+                    "tg_topic_id": 77,
+                    "title": "VIP group",
+                    "old_max_chat_id": "-old",
+                    "current_max_chat_id": "-old",
+                    "chat_kind": "group",
+                    "mode": "active",
+                    "access_type": "LINK",
+                    "invite_link": invite_link,
+                    "owner_user_id": "500",
+                    "owner_name": "Owner",
+                    "admin_contacts": [{"user_id": "501", "name": "Admin"}],
+                    "participant_count": 12,
+                    "recovery_status": "visible",
+                }
+            ],
+            reason="unit_test",
+        )
         again = await repo.upsert_recovery_snapshot([
             {
                 "registry_key": "tg_topic:77",
@@ -117,8 +123,12 @@ async def test_recovery_registry_snapshot_report_and_export_are_idempotent(tmp_p
             }
         ])
 
-        assert result == {"scanned": 1}
-        assert again == {"scanned": 1}
+        assert result["scanned"] == 1
+        assert result["inserted"] == 1
+        assert result["status_changed"] == 0
+        assert again["scanned"] == 1
+        assert again["inserted"] == 0
+        assert again["status_changed"] == 0
 
         report = await repo.get_recovery_report()
         assert report["stats"]["total"] == 1
@@ -126,8 +136,17 @@ async def test_recovery_registry_snapshot_report_and_export_are_idempotent(tmp_p
         assert report["stats"]["last_scan_at"] is not None
 
         entry = await repo.get_recovery_entry_by_topic(77)
-        assert entry.invite_link == "https://max.ru/join/example"
+        assert entry.invite_link == invite_link
         assert "Admin" in entry.admin_contacts_json
+
+        async with repo._db.execute(
+            "SELECT details_json FROM chat_recovery_events WHERE event_type = 'scan' ORDER BY id ASC LIMIT 1"
+        ) as cur:
+            event = await cur.fetchone()
+        details = json.loads(event["details_json"])
+        assert details["reason"] == "unit_test"
+        assert details["has_invite_link"] is True
+        assert invite_link not in event["details_json"]
 
         export = await repo.export_recovery_registry()
         assert export["entries"][0]["admin_contacts"] == [{"name": "Admin", "user_id": "501"}]
@@ -173,6 +192,49 @@ async def test_recovery_remap_preserves_topic_and_updates_binding(tmp_path):
         assert entry.current_max_chat_id == "new-chat"
         assert entry.old_max_chat_id == "old-chat"
         assert entry.recovery_status == "remapped"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_snapshot_reports_status_change_deltas(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        await repo.upsert_recovery_snapshot([
+            {
+                "registry_key": "tg_topic:77",
+                "tg_topic_id": 77,
+                "title": "Client",
+                "old_max_chat_id": "old-chat",
+                "current_max_chat_id": "old-chat",
+                "chat_kind": "dm",
+                "mode": "active",
+                "recovery_status": "visible",
+            },
+        ])
+
+        changed = await repo.upsert_recovery_snapshot(
+            [
+                {
+                    "registry_key": "tg_topic:77",
+                    "tg_topic_id": 77,
+                    "title": "Client",
+                    "old_max_chat_id": "old-chat",
+                    "current_max_chat_id": "old-chat",
+                    "chat_kind": "dm",
+                    "mode": "active",
+                    "recovery_status": "needs_invite",
+                },
+            ],
+            reason="weekly",
+        )
+
+        assert changed["scanned"] == 1
+        assert changed["inserted"] == 0
+        assert changed["status_changed"] == 1
+        assert changed["needs_invite"] == 1
     finally:
         await repo.close()
 

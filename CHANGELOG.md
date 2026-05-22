@@ -6,18 +6,29 @@ All notable changes to Maxgram are documented here.
 
 ## Unreleased
 
+### Added
+- **MAX account migration recovery registry** — new-phone/new-account recovery is now a first-class subsystem. SQLite stores MAX account generations, topic recovery registry rows, snapshot freshness (`last_scan_at`), and append-only recovery events without message text or raw MAX payloads.
+- **Owner-only `/recovery` commands** — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, and `/recovery remap` support guided migration of existing Telegram topics to newly visible MAX chats.
+- **Hybrid recovery snapshots** — bridge scans recovery metadata after successful MAX connect/reconnect, weekly as a safety net, and asynchronously after important MAX-side events: new bindings, title changes, and `CONTROL` events.
+- **Important-only recovery notifications** — automatic recovery scans notify owner/ops only on meaningful changes such as new/unmapped chats, invite/admin-required states, or account migration; notifications contain aggregate counts only and point to `/recovery report`.
+- **Architecture decision ADR-005** — documents the account migration recovery registry, privacy constraints, remap behavior, and V1 non-automation boundaries.
+
+### Changed
+- **Telegram command access model** — `/dm` remains public only in General via an explicit allowlist; `/recovery ...` and other arg commands remain owner-only even in General.
+- **Remap-safe reply routing** — after `/recovery remap`, replies to old Telegram messages no longer send stale MAX `reply_to_msg_id` values when the mapped MAX message belongs to the old chat id.
+- **Recovery snapshot upsert deltas** — `upsert_recovery_snapshot()` now returns `inserted`, `status_changed`, `unmapped`, `needs_invite`, and `manual_admin_required`, and stores a redacted scan reason in recovery events.
+- **MAX video CDN User-Agent matching** — signed MAX/OK CDN downloads now distinguish `CHROME_IPHONE` from desktop Chrome and use an iOS Chrome `User-Agent`, preventing `400 Bad Request` failures when MAX issues iPhone Chrome video URLs.
+- Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
+
 ### Fixed
 - **New DM topic names** — incoming DM topics now prefer the sender name / sender id over the chat id when resolving titles, so dialog ids are less likely to appear as `Чат <id>` for new users.
 - **MAX→TG voice delivery for pymax-empty DM events** — raw MAX notifications are now intercepted on the pymax message-notification path as well as `on_raw_receive`, so `AUDIO` voice payloads can be forwarded before upstream parsing drops them.
 - **Live empty-event recovery** — when pymax still emits a fresh empty `USER` event, the bridge tries a narrow recent-history lookup for that exact `msg_id` and forwards the recovered voice attachment if present. Diagnostic logs include only safe class/field names.
 - **Top-level MAX voice payloads** — raw notifications where `payload` itself is the message and media is stored under `attachments` are now normalized before pymax can drop the attachment list.
 
-### Changed
-- **MAX video CDN User-Agent matching** — signed MAX/OK CDN downloads now distinguish `CHROME_IPHONE` from desktop Chrome and use an iOS Chrome `User-Agent`, preventing `400 Bad Request` failures when MAX issues iPhone Chrome video URLs.
-- Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
-
 ### Tests
 - Added coverage for DM title resolution order, cached contact name lookup, raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
+- Added coverage for SQLite recovery migrations/idempotency/deltas, recovery report/export/remap, MAX recovery snapshot collection, async event-driven recovery scans, important-only notification privacy/deduplication, owner-only `/recovery`, command allowlist privacy, stale reply routing after remap, and privacy of recovery reports/logs.
 
 ---
 

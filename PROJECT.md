@@ -9,12 +9,13 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 **Решение:** Unofficial userbot + supervisor-managed Python async worker + Telegram Forum Supergroup с Topics. Каждый MAX-чат = отдельный изолированный топик. Reply в топике = ответ в MAX.
 
 **Ключевые требования:**
-- Один пользователь, один аккаунт MAX — не SaaS
+- Один пользователь, один активный MAX account — не SaaS
 - Никаких третьих лиц с доступом к семейным данным (дети, школа)
 - Self-hosted: локально на Mac или на Hetzner Cloud
 - Восстановление после перезапуска без потери маппингов
+- Восстановление route-контекста при новом телефоне / новом MAX account без хранения текстов сообщений
 
-**Текущее состояние на 2 апреля 2026:** bridge уже работает в production на Hetzner Cloud, в Docker Compose, с локальным SQLite state и ограниченным SSH-доступом по IP.
+**Текущее состояние на 22 мая 2026:** bridge работает в production на Hetzner Cloud, в Docker Compose, с локальным SQLite state, session snapshots, recovery registry и ограниченным SSH-доступом по IP.
 
 ### Что уже сделано в production-сессии
 
@@ -30,6 +31,7 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 - добавлен smoke-report по SQLite для быстрых ручных проверок
 - добавлен supervisor/runtime health слой с persisted snapshot, event history, outbox и Docker heartbeat
 - основной служебный канал зафиксирован как owner DM; forum-topic fanout стал опциональным
+- добавлен MAX account migration recovery registry: account generations, weekly chat snapshots, owner-only `/recovery ...`, JSON export и remap topic → new MAX chat
 
 ---
 
@@ -74,7 +76,7 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 ### Три компонента
 
 **MAX Adapter** (`src/adapters/max_adapter.py`)  
-Обёртка над `pymax.SocketMaxClient`. Управляет WebSocket-соединением с MAX, парсит входящие события в `MaxMessage` dataclass, скачивает медиа во временную директорию, отправляет исходящие сообщения. Реализует собственный reconnect-цикл (fresh client на каждый reconnect) обходя OOM-баг библиотеки.
+Обёртка над `pymax.SocketMaxClient`. Управляет WebSocket-соединением с MAX, парсит входящие события в `MaxMessage` dataclass, скачивает медиа во временную директорию, отправляет исходящие сообщения. Реализует собственный reconnect-цикл (fresh client на каждый reconnect) обходя OOM-баг библиотеки. Для account recovery собирает meta-only snapshot из `client.chats`, `client.channels`, `client.dialogs` и `get_chat()`.
 
 Библиотечная база адаптера:
 - GitHub: `https://github.com/MaxApiTeam/PyMax`
@@ -85,10 +87,10 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 На 2 апреля 2026 репозиторий `PyMax` на GitHub помечен как archived/read-only, поэтому проект использует pinned dependency в `requirements.txt` и не рассчитывает на быстрые upstream-фиксы.
 
 **Bridge Core** (`src/bridge/core.py`)  
-Вся бизнес-логика без зависимости от транспорта. Принимает события от адаптеров, принимает решения о роутинге, создаёт/переименовывает топики, проверяет режим чата, обеспечивает идемпотентность через SQLite.
+Вся бизнес-логика без зависимости от транспорта. Принимает события от адаптеров, принимает решения о роутинге, создаёт/переименовывает топики, проверяет режим чата, обеспечивает идемпотентность через SQLite. Владеет recovery registry flow: scan после connect/reconnect, weekly snapshot, `/recovery report/export/set/remap`, защита stale reply mapping после remap.
 
 **Telegram Adapter** (`src/adapters/tg_adapter.py`)  
-Обёртка над `aiogram`. Управляет Forum Supergroup Topics: создание, переименование, отправка сообщений (текст/фото/видео/аудио/voice/документ). Принимает сообщения из нужной форум-группы, пропускает обычные сообщения от участников группы и ограничивает команды `/status`, `/chats` и `/reauth` только владельцем.
+Обёртка над `aiogram`. Управляет Forum Supergroup Topics: создание, переименование, отправка сообщений (текст/фото/видео/аудио/voice/документ). Принимает сообщения из нужной форум-группы, пропускает обычные сообщения от участников группы, держит explicit allowlist для public General-команд (`/dm`) и ограничивает `/status`, `/chats`, `/reauth`, `/recovery ...` только владельцем.
 
 ---
 
@@ -134,15 +136,17 @@ Telegram Update (message в форум-группе)
   └─► TGAdapter.handle_message(message)
         ├─ [not forum_group_id] → DROP
         ├─ [from_user.is_bot] → DROP
-        ├─ [command /status, /chats, /reauth] → handle_command()
+        ├─ [owner command /status, /chats, /reauth, /recovery ...] → handle_command()
         │     └─ [not owner_id] → DROP
+        ├─ [public /dm in General] → handle_command()
         ├─ [no message_thread_id] → DROP (не в топике)
         └─► BridgeCore._on_tg_reply(topic_id, text, reply_to_tg_id, sender_name)
               ├─ get_binding_by_topic(topic_id) → max_chat_id
               ├─ [not found] → send_notification("⚠️ Не найден MAX чат")
               ├─ [mode=readonly] → send_text("🚫 readonly")
               ├─ [mode=disabled] → return
-              ├─ [reply_to_tg_id] → get_max_msg_id_by_tg() → reply_to_max_id
+              ├─ [reply_to_tg_id] → get_tg_reply_mapping() → reply_to_max_id
+              │     └─ [mapped max_chat_id != current binding] → no reply_to after remap
               ├─ compose outbound text = "[Name]\ntext"
               └─► MaxAdapter.send_message(chat_id, text, reply_to=max_id)
                     ├─ [not _started] → wait 3×5s for reconnect
@@ -227,6 +231,31 @@ Fallback rename:
 Проверка связи
 ```
 
+### MAX account migration recovery
+
+MAX не даёт штатно поменять телефон в профиле. Новый телефон практически означает новый MAX account, а private/admin-only чаты требуют нового invite link или ручного приглашения админа. Bridge сохраняет не историю сообщений, а recovery context для сохранения Telegram continuity:
+
+- `max_account_generations` фиксирует поколения аккаунта: `max_user_id`, masked phone, hash fingerprint сессии, статус `active|retired|lost`, first/last seen
+- `chat_recovery_registry` хранит stable key `tg_topic:<topic_id>`, старый/текущий `max_chat_id`, title, mode, priority, access type, invite link, owner/admin contacts, DM partner metadata, participant count, manual note, recovery status
+- `last_scan_at` показывает свежесть snapshot для каждой registry row; `/recovery report` показывает возраст последнего snapshot
+- `chat_recovery_events` хранит append-only audit scan/set/remap/account-change без message text/raw MAX payload
+- `MaxAdapter.collect_recovery_snapshot()` читает `client.chats`, `client.channels`, `client.dialogs`, enrich через `get_chat()`
+- `BridgeCore` запускает safe scan после MAX connect/reconnect, затем раз в неделю, а также event-driven при `new_binding`, `title_changed` и MAX `CONTROL`
+- Event-driven scans работают асинхронно: background task с debounce/cooldown не задерживает обычную пересылку, создание topics или rename
+- Important-only notifications уходят owner/ops только по meaningful changes и содержат агрегаты; invite links, notes, phone numbers, message text и raw MAX payload не выводятся в notification/log/health
+
+Owner-only команды:
+
+```text
+/recovery scan
+/recovery report
+/recovery export
+/recovery set <topic_id> key=value ...
+/recovery remap <topic_id> <new_max_chat_id>
+```
+
+Remap сохраняет существующий Telegram topic и меняет routing на новый MAX chat. Старый `message_map` остаётся для истории; если пользователь отвечает на старое TG сообщение после remap, bridge не отправляет `reply_to_msg_id`, если mapped MAX message принадлежит старому `max_chat_id`.
+
 ### Reconnect стратегия
 
 Pymax `reconnect=True` имеет OOM-баг (см. [ADR-004](docs/decisions/ADR-004-pymax-reconnect-strategy.md)):
@@ -256,13 +285,13 @@ for _ in range(3):
 
 ### Тесты
 
-В проекте есть базовый regression-набор на `pytest`:
+В проекте есть regression-набор на `pytest` (**156 тестов**):
 
-- `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих
-- `tests/test_bridge_core.py` — пересылка media и rendered text в Telegram
-- `tests/test_tg_adapter.py` — приём сообщений от участников группы и command filtering
+- `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих, recovery snapshot collector
+- `tests/test_bridge_core.py` — пересылка media/rendered text, `/dm`, `/recovery`, async event-driven recovery scans, remap stale-reply safety
+- `tests/test_tg_adapter.py` — приём сообщений от участников группы, public `/dm` allowlist, owner-only `/recovery`
 - `tests/test_main.py` — startup notification с runtime/location/masked IP и статусом startup `pytest`
-- `tests/test_repository.py` — upsert `message_map` и сохранность MAX ↔ TG маппинга
+- `tests/test_repository.py` — upsert `message_map`, MAX ↔ TG маппинг, recovery migrations/idempotency/deltas/report/export/remap
 
 Запуск:
 ```bash
@@ -285,7 +314,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 - `.env` — только не-секретные локальные env (`DATA_DIR`, optional `CONFIG_LOCAL_PATH`)
 - `config.local.yaml` — реальные `max_chat_id`, названия частных чатов и локальные override
 - `deploy/server.local.md` — server IP / локальные заметки
-- `data/` — SQLite, MAX session, runtime health artifacts
+- `data/` — SQLite, MAX session, session snapshots, recovery registry, runtime health artifacts
 
 ---
 
@@ -317,6 +346,19 @@ UNIQUE(max_msg_id, max_chat_id)
 1. **Дедупликации** — проверка перед обработкой
 2. **Reply routing** — найти `max_msg_id` по `tg_msg_id` для ответа на конкретное сообщение
 
+### `tg_reply_map` — дополнительные reply mappings
+
+```sql
+tg_msg_id    INTEGER PRIMARY KEY
+max_chat_id  TEXT
+max_msg_id   TEXT
+tg_topic_id  INTEGER
+source       TEXT    -- message_map | pending_media | ...
+created_at   INTEGER
+```
+
+Нужен для поздно досланных MAX-медиа: несколько Telegram messages могут отвечать одному исходному MAX message. После recovery remap bridge сверяет `max_chat_id` mapping-а с текущим binding и не отправляет stale `reply_to_msg_id`.
+
 ### `delivery_log` — лог доставки
 
 ```sql
@@ -331,6 +373,60 @@ last_attempt_at INTEGER
 ```
 
 **Принцип:** только metadata. Текст сообщений и медиа в DB не хранятся.
+
+### `max_account_generations` — поколения MAX аккаунта
+
+```sql
+generation_id            INTEGER PRIMARY KEY
+max_user_id              TEXT UNIQUE
+masked_phone             TEXT
+session_fingerprint_hash TEXT
+status                   TEXT    -- active | retired | lost
+first_seen_at            INTEGER
+last_seen_at             INTEGER
+```
+
+Если после reauth `max_user_id` отличается от предыдущего active generation, bridge помечает старый account как retired и считает, что нужен migration flow.
+
+### `chat_recovery_registry` — registry восстановления
+
+```sql
+registry_key             TEXT PRIMARY KEY  -- tg_topic:<id> | max_chat:<id>
+tg_topic_id              INTEGER UNIQUE
+title                    TEXT
+old_max_chat_id          TEXT
+current_max_chat_id      TEXT
+chat_kind                TEXT              -- dm | group | channel | unknown
+mode                     TEXT
+priority                 INTEGER
+access_type              TEXT
+invite_link              TEXT
+owner_user_id            TEXT
+owner_name               TEXT
+admin_contacts_json      TEXT
+dm_partner_user_id       TEXT
+dm_partner_name          TEXT
+participant_count        INTEGER
+manual_note              TEXT
+recovery_status          TEXT
+first_seen_at            INTEGER
+last_seen_at             INTEGER
+last_scan_at             INTEGER
+```
+
+Хранит всё, что нужно для ручного восстановления доступа и remap, кроме содержимого сообщений: invite links, owner/admin contacts, DM partner metadata и manual notes.
+
+### `chat_recovery_events` — audit recovery lifecycle
+
+```sql
+registry_key TEXT
+tg_topic_id  INTEGER
+event_type   TEXT    -- scan | manual_update | remap | account_seen | ...
+details_json TEXT
+created_at   INTEGER
+```
+
+Append-only audit без message text, media URLs, signed tokens и raw MAX payload.
 
 ---
 
@@ -405,6 +501,9 @@ MAX_PHONE=+79...
 | `message_map` | SQLite | 30 дней |
 | `delivery_log` | SQLite | 7 дней |
 | `chat_bindings` | SQLite | Бессрочно |
+| `chat_recovery_registry` | SQLite | Бессрочно |
+| `chat_recovery_events` | SQLite | Бессрочно / operator audit |
+| Recovery export JSON | `data/tmp/` | Удаляется после отправки owner DM |
 | MAX сессия | `data/session.db` | До re-auth |
 
 Автоочистка `BridgeCore.run_cleanup()` — каждые 30 минут.
@@ -438,6 +537,8 @@ MAX_PHONE=+79...
 ### Ограничения
 
 - Бот принимает команды **только от `TG_OWNER_ID`**
+- Исключение: `/dm` в General доступна участникам группы через explicit allowlist
+- `/recovery ...` всегда owner-only, потому что export/report связаны с invite/admin metadata
 - Бот принимает сообщения **только из `TG_FORUM_GROUP_ID`**
 - Обычные сообщения внутри topic могут отправлять участники группы
 - Максимальный размер файла: 50 MB (Bot API limit)
@@ -450,7 +551,14 @@ MAX_PHONE=+79...
 |---------|-------|
 | `/status` | `✅ Bridge работает` |
 | `/chats` | Список чатов с topic_id, режимом и активностью |
+| `/help` | Справка по командам |
+| `/dm Имя Фамилия текст` | Public в General: начать новый DM в MAX |
 | `/reauth` | Инструкция по переавторизации MAX |
+| `/recovery scan` | Owner-only: обновить recovery snapshot сейчас |
+| `/recovery report` | Owner-only: totals, статусы и свежесть snapshot |
+| `/recovery export` | Owner-only: JSON registry в owner DM |
+| `/recovery set <topic_id> key=value ...` | Owner-only: note/link/admin/status/priority |
+| `/recovery remap <topic_id> <new_max_chat_id>` | Owner-only: сохранить TG topic и сменить MAX routing |
 
 ---
 
@@ -585,14 +693,14 @@ fly logs -f
 | Outbound retry при reconnect (3×5s) | ✅ |
 | Запуск локально | ✅ |
 
-### Phase 2: Stabilization 🔄
+### Phase 2: Stabilization ✅
 
-| Задача | Приоритет |
-|--------|-----------|
-| Retry + backoff для Telegram API | High |
-| Alert при потере MAX сессии (>3 ретрая) | High |
-| `/status` команда с uptime и статистикой | Medium |
-| 7 дней без ручного вмешательства | Goal |
+| Задача | Статус |
+|--------|--------|
+| Retry + backoff для Telegram API | ✅ |
+| Watchdog/alert при потере MAX | ✅ |
+| `/status` команда с uptime и статистикой | ✅ |
+| 7 дней без ручного вмешательства | ✅ |
 
 ### Phase 3: Cloud ✅
 
@@ -602,14 +710,37 @@ fly logs -f
 | Docker Compose production | Done |
 | Базовый server hardening | Done |
 
-### Phase 4: Hardening ⏳
+### Phase 4: Hardening ✅
 
-| Задача | Приоритет |
-|--------|-----------|
-| Per-chat управление из Telegram | Medium |
-| Длинные сообщения (>4096 символов) | Medium |
-| Файлы >50 MB — уведомление | Low |
-| Unit тесты bridge/core.py | Medium |
+| Задача | Статус |
+|--------|--------|
+| `/chats` команда | ✅ |
+| Нативные voice note bubbles | ✅ |
+| Missed messages gap notice | ✅ |
+| Файлы >50 MB — уведомление | ✅ |
+| Расширение unit/regression tests | ✅ |
+
+### Phase 5-6: UX + Ops automation ✅
+
+| Задача | Статус |
+|--------|--------|
+| `/dm Имя Фамилия текст` из General | ✅ |
+| `/help` команда | ✅ |
+| `known_users` lookup | ✅ |
+| Ansible deploy/backup/recover/bootstrap/hardening | ✅ |
+
+### Phase 7: MAX account migration recovery ✅ (2026-05-22)
+
+| Задача | Статус |
+|--------|--------|
+| Account generations + session fingerprint hash | ✅ |
+| Chat recovery registry + `last_scan_at` freshness | ✅ |
+| Hybrid recovery snapshots: connect/reconnect + weekly + event-driven | ✅ |
+| Async debounce/cooldown scheduler без задержки forwarding | ✅ |
+| Important-only recovery notifications | ✅ |
+| Owner-only `/recovery scan/report/export/set/remap` | ✅ |
+| Remap safety для stale reply mapping | ✅ |
+| Privacy tests для report/logs/export path | ✅ |
 
 ---
 
@@ -618,7 +749,8 @@ fly logs -f
 | Ограничение | Причина | Решение |
 |-------------|---------|---------|
 | Потеря сообщений за время downtime | pymax не имеет history replay | Минимизировать downtime |
-| Команды ограничены владельцем | `/status`, `/chats`, `/reauth` только для owner | — |
+| Новый телефон/MAX account не восстанавливает закрытые чаты автоматически | MAX требует новый invite/link/admin approval | Recovery registry + `/recovery remap` после ручного доступа |
+| Команды ограничены владельцем | `/status`, `/chats`, `/reauth`, `/recovery ...` только для owner; `/dm` public только в General | — |
 | Неофициальный userbot | Нет официального Python SDK для личных аккаунтов MAX | Мониторить pymax обновления |
 | Нет истории при старте | Out of scope MVP | Phase 4+ |
 
@@ -634,3 +766,4 @@ fly logs -f
 | [ADR-002](docs/decisions/ADR-002-telegram-forum-topics.md) | Forum Supergroup + Topics как UI |
 | [ADR-003](docs/decisions/ADR-003-python-monolith-sqlite.md) | Python async монолит + SQLite |
 | [ADR-004](docs/decisions/ADR-004-pymax-reconnect-strategy.md) | Fresh client на каждый reconnect |
+| [ADR-005](docs/decisions/ADR-005-max-account-recovery-registry.md) | MAX account migration recovery registry |

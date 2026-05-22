@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 ```
 
-Всего: **103 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite в памяти (`tmp_path`), MAX и Telegram заменены stub-классами.
+Всего: **156 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -20,7 +20,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_repository.py — работа с SQLite (6 тестов)
+## test_repository.py — работа с SQLite (12 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -30,10 +30,13 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_find_user_case_insensitive` | `find_user_by_name()` работает без учёта регистра для кириллицы (Python-level сравнение, т.к. SQLite NOCASE не покрывает кириллицу). |
 | `test_save_user_upserts_name` | Повторный `save_user()` с тем же `user_id` обновляет `display_name` и `updated_at` (upsert через `ON CONFLICT`). |
 | `test_find_user_returns_none_when_not_found` | Возвращает `None` для имени, которого нет в таблице. |
+| `test_recovery_registry_snapshot_report_and_export_are_idempotent` | Проверяет `max_account_generations`, migration detection, idempotent recovery snapshot upsert, сохранение invite/admin metadata, `last_scan_at`, report и JSON export. |
+| `test_recovery_remap_preserves_topic_and_updates_binding` | `/recovery remap` сохраняет Telegram topic, меняет `chat_bindings.max_chat_id`, фиксирует `old_max_chat_id/current_max_chat_id` и статус `remapped`. |
+| `test_recovery_snapshot_reports_status_change_deltas` | `upsert_recovery_snapshot()` возвращает deltas `inserted/status_changed/needs_invite` и пишет scan reason без чувствительных полей. |
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (48 тестов)
+## test_max_adapter.py — парсинг сырых сообщений MAX (73 теста)
 
 ### Системные события (CONTROL)
 
@@ -106,6 +109,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 |------|--------------|
 | `test_resolve_user_name_uses_contacts_cache_before_live_lookup` | Имя пользователя берётся из локального `contacts` cache без live `CONTACT_INFO`. |
 | `test_resolve_user_name_live_lookup_has_short_timeout` | Live lookup имени имеет короткий timeout и не блокирует routing надолго при socket timeout. |
+| `test_collect_recovery_snapshot_captures_access_metadata_without_messages` | `MaxAdapter.collect_recovery_snapshot()` собирает group/channel/DM metadata: chat kind, invite link, owner/admin contacts, DM partner, participant count, masked phone и session fingerprint hash без message text/raw payload. |
 
 ### Устойчивость reconnect и video CDN
 
@@ -128,7 +132,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (34 теста)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (43 теста)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -150,6 +154,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_pending_media_worker_reschedules_download_failure` | Временный сбой скачивания переводит job в `retry` с увеличенным attempts и будущим `next_attempt_at`. |
 | `test_pending_media_worker_marks_missing_reference_terminal` | Job без стабильного `video_id` становится terminal failure, а не крутится бесконечно. |
 | `test_on_tg_reply_to_delayed_video_uses_original_max_message` | Reply на позднее досланное видео резолвится в исходный MAX `max_msg_id`. |
+| `test_on_tg_reply_after_remap_skips_stale_reply_to_max_id` | После `/recovery remap` reply на старое TG сообщение не отправляет `reply_to_msg_id`, если исходный MAX message принадлежит старому `max_chat_id`. |
 | `test_get_or_create_topic_resolves_group_title_via_live_max_lookup` | Если `chat_title=None`, `_get_or_create_topic` делает live запрос `resolve_chat_title` и создаёт топик с правильным именем. |
 | `test_get_or_create_topic_prefers_dm_sender_name_for_title` | Для входящего DM topic создаётся по `sender_name`, если он уже есть в сообщении. |
 | `test_get_or_create_topic_uses_dm_sender_id_before_chat_id` | Для нового входящего DM `sender_id` пробуется раньше `chat_id`, потому что `chat_id` может быть id диалога. |
@@ -181,12 +186,31 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_cmd_dm_returns_usage_hint_when_no_args` | При пустом или однословном аргументе → возвращается подсказка о формате команды. |
 | `test_cmd_dm_tries_longest_name_prefix_first` | Алгоритм пробует самый длинный prefix (3 слова для 4-словного ввода) раньше более коротких. |
 
+### Команда `/recovery`
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_cmd_recovery_scan_report_set_remap_and_export` | Owner-only recovery flow: scan, report со свежестью snapshot, отсутствие invite link в report/logs, ручной `set`, `remap`, owner-DM export и обновление binding. |
+| `test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding` | Новый `ChatBinding` ставит recovery scan в background task; Telegram topic/message создаются сразу и не ждут snapshot. |
+| `test_control_events_debounce_into_one_recovery_scan` | Повторные MAX `CONTROL` события схлопываются в один recovery scan. |
+| `test_recovery_auto_notification_is_important_only_redacted_and_deduped` | Important-only notification отправляет только агрегаты, не раскрывает invite/title/phone/raw payload и дедупится в памяти. |
+
 ### Персистирование пользователей
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_on_max_message_persists_sender_to_db` | При входящем сообщении от другого пользователя `save_user()` вызывается с правильными `sender_id` и `sender_name`. |
 | `test_on_max_message_does_not_persist_own_sender` | Собственные сообщения (`is_own=True`) не сохраняются в `known_users`. |
+
+---
+
+## test_max_session_store.py — MAX session snapshots (3 теста)
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_backup_current_writes_valid_snapshot_and_skips_unchanged` | Валидный `session.db` snapshot сохраняется, а неизменённая сессия не плодит дубликаты. |
+| `test_recover_if_needed_repairs_header_corruption_without_losing_token` | При SQLite header corruption store пытается пересобрать clean session из текущего token. |
+| `test_recover_if_needed_restores_latest_valid_snapshot` | Если текущая сессия невосстановима, store откатывается на свежий валидный snapshot. |
 
 ---
 
@@ -203,12 +227,14 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_tg_adapter.py — входящие сообщения Telegram и system notifications (5 тестов)
+## test_tg_adapter.py — входящие сообщения Telegram и system notifications (7 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_dispatch_incoming_message_accepts_non_owner_group_member` | Сообщение от не-владельца (user_id=2) в форум-группе в топике → передаётся в reply-обработчик с правильными `(topic_id, text, reply_to_tg_id, sender_name)`. |
 | `test_dispatch_incoming_message_ignores_non_owner_commands` | Команда `/status` от не-владельца в форум-группе → `_handle_command` не вызывается. |
+| `test_dispatch_incoming_message_allows_public_dm_only_in_general` | `/dm` доступна участникам группы только в General (`message_thread_id=None`) через explicit allowlist. |
+| `test_dispatch_incoming_message_keeps_recovery_owner_only_in_general` | `/recovery` остаётся owner-only даже в General, чтобы export/invite/admin metadata не раскрывались группе. |
 | `test_tg_retry_logs_retry_and_success` | `_tg_retry` делает повторную попытку при `TelegramRetryAfter` и логирует событие retry; после успеха возвращает корректный результат. |
 | `test_send_system_notification_fans_out_to_dm_and_ops_topic` | Системное уведомление уходит и в owner DM, и в ops topic, если `ops_topic_id` задан. |
 | `test_send_system_notification_queues_failed_target_and_flushes_outbox` | Неотправленный ops-alert попадает в `alert_outbox.jsonl`, а после восстановления Telegram досылается из outbox. |
@@ -240,9 +266,9 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 - `run_periodic_status` — бесконечный цикл; проверяется вручную в production
 - `run_max_watchdog` покрыт базовым reconnect-сценарием, но full production-поведение также проверяется вручную
+- `run_weekly_recovery_snapshot` как бесконечный scheduler-loop проверяется через командный scan/repo tests и вручную в production
 - Реальные сетевые вызовы (MAX WebSocket, Telegram Bot API)
-- Retry-логика `_tg_retry` — требует мока `TelegramAPIError`
-- `get_chat_activity_since` / `count_messages_since` — SQL запросы; проверяются smoke-скриптом
+- Полный live MAX recovery snapshot зависит от реального `pymax` cache/API; unit tests покрывают fake chat/dialog/channel objects
 
 Смоук-проверка по реальной БД:
 ```bash
