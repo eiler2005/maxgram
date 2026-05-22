@@ -1,13 +1,22 @@
 """MAX to Telegram forwarding helpers."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Optional
 
+from . import mapping
 from . import media_retry
-from .contracts import MaxAttachment, MaxAttachmentFailure, MaxMessage, TelegramBridgePort
+from .contracts import (
+    MaxAttachment,
+    MaxAttachmentFailure,
+    MaxMessage,
+    TelegramBridgePort,
+    is_probable_client_cid,
+)
 from ..config.loader import AppConfig
-from ..logging_utils import log_event
+from ..db.repository import Repository
+from ..logging_utils import build_max_flow_id, log_event
 
 logger = logging.getLogger("src.bridge.core")
 
@@ -249,3 +258,258 @@ async def forward_to_telegram(
             pass
 
     return tg_msg_id
+
+
+async def handle_max_message(
+    *,
+    repo: Repository,
+    stats: dict[str, int | float],
+    msg: MaxMessage,
+    get_or_create_topic: Callable[..., Awaitable[Optional[int]]],
+    message_has_control_event: Callable[[MaxMessage], bool],
+    schedule_recovery_event_scan: Callable[[str], None],
+    enqueue_retryable_media_failures: Callable[..., Awaitable[tuple[int, list[MaxAttachmentFailure]]]],
+    forward_to_telegram_fn: Callable[..., Awaitable[Optional[int]]],
+):
+    """Route one inbound MAX message into Telegram."""
+    flow_id = build_max_flow_id(msg.chat_id, msg.msg_id)
+
+    if not msg.msg_id or not msg.chat_id:
+        return
+
+    if is_probable_client_cid(msg.chat_id):
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.inbound.forward_finished",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="routing",
+            outcome="skipped",
+            reason="probable_client_cid_chat_id",
+            max_msg_id=msg.msg_id,
+            message_type=msg.message_type,
+            attachment_types=msg.attachment_types,
+        )
+        return
+
+    if msg.is_own:
+        if await repo.is_duplicate(msg.msg_id, msg.chat_id):
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.dedup",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="dedup",
+                outcome="skipped",
+                reason="duplicate",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+            )
+            return
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.inbound.dedup",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="dedup",
+            outcome="accepted",
+            reason="own_direct_message",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+        )
+
+    elif await repo.is_duplicate(msg.msg_id, msg.chat_id):
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.inbound.dedup",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="dedup",
+            outcome="skipped",
+            reason="duplicate",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+        )
+        return
+    else:
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.inbound.dedup",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="dedup",
+            outcome="accepted",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+        )
+
+    if msg.sender_id and msg.sender_name and not msg.is_own:
+        await repo.save_user(msg.sender_id, msg.sender_name)
+
+    await mapping.save_inbound_idempotency_key(repo, msg)
+
+    topic_id = await get_or_create_topic(msg, flow_id=flow_id)
+    if topic_id is None:
+        log_event(
+            logger,
+            logging.ERROR,
+            "bridge.inbound.forward_finished",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="routing",
+            outcome="failed",
+            reason="no_topic",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+        )
+        await repo.log_delivery(msg.msg_id, msg.chat_id, "inbound", "failed", "no_topic")
+        return
+    if message_has_control_event(msg):
+        schedule_recovery_event_scan("control_event")
+
+    binding = await repo.get_binding(msg.chat_id)
+    if binding and binding.mode == "disabled":
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.inbound.forward_finished",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="routing",
+            outcome="skipped",
+            reason="disabled",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            tg_topic_id=topic_id,
+        )
+        return
+
+    log_event(
+        logger,
+        logging.INFO,
+        "bridge.inbound.forward_started",
+        flow_id=flow_id,
+        direction="inbound",
+        stage="forward",
+        outcome="started",
+        max_chat_id=msg.chat_id,
+        max_msg_id=msg.msg_id,
+        tg_topic_id=topic_id,
+    )
+    enqueued_media = 0
+    display_failures = msg.attachment_failures
+    if msg.attachment_failures:
+        enqueued_media, display_failures = await enqueue_retryable_media_failures(
+            msg,
+            topic_id,
+            flow_id=flow_id,
+        )
+
+    if (
+        not msg.text
+        and not msg.attachments
+        and not msg.rendered_texts
+        and msg.attachment_failures
+        and not display_failures
+    ):
+        await repo.log_delivery(
+            msg.msg_id,
+            msg.chat_id,
+            "inbound",
+            "partial",
+            "attachment_download_pending_duplicate",
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.inbound.forward_finished",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="forward",
+            outcome="skipped",
+            reason="duplicate_pending_media",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            tg_topic_id=topic_id,
+            failed_attachment_count=len(msg.attachment_failures),
+            enqueued_media_count=enqueued_media,
+        )
+        return
+
+    tg_msg_id = await forward_to_telegram_fn(
+        msg,
+        topic_id,
+        flow_id=flow_id,
+        attachment_failures=display_failures,
+    )
+
+    if tg_msg_id:
+        await mapping.save_inbound_delivery_mapping(
+            repo,
+            msg,
+            tg_msg_id=tg_msg_id,
+            tg_topic_id=topic_id,
+        )
+        if msg.attachment_failures:
+            delivery_status = "partial"
+            delivery_error = f"attachment_download_failed:{len(msg.attachment_failures)}"
+            log_level = logging.WARNING
+        else:
+            delivery_status = "delivered"
+            delivery_error = None
+            log_level = logging.INFO
+
+        await repo.log_delivery(
+            msg.msg_id,
+            msg.chat_id,
+            "inbound",
+            delivery_status,
+            delivery_error,
+        )
+        if msg.attachments or msg.attachment_failures:
+            stats["inbound_media"] += 1
+        else:
+            stats["inbound_text"] += 1
+        log_event(
+            logger,
+            log_level,
+            "bridge.inbound.forward_finished",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="forward",
+            outcome=delivery_status,
+            reason=delivery_error,
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            tg_topic_id=topic_id,
+            tg_msg_id=tg_msg_id,
+            failed_attachment_count=len(msg.attachment_failures),
+            enqueued_media_count=enqueued_media,
+        )
+    else:
+        await repo.log_delivery(
+            msg.msg_id,
+            msg.chat_id,
+            "inbound",
+            "failed",
+            "tg_send_failed",
+        )
+        stats["failed_inbound"] += 1
+        log_event(
+            logger,
+            logging.ERROR,
+            "bridge.inbound.forward_finished",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="forward",
+            outcome="failed",
+            reason="tg_send_failed",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            tg_topic_id=topic_id,
+        )
