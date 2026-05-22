@@ -1,8 +1,10 @@
 from types import SimpleNamespace
+import sys
 
 from src.adapters.max import errors as max_errors
 from src.adapters.max import payload as max_payload
 from src.adapters.max import users as max_users
+from src.adapters.max.client_factory import create_socket_client
 from src.adapters.max.media import downloader as max_downloader
 from src.adapters.max.media import ua as max_ua
 
@@ -61,3 +63,23 @@ def test_users_and_downloader_helpers_are_plain_object_based():
     assert max_downloader.fix_filename_encoding("plain.txt") == "plain.txt"
     assert max_downloader.build_filename("voice", None, "https://cdn.example.test/path/audio", "audio/ogg") == "voice.oga"
     assert video_url == "https://cdn.example.test/v.mp4"
+
+
+def test_client_factory_disables_pymax_reconnect_and_fake_telemetry(monkeypatch):
+    calls = {}
+
+    class FakeSocketMaxClient:
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pymax",
+        SimpleNamespace(SocketMaxClient=FakeSocketMaxClient),
+    )
+
+    create_socket_client(phone="+7", data_dir="/data", session_name="session")
+
+    assert calls["reconnect"] is False
+    assert calls["send_fake_telemetry"] is False
+    assert calls["work_dir"] == "/data"
