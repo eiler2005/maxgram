@@ -2776,6 +2776,54 @@ class PingClient:
         self.is_connected = False
 
 
+class StartClient:
+    def __init__(self):
+        self.raw_handlers = []
+
+    def on_start(self, handler):
+        self.start_handler = handler
+
+    def on_raw_receive(self, handler):
+        self.raw_handlers.append(handler)
+
+    def on_message(self):
+        return lambda handler: handler
+
+    def on_message_edit(self):
+        return lambda handler: handler
+
+    def on_message_delete(self):
+        return lambda handler: handler
+
+    async def start(self):
+        raise RuntimeError("test-stop")
+
+
+@pytest.mark.asyncio
+async def test_start_path_logs_masked_phone_without_name_error(tmp_path, monkeypatch, caplog):
+    adapter = MaxAdapter(
+        phone="+79991234567",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    async def fake_make_client():
+        return StartClient()
+
+    async def stop_sleep(_delay):
+        raise asyncio.CancelledError()
+
+    adapter._make_client = fake_make_client
+    monkeypatch.setattr(asyncio, "sleep", stop_sleep)
+
+    with caplog.at_level(logging.ERROR, logger="src.adapters.max_adapter"):
+        with pytest.raises(asyncio.CancelledError):
+            await adapter.start()
+
+    assert "mask_phone" not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_failfast_ping_closes_client_after_consecutive_failures(tmp_path):
     adapter = MaxAdapter(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))

@@ -7,7 +7,7 @@ pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
 ```
 
-Всего: **167 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **168 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 ---
 
@@ -48,7 +48,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (73 теста)
+## test_max_adapter.py — парсинг сырых сообщений MAX (74 теста)
 
 ### Системные события (CONTROL)
 
@@ -114,6 +114,7 @@ PYTHONPATH=. .venv/bin/pytest -q
 | `test_own_echo_is_suppressed_when_send_message_returns_real_id` | Когда pymax возвращает настоящий `id`, он сохраняется как "отправленный". Последующее эхо-сообщение с тем же `id` от MAX подавляется — обработчик не вызывается. |
 | `test_send_message_retries_retryable_transport_error_and_succeeds` | Временная ошибка транспорта (`Socket is not connected`) вызывает retry; следующая успешная попытка возвращает `msg_id`, а в логах появляется `max.outbound.retry`. |
 | `test_send_message_exposes_final_error_after_retries` | После исчерпания retry `send_message()` возвращает `None`, а адаптер сохраняет последнюю ошибку и реальное число попыток для последующей записи в `delivery_log`. |
+| `test_start_path_logs_masked_phone_without_name_error` | Start/reconnect path логирует masked phone без production-only `NameError` после split lifecycle module. |
 
 ### Резолв имён пользователей
 

@@ -5,7 +5,7 @@ import logging
 import time
 
 from .client_factory import create_socket_client
-from ...logging_utils import log_event, sanitize_path
+from ...logging_utils import log_event, mask_phone, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
