@@ -7,6 +7,7 @@ modules; this class wires callbacks, shared dependencies and background tasks.
 
 import logging
 import time
+from pathlib import Path
 from typing import Optional
 
 from . import background as bridge_background
@@ -309,6 +310,12 @@ class BridgeCore:
         check_interval: int = 10,
     ):
         """Фоновая задача: следит за доступностью MAX."""
+        health_cfg = getattr(self._cfg, "health", None)
+        storage_cfg = getattr(self._cfg, "storage", None)
+        data_dir = getattr(storage_cfg, "data_dir", None)
+        self_heal_state_path = (
+            Path(data_dir) / "max_egress_self_heal.json" if data_dir is not None else None
+        )
         await bridge_background.run_max_watchdog(
             max_adapter=self._max,
             health=self._health,
@@ -316,6 +323,14 @@ class BridgeCore:
             emit_health_alert=self._emit_health_alert,
             alert_after_seconds=alert_after_seconds,
             check_interval=check_interval,
+            egress_probe_interval=getattr(health_cfg, "max_egress_probe_interval_seconds", 30),
+            self_heal_grace_seconds=getattr(health_cfg, "max_self_heal_grace_seconds", 180),
+            self_heal_restart_cooldown_seconds=getattr(
+                health_cfg,
+                "max_self_heal_restart_cooldown_seconds",
+                1800,
+            ),
+            self_heal_state_path=self_heal_state_path,
         )
 
     async def run_cleanup(self):

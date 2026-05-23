@@ -1,11 +1,13 @@
 import asyncio
 import logging
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from src.bridge import media_retry as bridge_media_retry
+from src.bridge import background as bridge_background
 from src.bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
@@ -204,6 +206,7 @@ class DummyMax:
         self.last_issue = None
         self.last_connected_at = None
         self.egress_status = None
+        self.last_egress_probe = None
 
     def on_message(self, handler):
         self.handler = handler
@@ -273,6 +276,12 @@ class DummyMax:
 
     def get_egress_status(self):
         return self.egress_status
+
+    def get_last_egress_probe(self):
+        return self.last_egress_probe
+
+    async def probe_egress(self):
+        return self.last_egress_probe
 
 
 class DummyRecoveryMax(DummyMax):
@@ -1691,6 +1700,36 @@ async def test_build_status_message_describes_home_router_egress():
 
 
 @pytest.mark.asyncio
+async def test_build_status_message_includes_safe_egress_probe():
+    max_adapter = DummyMax()
+    max_adapter.egress_status = {
+        "max_egress_active": "home_ru_proxy",
+        "max_egress_label": "роутерный РФ Channel M",
+    }
+    max_adapter.last_egress_probe = {
+        "ok": False,
+        "stage": "http_connect",
+        "latency_ms": 321,
+        "checked_at": int(time.time()),
+        "error": "MaxEgressUnavailable: MAX egress proxy CONNECT failed",
+    }
+
+    repo = DummyRepo()
+    repo.count_messages_since = lambda _since: asyncio.sleep(0, result={"inbound": 0, "outbound": 0})
+    repo.count_deliveries_since = lambda _since: asyncio.sleep(0, result={})
+    repo.get_chat_activity_since = lambda _since, limit=10: asyncio.sleep(0, result=[])
+    repo.list_bindings = lambda: asyncio.sleep(0, result=[])
+
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter)
+
+    text = await bridge._status.build_status_message(period_hours=4)
+
+    assert "MAX egress probe: ❌ http_connect, 321ms" in text
+    assert "CONNECT failed" in text
+    assert "user:pass" not in text
+
+
+@pytest.mark.asyncio
 async def test_build_status_message_uses_shared_health_snapshot(tmp_path):
     class OfflineMax(DummyMax):
         def is_ready(self):
@@ -1792,6 +1831,129 @@ async def test_watchdog_sends_gap_notice_after_reconnect():
     assert any("MAX недоступен уже" in text for text in notifications)
     assert any("Возможен пропуск сообщений MAX" in text for text in notifications)
     assert any("MAX восстановлен" in text for text in notifications)
+
+
+@pytest.mark.asyncio
+async def test_max_watchdog_reports_egress_down_without_restart(tmp_path):
+    class OfflineHomeProxyMax(DummyMax):
+        def __init__(self):
+            super().__init__()
+            self.egress_status = {"max_egress_active": "home_ru_proxy"}
+            self.probe_calls = 0
+
+        def is_ready(self):
+            return False
+
+        async def probe_egress(self):
+            self.probe_calls += 1
+            self.last_egress_probe = {
+                "ok": False,
+                "stage": "http_connect",
+                "error": "MaxEgressUnavailable: CONNECT failed",
+            }
+            return self.last_egress_probe
+
+    max_adapter = OfflineHomeProxyMax()
+    health = RuntimeHealthStore(tmp_path)
+    restarts = []
+
+    task = asyncio.create_task(
+        bridge_background.run_max_watchdog(
+            max_adapter=max_adapter,
+            health=health,
+            send_ops_notification=lambda _text: asyncio.sleep(0),
+            emit_health_alert=lambda _change: asyncio.sleep(0),
+            alert_after_seconds=999,
+            check_interval=0,
+            egress_probe_interval=0,
+            self_heal_grace_seconds=0,
+            self_heal_state_path=tmp_path / "self-heal.json",
+            restart_process=lambda reason: restarts.append(reason),
+        )
+    )
+    try:
+        for _ in range(50):
+            if max_adapter.probe_calls:
+                break
+            await asyncio.sleep(0)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    snapshot = await health.get_snapshot()
+    issue = snapshot.subsystems["max_link"].issue
+    assert issue is not None
+    assert issue.code == "max_egress_unavailable"
+    assert restarts == []
+
+
+@pytest.mark.asyncio
+async def test_max_watchdog_restarts_once_when_proxy_ok_but_max_stays_offline(tmp_path):
+    class OfflineHomeProxyMax(DummyMax):
+        def __init__(self):
+            super().__init__()
+            self.egress_status = {"max_egress_active": "home_ru_proxy"}
+
+        def is_ready(self):
+            return False
+
+        async def probe_egress(self):
+            self.last_egress_probe = {
+                "ok": True,
+                "stage": "target_tls",
+                "latency_ms": 12,
+            }
+            return self.last_egress_probe
+
+    class RestartRequested(RuntimeError):
+        pass
+
+    state_path = tmp_path / "self-heal.json"
+    max_adapter = OfflineHomeProxyMax()
+
+    with pytest.raises(RestartRequested):
+        await bridge_background.run_max_watchdog(
+            max_adapter=max_adapter,
+            health=None,
+            send_ops_notification=lambda _text: asyncio.sleep(0),
+            emit_health_alert=lambda _change: asyncio.sleep(0),
+            alert_after_seconds=999,
+            check_interval=0,
+            egress_probe_interval=0,
+            self_heal_grace_seconds=0,
+            self_heal_state_path=state_path,
+            self_heal_restart_cooldown_seconds=3600,
+            restart_process=lambda _reason: (_ for _ in ()).throw(RestartRequested()),
+        )
+
+    assert state_path.exists()
+
+    suppressed_restarts = []
+    task = asyncio.create_task(
+        bridge_background.run_max_watchdog(
+            max_adapter=max_adapter,
+            health=None,
+            send_ops_notification=lambda _text: asyncio.sleep(0),
+            emit_health_alert=lambda _change: asyncio.sleep(0),
+            alert_after_seconds=999,
+            check_interval=0,
+            egress_probe_interval=0,
+            self_heal_grace_seconds=0,
+            self_heal_state_path=state_path,
+            self_heal_restart_cooldown_seconds=3600,
+            restart_process=lambda reason: suppressed_restarts.append(reason),
+        )
+    )
+    try:
+        for _ in range(20):
+            await asyncio.sleep(0)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert suppressed_restarts == []
 
 
 @pytest.mark.asyncio

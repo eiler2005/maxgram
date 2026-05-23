@@ -64,6 +64,9 @@ class HealthConfig:
     reminder_interval_hours: int = 4
     heartbeat_interval_seconds: int = 30
     worker_restart_backoff_seconds: int = 5
+    max_egress_probe_interval_seconds: int = 30
+    max_self_heal_grace_seconds: int = 180
+    max_self_heal_restart_cooldown_seconds: int = 1800
 
 
 @dataclass
@@ -226,6 +229,13 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         reminder_interval_hours=int(health_raw.get("reminder_interval_hours", 4)),
         heartbeat_interval_seconds=int(health_raw.get("heartbeat_interval_seconds", 30)),
         worker_restart_backoff_seconds=int(health_raw.get("worker_restart_backoff_seconds", 5)),
+        max_egress_probe_interval_seconds=int(
+            health_raw.get("max_egress_probe_interval_seconds", 30)
+        ),
+        max_self_heal_grace_seconds=int(health_raw.get("max_self_heal_grace_seconds", 180)),
+        max_self_heal_restart_cooldown_seconds=int(
+            health_raw.get("max_self_heal_restart_cooldown_seconds", 1800)
+        ),
     )
 
     br_raw = raw.get("bridge", {})

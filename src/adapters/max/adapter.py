@@ -71,6 +71,7 @@ from ...bridge.contracts import (
     MaxRecoverySnapshot,
     MessageHandler,
 )
+from ...logging_utils import log_event
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
@@ -264,6 +265,30 @@ class MaxAdapter:
         if self._egress.is_non_ru_warning:
             status["warning"] = "MAX uses non-RU direct egress"
         return status
+
+    def get_last_egress_probe(self) -> dict[str, object] | None:
+        return self._state.connection.last_egress_probe
+
+    async def probe_egress(self) -> dict[str, object] | None:
+        if self._egress is None:
+            return None
+        result = await asyncio.to_thread(self._egress.probe)
+        self._state.connection.last_egress_probe = result
+        log_event(
+            logger,
+            logging.INFO if result.get("ok") else logging.WARNING,
+            "max.egress.probe",
+            stage=str(result.get("stage") or "unknown"),
+            outcome="ok" if result.get("ok") else "failed",
+            max_egress_active=result.get("max_egress_active"),
+            max_egress_type=result.get("max_egress_type"),
+            max_egress_proxy_host=result.get("max_egress_proxy_host"),
+            target_host=result.get("target_host"),
+            target_port=result.get("target_port"),
+            latency_ms=result.get("latency_ms"),
+            error=result.get("error"),
+        )
+        return result
 
     async def collect_recovery_snapshot(self):
         return await self._recovery.collect_recovery_snapshot()

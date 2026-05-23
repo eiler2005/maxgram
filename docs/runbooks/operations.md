@@ -99,6 +99,8 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 - Docker healthcheck в статусе `healthy`
 - в логах есть `MAX connected`
 - `/status` показывает `MAX egress: home_ru_proxy` в production
+- `/status` показывает последнюю `MAX egress probe` без credentials; успешный
+  probe должен доходить до `target_tls`
 - в свежем startup-логе есть `Running startup tests` и затем `Startup tests passed: ...`
 - нет непрерывных ошибок `TelegramConflictError`
 - в `message_map` и `delivery_log` появляются свежие записи
@@ -141,6 +143,15 @@ max:
 `home_ru_proxy` отправляет только MAX API/CDN трафик через authenticated HTTP CONNECT к VPS-local reverse Channel M listener. Этот listener держится исходящим SSH remote-forward с домашнего роутера; дальше роутер выпускает трафик через домашний РФ WAN. Telegram polling/send остаётся прямым Hetzner-трафиком. Домашняя LAN/Wi-Fi и GhostRoute Channel A/B/C routing этим не меняются.
 
 `hetzner_direct` — ручной аварийный режим. Он включается только изменением `max.egress.active: "hetzner_direct"` оператором и должен быть виден в `/status` как warning `MAX uses non-RU direct egress`. Автоматического fallback нет: если `home_ru_proxy` недоступен, MAX показывает issue `max_egress_unavailable`/degraded, но bridge не переключает MAX на direct сам.
+
+Когда MAX offline и активен `home_ru_proxy`, watchdog делает безопасный egress
+probe: TCP до proxy, HTTP CONNECT к `api.oneme.ru:443`, затем TLS handshake с
+SNI. Если proxy/TLS не проходит, health получает `max_egress_unavailable` и
+bridge продолжает reconnect. Если proxy/TLS уже healthy, но pymax не дошёл до
+`on_start` после grace window, bridge записывает `data/max_egress_self_heal.json`
+и завершает процесс с rate limit; Docker `restart: always` поднимает свежий
+процесс. Это self-heal только для зависания процесса, не fallback на другой
+egress.
 
 Для применения reverse Channel M на VPS используется `infra/ansible/channel-m-reverse.yml`: он берёт gitignored artifact из `router_configuration`, обновляет `MAX_EGRESS_PROXY_*`, пересоздаёт контейнер и проверяет socket CONNECT к MAX изнутри bridge.
 

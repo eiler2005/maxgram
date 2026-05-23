@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -50,12 +51,45 @@ def test_error_classification_is_pymax_free():
         RuntimeError("sqlite3.DatabaseError: database disk image is malformed")
     )
     invalid = max_errors.classify_runtime_error(RuntimeError("Invalid token"))
+    incomplete = max_errors.classify_runtime_error(
+        RuntimeError("MAX client start returned before on_start")
+    )
 
     assert corrupt is not None
     assert corrupt.kind == "session_corrupt"
     assert corrupt.requires_reauth is True
     assert invalid is not None
     assert invalid.kind == "session_invalid"
+    assert incomplete is not None
+    assert incomplete.kind == "max_start_incomplete"
+
+
+@pytest.mark.asyncio
+async def test_pymax_client_adapter_captures_early_startup_errors():
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+
+    class FakeClient:
+        async def connect(self):
+            raise RuntimeError("connect boom")
+
+        async def _handshake(self):
+            raise RuntimeError("handshake boom")
+
+    captured = []
+    adapter = PymaxClientAdapter(FakeClient())
+
+    async def capture(exc):
+        captured.append(str(exc))
+        await asyncio.sleep(0)
+
+    adapter.prepare_startup(capture)
+
+    with pytest.raises(RuntimeError, match="connect boom"):
+        await adapter.raw_client.connect()
+    with pytest.raises(RuntimeError, match="handshake boom"):
+        await adapter.raw_client._handshake()
+
+    assert captured == ["connect boom", "handshake boom"]
 
 
 def test_users_and_downloader_helpers_are_plain_object_based():

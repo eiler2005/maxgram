@@ -270,6 +270,11 @@ class MaxLifecycleService:
                 )
                 await self._client.start()
 
+                if not self._started and not self._last_start_error:
+                    await self._deps.runtime._capture_runtime_error(
+                        RuntimeError("MAX client start returned before on_start")
+                    )
+
                 if not self._started and self._last_start_error:
                     issue = self._last_issue
                     log_event(

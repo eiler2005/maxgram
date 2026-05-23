@@ -23,6 +23,7 @@ class ConnectionState:
     last_issue: Optional[MaxIssue] = None
     last_issue_notification_signature: Optional[str] = None
     last_connected_at: Optional[int] = None
+    last_egress_probe: dict[str, object] | None = None
 
 
 @dataclass

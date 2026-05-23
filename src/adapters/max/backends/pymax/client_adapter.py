@@ -39,7 +39,7 @@ class PymaxClientAdapter:
         return bool(getattr(self._client, "is_connected", False))
 
     def prepare_startup(self, error_handler: RuntimeErrorHandler) -> None:
-        for attr_name in ("_sync", "_login"):
+        for attr_name in ("connect", "_handshake", "_sync", "_login"):
             original = getattr(self._client, attr_name, None)
             if original is None or not asyncio.iscoroutinefunction(original):
                 continue

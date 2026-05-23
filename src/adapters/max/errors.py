@@ -19,6 +19,14 @@ def classify_runtime_error(error: BaseException) -> Optional[MaxIssue]:
             requires_reauth=False,
         )
 
+    if "max client start returned before on_start" in lowered:
+        return MaxIssue(
+            kind="max_start_incomplete",
+            summary="MAX client завершился до on_start/ONLINE",
+            raw_error=raw_error,
+            requires_reauth=False,
+        )
+
     corrupt_session_markers = (
         "unsupported file format",
         "database disk image is malformed",

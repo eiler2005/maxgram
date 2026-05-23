@@ -30,6 +30,9 @@ health:
   reminder_interval_hours: 4
   heartbeat_interval_seconds: 30
   worker_restart_backoff_seconds: 5
+  max_egress_probe_interval_seconds: 30
+  max_self_heal_grace_seconds: 180
+  max_self_heal_restart_cooldown_seconds: 1800
 
 bridge:
   # forward_all: true — автоматически форвардить все чаты из MAX

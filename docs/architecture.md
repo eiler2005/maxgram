@@ -58,7 +58,7 @@ src/
 │   ├── replies.py            TG replies -> MAX outbound messages
 │   ├── media_retry.py        durable MAX media retry enqueue/process/worker
 │   ├── delivery.py           delivery_log status helpers
-│   ├── background.py         status, watchdog, sweeps, cleanup, weekly recovery
+│   ├── background.py         status, MAX watchdog/self-heal, sweeps, cleanup
 │   ├── commands/
 │   │   ├── dispatcher.py     registers command handlers on Telegram port
 │   │   ├── dm.py             /dm <user> <text>
@@ -91,7 +91,7 @@ src/
 │   │   ├── adapter.py        public MaxAdapter facade over operation services
 │   │   ├── state.py          connection/outbound/raw-history/recovery state
 │   │   ├── deps.py           explicit service dependency objects
-│   │   ├── network/          MAX-only egress profiles: direct and authenticated HTTP CONNECT
+│   │   ├── network/          MAX-only egress profiles and safe Channel M probes
 │   │   ├── lifecycle.py      start/reconnect/readiness lifecycle service
 │   │   ├── events.py         backend events -> MaxMessage normalization
 │   │   ├── raw_payload.py    compatibility facade for raw payload helpers

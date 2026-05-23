@@ -14,7 +14,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **192 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **200 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -68,12 +68,15 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_max_egress.py — MAX-only egress (4 теста)
+## test_max_egress.py — MAX-only egress (7 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_http_connect_socket_connector_sends_connect_and_auth` | `HttpConnectSocketConnector` отправляет `CONNECT api.oneme.ru:443` и `Proxy-Authorization` без глобального monkeypatch socket. |
 | `test_http_connect_socket_connector_fails_on_non_200` | Не-200 ответ proxy даёт `MaxEgressUnavailable`, а не fallback на direct. |
+| `test_http_connect_socket_connector_probe_success` | Safe probe проходит proxy TCP, HTTP CONNECT и TLS stage без реального MAX payload. |
+| `test_http_connect_socket_connector_probe_failure_is_redacted` | Ошибки probe не содержат proxy credentials. |
+| `test_max_egress_profile_probe_includes_safe_profile_fields` | `MaxEgressProfile.probe()` добавляет только safe profile metadata: active/type/label/proxy host. |
 | `test_max_cdn_downloader_passes_proxy_options` | MAX CDN downloader передаёт `proxy`/`proxy_auth` в `aiohttp.ClientSession`, поэтому media downloads используют тот же egress profile. |
 | `test_max_egress_unavailable_is_classified_as_fail_closed_issue` | Proxy failure классифицируется как `max_egress_unavailable` для degraded health/status. |
 
@@ -201,13 +204,14 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_adapter_leaves.py — pymax-free MAX helper leaves (6 тестов)
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves (7 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_max_ua_mapping_selects_chrome_android_profile` | `media/ua.py` выбирает корректный MAX CDN User-Agent для Chrome/Android/iOS/Safari fallback. |
 | `test_payload_helpers_match_case_and_strip_unsafe_fields` | `payload.py` читает nested payload values и чистит unsafe raw fields без pymax. |
 | `test_error_classification_is_pymax_free` | `errors.py` классифицирует runtime issue и retryable outbound errors без pymax imports. |
+| `test_pymax_client_adapter_captures_early_startup_errors` | `PymaxClientAdapter.prepare_startup()` ловит ранние `connect`/`_handshake` ошибки до `on_start`. |
 | `test_users_and_downloader_helpers_are_plain_object_based` | `users.py` и downloader helpers работают с plain objects/URL metadata. |
 | `test_client_factory_disables_pymax_reconnect_and_fake_telemetry` | `PymaxBackend`/`client_factory.py` создают `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`. |
 | `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |
@@ -225,7 +229,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (49 тестов)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (52 теста)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -258,9 +262,12 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 |------|--------------|
 | `test_build_chats_message_lists_topics_with_activity` | `/chats` показывает чат, topic_id, режим и счётчики `↓/↑` за период. |
 | `test_build_status_message_includes_max_issue_summary` | `/status` показывает текущую MAX-проблему и необходимость `reauth`, если адаптер сообщил о деградации сессии. |
+| `test_build_status_message_includes_safe_egress_probe` | `/status` показывает последнюю Channel M probe stage/latency/error без credentials. |
 | `test_build_status_message_uses_shared_health_snapshot` | `/status` читает единый persisted health snapshot и отражает runtime/max health из supervisor-контура. |
 | `test_recovery_auto_changes_are_summarized_in_status_not_notified` | Обычные recovery auto-scan дельты не отправляют отдельный alert, но `/status` показывает агрегаты без invite/title/phone/raw payload. |
 | `test_watchdog_sends_gap_notice_after_reconnect` | После offline-окна watchdog отправляет и alert про downtime, и уведомление о возможном `missed messages gap` после восстановления. |
+| `test_max_watchdog_reports_egress_down_without_restart` | При упавшем `home_ru_proxy` watchdog пишет `max_egress_unavailable`, но не рестартит процесс. |
+| `test_max_watchdog_restarts_once_when_proxy_ok_but_max_stays_offline` | При healthy proxy/TLS и зависшем MAX watchdog пишет cooldown-файл и запускает rate-limited self-exit. |
 
 ### Кодировка файлов
 

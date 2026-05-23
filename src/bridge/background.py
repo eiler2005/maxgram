@@ -1,9 +1,12 @@
 """Bridge background loops."""
 
 import asyncio
+import json
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Optional
 
 from .contracts import (
@@ -18,6 +21,69 @@ from ..logging_utils import build_max_flow_id, log_event
 from ..runtime.health import RuntimeHealthStore, Severity
 
 logger = logging.getLogger("src.bridge.core")
+
+
+def _default_restart_process(reason: str) -> None:
+    log_event(
+        logger,
+        logging.CRITICAL,
+        "bridge.watchdog.process_exit",
+        stage="watchdog",
+        outcome="exiting",
+        reason=reason,
+    )
+    os._exit(75)
+
+
+def _egress_is_home_ru_proxy(max_adapter: MaxBridgePort) -> bool:
+    status = max_adapter.get_egress_status()
+    return bool(status and status.get("max_egress_active") == "home_ru_proxy")
+
+
+def _probe_summary(probe: dict[str, object] | None) -> str:
+    if not probe:
+        return "probe result missing"
+    stage = str(probe.get("stage") or "unknown")
+    error = str(probe.get("error") or "").strip()
+    if error:
+        return f"{stage}: {error}"
+    return stage
+
+
+def _load_last_self_heal_restart(path: Path | None) -> int | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = data.get("last_restart_at")
+    return int(value) if isinstance(value, int) else None
+
+
+def _persist_self_heal_restart(path: Path | None, *, reason: str, probe: dict[str, object] | None) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "last_restart_at": int(time.time()),
+        "reason": reason,
+        "probe_stage": (probe or {}).get("stage"),
+        "probe_ok": bool((probe or {}).get("ok")),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+
+
+def _self_heal_restart_allowed(
+    path: Path | None,
+    *,
+    cooldown_seconds: int,
+    now: int | None = None,
+) -> bool:
+    last_restart_at = _load_last_self_heal_restart(path)
+    if last_restart_at is None:
+        return True
+    return (now or int(time.time())) - last_restart_at >= cooldown_seconds
 
 
 async def run_periodic_status(
@@ -64,9 +130,16 @@ async def run_max_watchdog(
     emit_health_alert: Callable[[object], Awaitable[None]],
     alert_after_seconds: int = 60,
     check_interval: int = 10,
+    egress_probe_interval: int = 30,
+    self_heal_grace_seconds: int = 180,
+    self_heal_restart_cooldown_seconds: int = 1800,
+    self_heal_state_path: Path | None = None,
+    restart_process: Callable[[str], None] | None = None,
 ):
     disconnected_since: Optional[float] = None
     alert_sent = False
+    last_egress_probe_at = 0.0
+    restart = restart_process or _default_restart_process
 
     while True:
         await asyncio.sleep(check_interval)
@@ -91,6 +164,7 @@ async def run_max_watchdog(
                 )
             disconnected_since = None
             alert_sent = False
+            last_egress_probe_at = 0.0
         else:
             if disconnected_since is None:
                 disconnected_since = time.time()
@@ -103,6 +177,119 @@ async def run_max_watchdog(
                 )
 
             elapsed = time.time() - disconnected_since
+            home_proxy_active = _egress_is_home_ru_proxy(max_adapter)
+            latest_probe: dict[str, object] | None = None
+            if home_proxy_active and (
+                time.monotonic() - last_egress_probe_at >= max(0, egress_probe_interval)
+            ):
+                last_egress_probe_at = time.monotonic()
+                try:
+                    latest_probe = await max_adapter.probe_egress()
+                except Exception as exc:
+                    latest_probe = {
+                        "ok": False,
+                        "stage": "probe_call",
+                        "error": str(exc).strip() or exc.__class__.__name__,
+                    }
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "bridge.watchdog.max_egress_probe_failed",
+                        stage="watchdog",
+                        outcome="failed",
+                        error=latest_probe["error"],
+                    )
+
+                if latest_probe is not None and not latest_probe.get("ok") and health is not None:
+                    await health.report_issue(
+                        "max_link",
+                        code="max_egress_unavailable",
+                        summary=f"MAX egress home_ru_proxy недоступен: {_probe_summary(latest_probe)}",
+                        raw_cause=_probe_summary(latest_probe),
+                        severity=Severity.ERROR,
+                        impact=(
+                            "MAX не может подключиться через роутерный Channel M; входящие MAX "
+                            "сообщения не поступают до восстановления egress."
+                        ),
+                        operator_hint=(
+                            "Проверь роутерный reverse tunnel, sing-box ingress и VPS listener; "
+                            "/status покажет последнюю egress probe."
+                        ),
+                        auto_recovery=(
+                            "Watchdog продолжит попытки через home_ru_proxy; переключение на "
+                            "hetzner_direct не выполняется автоматически."
+                        ),
+                        notify=False,
+                    )
+
+                if (
+                    latest_probe is not None
+                    and latest_probe.get("ok")
+                    and elapsed >= self_heal_grace_seconds
+                ):
+                    if _self_heal_restart_allowed(
+                        self_heal_state_path,
+                        cooldown_seconds=self_heal_restart_cooldown_seconds,
+                    ):
+                        reason = (
+                            "MAX stays offline after home_ru_proxy probe succeeded "
+                            f"for {int(elapsed)}s"
+                        )
+                        _persist_self_heal_restart(
+                            self_heal_state_path,
+                            reason=reason,
+                            probe=latest_probe,
+                        )
+                        log_event(
+                            logger,
+                            logging.CRITICAL,
+                            "bridge.watchdog.max_self_heal_restart",
+                            stage="watchdog",
+                            outcome="scheduled",
+                            downtime_seconds=int(elapsed),
+                            probe_stage=latest_probe.get("stage"),
+                            latency_ms=latest_probe.get("latency_ms"),
+                            cooldown_seconds=self_heal_restart_cooldown_seconds,
+                        )
+                        if health is not None:
+                            change = await health.report_issue(
+                                "max_link",
+                                code="max_self_heal_restart",
+                                summary=(
+                                    "MAX не выходит в online при рабочем home_ru_proxy — "
+                                    "перезапускаю bridge процесс"
+                                ),
+                                raw_cause=reason,
+                                severity=Severity.ERROR,
+                                impact=(
+                                    "Bridge будет кратко недоступен, затем Docker restart:always "
+                                    "поднимет новый процесс."
+                                ),
+                                operator_hint=(
+                                    "Если рестарты повторяются после cooldown, смотри MAX startup "
+                                    "errors и Channel M probe в логах."
+                                ),
+                                auto_recovery="Процесс завершится сам, Docker пересоздаст bridge.",
+                                notify=True,
+                            )
+                            await emit_health_alert(change)
+                        else:
+                            await send_ops_notification(
+                                "⚠️ MAX не выходит в online при рабочем home_ru_proxy — "
+                                "перезапускаю bridge процесс"
+                            )
+                        restart(reason)
+                    else:
+                        log_event(
+                            logger,
+                            logging.WARNING,
+                            "bridge.watchdog.max_self_heal_restart_suppressed",
+                            stage="watchdog",
+                            outcome="rate_limited",
+                            downtime_seconds=int(elapsed),
+                            cooldown_seconds=self_heal_restart_cooldown_seconds,
+                        )
+
             if not alert_sent and elapsed >= alert_after_seconds:
                 log_event(
                     logger,

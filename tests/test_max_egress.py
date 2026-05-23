@@ -7,7 +7,9 @@ from src.adapters.max import errors as max_errors
 from src.adapters.max.media.downloader import MaxCdnDownloader
 from src.adapters.max.network import (
     HttpConnectSocketConnector,
+    MaxEgressProfile,
     MaxEgressUnavailable,
+    MaxHttpClientOptions,
     build_max_egress_profile,
 )
 from src.config.loader import MaxEgressConfig, MaxEgressProfileConfig
@@ -53,6 +55,73 @@ def test_http_connect_socket_connector_fails_on_non_200():
     with pytest.raises(MaxEgressUnavailable):
         connector.connect("api.oneme.ru", 443, timeout=2)
     thread.join(timeout=2)
+
+
+def test_http_connect_socket_connector_probe_success(monkeypatch):
+    class NoopTlsContext:
+        def wrap_socket(self, sock, server_hostname=None):
+            return sock
+
+    monkeypatch.setattr(
+        "src.adapters.max.network.egress.ssl.create_default_context",
+        lambda: NoopTlsContext(),
+    )
+    port, request, thread = _run_proxy_once()
+    connector = HttpConnectSocketConnector(f"http://user:pass@127.0.0.1:{port}")
+
+    result = connector.probe("api.oneme.ru", 443, timeout=2)
+    thread.join(timeout=2)
+
+    assert result["ok"] is True
+    assert result["stage"] == "target_tls"
+    assert result["target_host"] == "api.oneme.ru"
+    assert request["raw"].startswith(b"CONNECT api.oneme.ru:443 HTTP/1.1\r\n")
+
+
+def test_http_connect_socket_connector_probe_failure_is_redacted():
+    port, _, thread = _run_proxy_once(b"HTTP/1.1 407 Proxy Authentication Required\r\n")
+    connector = HttpConnectSocketConnector(f"http://user:secret@127.0.0.1:{port}")
+
+    result = connector.probe("api.oneme.ru", 443, timeout=2)
+    thread.join(timeout=2)
+
+    assert result["ok"] is False
+    assert result["stage"] == "http_connect"
+    assert "secret" not in str(result.get("error"))
+    assert "user:secret" not in str(result.get("error"))
+
+
+def test_max_egress_profile_probe_includes_safe_profile_fields():
+    class FakeConnector:
+        def probe(self, host, port, timeout=None):
+            return {
+                "ok": True,
+                "stage": "target_tls",
+                "target_host": host,
+                "target_port": port,
+                "latency_ms": 7,
+                "checked_at": 1776962052,
+            }
+
+        def connect(self, host, port, timeout=None):  # pragma: no cover - protocol shape
+            raise AssertionError("probe should use FakeConnector.probe")
+
+    profile = MaxEgressProfile(
+        name="home_ru_proxy",
+        type="http_connect",
+        socket_connector=FakeConnector(),
+        http_client_options=MaxHttpClientOptions(proxy="http://proxy.example.invalid:4444"),
+        proxy_host="proxy.example.invalid",
+    )
+
+    result = profile.probe("api.oneme.ru", 443, timeout=1)
+
+    assert result["ok"] is True
+    assert result["stage"] == "target_tls"
+    assert result["max_egress_active"] == "home_ru_proxy"
+    assert result["max_egress_proxy_host"] == "proxy.example.invalid"
+    assert "proxy_auth" not in result
+    assert "pass" not in str(result)
 
 
 class _FakeResponse:

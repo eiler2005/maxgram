@@ -41,6 +41,7 @@ class BridgeStatusReporter:
         max_issue = self._max.get_last_issue()
         last_connected_at = self._max.get_last_connected_at()
         egress_status = self._max.get_egress_status()
+        egress_probe = self._max.get_last_egress_probe()
 
         inbound_total = msgs.get("inbound", 0)
         outbound_total = msgs.get("outbound", 0)
@@ -70,6 +71,20 @@ class BridgeStatusReporter:
             lines.append(egress_line)
             if egress_status.get("warning"):
                 lines.append(f"  ⚠️ {egress_status['warning']}")
+        if egress_probe:
+            probe_icon = "✅" if egress_probe.get("ok") else "❌"
+            probe_stage = str(egress_probe.get("stage") or "unknown")
+            probe_line = f"  MAX egress probe: {probe_icon} {probe_stage}"
+            latency_ms = egress_probe.get("latency_ms")
+            if isinstance(latency_ms, int):
+                probe_line += f", {latency_ms}ms"
+            checked_at = egress_probe.get("checked_at")
+            if isinstance(checked_at, int):
+                age = max(0, int(time.time()) - checked_at)
+                probe_line += f", {bridge_forwarding.format_duration_compact(age)} назад"
+            if not egress_probe.get("ok") and egress_probe.get("error"):
+                probe_line += f" - {str(egress_probe['error'])[:120]}"
+            lines.append(probe_line)
 
         lines += [
             "",
