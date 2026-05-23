@@ -14,7 +14,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **200 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **201 тест**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -229,7 +229,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (52 теста)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (53 теста)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -263,6 +263,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_build_chats_message_lists_topics_with_activity` | `/chats` показывает чат, topic_id, режим и счётчики `↓/↑` за период. |
 | `test_build_status_message_includes_max_issue_summary` | `/status` показывает текущую MAX-проблему и необходимость `reauth`, если адаптер сообщил о деградации сессии. |
 | `test_build_status_message_includes_safe_egress_probe` | `/status` показывает последнюю Channel M probe stage/latency/error без credentials. |
+| `test_build_status_message_refreshes_home_proxy_egress_probe` | `/status` перед рендером обновляет probe для `home_ru_proxy`, чтобы не показывать stale failure после восстановления. |
 | `test_build_status_message_uses_shared_health_snapshot` | `/status` читает единый persisted health snapshot и отражает runtime/max health из supervisor-контура. |
 | `test_recovery_auto_changes_are_summarized_in_status_not_notified` | Обычные recovery auto-scan дельты не отправляют отдельный alert, но `/status` показывает агрегаты без invite/title/phone/raw payload. |
 | `test_watchdog_sends_gap_notice_after_reconnect` | После offline-окна watchdog отправляет и alert про downtime, и уведомление о возможном `missed messages gap` после восстановления. |

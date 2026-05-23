@@ -42,6 +42,13 @@ class BridgeStatusReporter:
         last_connected_at = self._max.get_last_connected_at()
         egress_status = self._max.get_egress_status()
         egress_probe = self._max.get_last_egress_probe()
+        if egress_status and egress_status.get("max_egress_active") == "home_ru_proxy":
+            try:
+                fresh_probe = await self._max.probe_egress()
+                if fresh_probe is not None:
+                    egress_probe = fresh_probe
+            except Exception:
+                pass
 
         inbound_total = msgs.get("inbound", 0)
         outbound_total = msgs.get("outbound", 0)

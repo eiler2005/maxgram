@@ -1730,6 +1730,49 @@ async def test_build_status_message_includes_safe_egress_probe():
 
 
 @pytest.mark.asyncio
+async def test_build_status_message_refreshes_home_proxy_egress_probe():
+    class RefreshingProbeMax(DummyMax):
+        def __init__(self):
+            super().__init__()
+            self.egress_status = {
+                "max_egress_active": "home_ru_proxy",
+                "max_egress_label": "роутерный РФ Channel M",
+            }
+            self.last_egress_probe = {
+                "ok": False,
+                "stage": "proxy_tcp",
+                "checked_at": int(time.time()) - 900,
+                "error": "ConnectionRefusedError: [Errno 111] Connection refused",
+            }
+            self.probe_calls = 0
+
+        async def probe_egress(self):
+            self.probe_calls += 1
+            self.last_egress_probe = {
+                "ok": True,
+                "stage": "target_tls",
+                "latency_ms": 122,
+                "checked_at": int(time.time()),
+            }
+            return self.last_egress_probe
+
+    max_adapter = RefreshingProbeMax()
+    repo = DummyRepo()
+    repo.count_messages_since = lambda _since: asyncio.sleep(0, result={"inbound": 0, "outbound": 0})
+    repo.count_deliveries_since = lambda _since: asyncio.sleep(0, result={})
+    repo.get_chat_activity_since = lambda _since, limit=10: asyncio.sleep(0, result=[])
+    repo.list_bindings = lambda: asyncio.sleep(0, result=[])
+
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter)
+
+    text = await bridge._status.build_status_message(period_hours=4)
+
+    assert max_adapter.probe_calls == 1
+    assert "MAX egress probe: ✅ target_tls, 122ms" in text
+    assert "Connection refused" not in text
+
+
+@pytest.mark.asyncio
 async def test_build_status_message_uses_shared_health_snapshot(tmp_path):
     class OfflineMax(DummyMax):
         def is_ready(self):
