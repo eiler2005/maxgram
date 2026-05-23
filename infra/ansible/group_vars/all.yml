@@ -28,15 +28,20 @@ local_source_root: "{{ playbook_dir }}/../.."
 sync_paths:
   - src/
   - tests/
+  - docs/
   - deploy/
+  - infra/ansible/group_vars/
   - scripts/
   - config.yaml
   - requirements.txt
   - requirements-dev.txt
   - pytest.ini
 
+sync_parent_dirs:
+  - infra/ansible
+
 # Что никогда не должно попасть на сервер через rsync.
-# (data/, env'ы, config.local.yaml, .git, .venv, docs, локальные logs)
+# (data/, env'ы, config.local.yaml, .git, .venv, локальные logs)
 sync_excludes:
   - .git/
   - .venv/
@@ -52,7 +57,6 @@ sync_excludes:
   - .env.host
   - config.local.yaml
   - config.local.*
-  - docs/
   - backups/
   - "*.log"
   - .DS_Store

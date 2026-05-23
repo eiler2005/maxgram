@@ -14,7 +14,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **191 тест**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **192 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -40,7 +40,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_bridge_contracts.py — архитектурная граница (10 тестов)
+## test_bridge_contracts.py — архитектурная граница (11 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -49,6 +49,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_main_keeps_runtime_wiring_in_composition_root` | `src.main` не импортирует concrete adapters или `BridgeCore`; runtime wiring живёт в `src.startup.composition`. |
 | `test_pymax_imports_stay_inside_max_adapter_boundary` | `pymax` imports разрешены только в `src/adapters/max/backends/pymax/*`; bridge/contracts/services остаются transport-neutral. |
 | `test_environment_inventory_documents_reverse_channel_m` | `docs/environment-inventory.md` описывает reverse Channel M, VPS docker bridge, router loopback inbound, env-переменные и отсутствие автоматического fallback; architecture doc ссылается на inventory. |
+| `test_deploy_bundle_includes_docs_for_startup_self_tests` | Docker image и Ansible release bundle включают `docs/`, чтобы startup self-tests внутри prod-контейнера видели архитектурные inventory-документы. |
 | `test_max_adapter_uses_composition_not_mixins` | `MaxAdapter` собран composition/facade-ом, не через mixin inheritance; сервисы не принимают полный `MaxAdapter`. |
 | `test_max_services_use_explicit_dependencies` | MAX services не используют `MaxServiceRegistry`/service `__getattr__`, не принимают `MaxAdapter`, а adapter tests не subclass-ят real adapter для private overrides. |
 | `test_max_services_do_not_use_god_base_forwarders` | MAX services не наследуются от `ExplicitMaxService` и не возвращают скрытые cross-service deps-forwarders через `*args, **kwargs`. |

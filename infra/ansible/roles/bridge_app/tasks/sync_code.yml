@@ -9,6 +9,15 @@
   delegate_to: localhost
   run_once: false
 
+- name: Ensure release bundle parent directories exist
+  ansible.builtin.file:
+    path: "{{ project_root }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ sync_parent_dirs | default([]) }}"
+  loop_control:
+    label: "{{ item }}"
+
 - name: Sync app code with rsync
   ansible.posix.synchronize:
     src: "{{ bridge_app_local_source_abs }}/{{ item }}"

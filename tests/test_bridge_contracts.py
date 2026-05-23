@@ -75,6 +75,23 @@ def test_environment_inventory_documents_reverse_channel_m():
     assert "environment-inventory.md" in architecture
 
 
+def test_deploy_bundle_includes_docs_for_startup_self_tests():
+    dockerfile = (PROJECT_ROOT / "deploy/Dockerfile").read_text(encoding="utf-8")
+    ansible_vars = (PROJECT_ROOT / "infra/ansible/group_vars/all.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "COPY docs/ ./docs/" in dockerfile
+    assert "COPY deploy/ ./deploy/" in dockerfile
+    assert "COPY infra/ansible/group_vars/all.yml" in dockerfile
+    assert "  - docs/" in ansible_vars
+    assert "  - infra/ansible/group_vars/" in ansible_vars
+    assert "  - infra/ansible" in ansible_vars
+    sync_excludes = ansible_vars.split("sync_excludes:", 1)[1]
+    assert "  - docs/" not in sync_excludes
+    assert "  - infra/" not in sync_excludes
+
+
 def test_max_adapter_uses_composition_not_mixins():
     adapter_source = (PROJECT_ROOT / "src/adapters/max/adapter.py").read_text(encoding="utf-8")
     assert "class MaxAdapter(" not in adapter_source

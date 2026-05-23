@@ -15,6 +15,9 @@ RUN pip install --no-cache-dir -r requirements-dev.txt
 COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY tests/ ./tests/
+COPY docs/ ./docs/
+COPY deploy/ ./deploy/
+COPY infra/ansible/group_vars/all.yml ./infra/ansible/group_vars/all.yml
 COPY pytest.ini .
 COPY config.yaml .
 COPY spike/ ./spike/
