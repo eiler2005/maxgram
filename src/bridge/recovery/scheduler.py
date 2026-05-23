@@ -74,7 +74,7 @@ class RecoveryScheduler:
 
     def schedule_event_scan(self, reason: str):
         self._event_scan_task, self._event_scan_at = recovery_orchestrator.schedule_event_scan(
-            collect_snapshot=getattr(self._max, "collect_recovery_snapshot", None),
+            collect_snapshot=self._max.collect_recovery_snapshot,
             reason=reason,
             cooldowns=self._event_scan_cooldowns,
             delays=self._event_scan_delays,

@@ -232,12 +232,8 @@ async def safe_scan(
     notify: bool = False,
     maybe_notify: Callable[..., Awaitable[None]],
 ) -> dict[str, object]:
-    collect = getattr(max_adapter, "collect_recovery_snapshot", None)
-    if not callable(collect):
-        return {"scanned": 0, "error": "snapshot_not_supported"}
-
     async with scan_lock:
-        snapshot = await collect()
+        snapshot = await max_adapter.collect_recovery_snapshot()
         account_result = {"migration_required": False, "max_user_id": snapshot.max_user_id}
         if snapshot.max_user_id:
             account_result = await repo.upsert_max_account_generation(

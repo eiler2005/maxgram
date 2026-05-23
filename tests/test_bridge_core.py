@@ -199,9 +199,20 @@ class DummyMax:
         self.audio_reference_calls = []
         self.replay_calls = []
         self.empty_stats = {"pending_count": 0, "oldest_created_at": None}
+        self.start_handlers = []
+        self.issue_handlers = []
+        self.last_issue = None
+        self.last_connected_at = None
+        self.egress_status = None
 
     def on_message(self, handler):
         self.handler = handler
+
+    def on_start(self, handler):
+        self.start_handlers.append(handler)
+
+    def on_issue(self, handler):
+        self.issue_handlers.append(handler)
 
     def is_ready(self):
         return True
@@ -238,6 +249,13 @@ class DummyMax:
         self.replay_calls.append((chat_id, limit, since_ts, flow_id))
         return 0
 
+    async def collect_recovery_snapshot(self):
+        return MaxRecoverySnapshot(
+            max_user_id=None,
+            masked_phone=None,
+            session_fingerprint_hash=None,
+        )
+
     def get_pending_empty_recovery_stats(self):
         return self.empty_stats
 
@@ -246,6 +264,15 @@ class DummyMax:
 
     def get_last_outbound_attempts(self) -> int:
         return self._last_outbound_attempts
+
+    def get_last_issue(self):
+        return self.last_issue
+
+    def get_last_connected_at(self):
+        return self.last_connected_at
+
+    def get_egress_status(self):
+        return self.egress_status
 
 
 class DummyRecoveryMax(DummyMax):
@@ -1722,15 +1749,10 @@ async def test_build_status_message_uses_shared_health_snapshot(tmp_path):
 
 @pytest.mark.asyncio
 async def test_watchdog_sends_gap_notice_after_reconnect():
-    class WatchdogMax:
+    class WatchdogMax(DummyMax):
         def __init__(self):
+            super().__init__()
             self.calls = 0
-
-        def on_message(self, handler):
-            self.handler = handler
-
-        async def resolve_user_name(self, user_id: str):
-            return None
 
         def is_ready(self):
             self.calls += 1

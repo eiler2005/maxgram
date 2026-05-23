@@ -250,20 +250,10 @@ async def process_pending_media_download(
         reference_kind=job.reference_kind,
     )
 
-    download_method_name = (
-        "download_audio_reference"
-        if job.kind == "audio"
-        else "download_video_reference"
-    )
-    download_media = getattr(max_adapter, download_method_name, None)
-    if not callable(download_media):
-        await mark_pending_media_retry(
-            repo=repo,
-            job=job,
-            error=f"max_adapter_missing_{job.kind}_retry",
-            flow_id=flow_id,
-        )
-        return
+    if job.kind == "audio":
+        download_media = max_adapter.download_audio_reference
+    else:
+        download_media = max_adapter.download_video_reference
 
     try:
         if job.kind == "audio":

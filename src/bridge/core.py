@@ -89,9 +89,7 @@ class BridgeCore:
         self._tg.on_reply(self._on_tg_reply)
         self._commands.register()
 
-        on_max_start = getattr(self._max, "on_start", None)
-        if callable(on_max_start):
-            on_max_start(self._recovery.schedule_scan_after_connect)
+        self._max.on_start(self._recovery.schedule_scan_after_connect)
 
     async def _send_ops_notification(self, text: str):
         sender = getattr(self._ops, "send_system_notification", None)

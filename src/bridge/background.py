@@ -113,8 +113,7 @@ async def run_max_watchdog(
                     downtime_seconds=int(elapsed),
                 )
                 if health is not None:
-                    get_last_issue = getattr(max_adapter, "get_last_issue", None)
-                    current_issue = get_last_issue() if callable(get_last_issue) else None
+                    current_issue = max_adapter.get_last_issue()
                     if current_issue is None:
                         change = await health.report_issue(
                             "max_link",
@@ -169,11 +168,8 @@ async def run_dm_history_sweep(
                     continue
                 if chat_id.startswith("-") or is_probable_client_cid(chat_id):
                     continue
-                replay = getattr(max_adapter, "replay_recent_history", None)
-                if not callable(replay):
-                    continue
                 flow_id = build_max_flow_id(chat_id, "history-sweep")
-                await replay(
+                await max_adapter.replay_recent_history(
                     chat_id,
                     limit=limit,
                     since_ts=since_ts,

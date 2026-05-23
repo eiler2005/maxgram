@@ -34,6 +34,37 @@ def test_bridge_contracts_stay_transport_neutral():
     assert not any(any(name in target for name in forbidden) for target in targets)
 
 
+def test_bridge_uses_max_bridge_port_methods_directly():
+    contracts_source = (PROJECT_ROOT / "src/bridge/contracts.py").read_text(encoding="utf-8")
+    contracts_tree = ast.parse(contracts_source)
+    max_port_methods: set[str] = set()
+    for node in ast.walk(contracts_tree):
+        if isinstance(node, ast.ClassDef) and node.name == "MaxBridgePort":
+            max_port_methods = {
+                child.name
+                for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            break
+
+    offenders = []
+    for path in (PROJECT_ROOT / "src/bridge").rglob("*.py"):
+        relative = path.relative_to(PROJECT_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Name) or node.func.id != "getattr":
+                continue
+            if len(node.args) < 2 or not isinstance(node.args[1], ast.Constant):
+                continue
+            attr_name = node.args[1].value
+            if isinstance(attr_name, str) and attr_name in max_port_methods:
+                offenders.append(f"{relative}:{node.lineno} getattr({attr_name})")
+
+    assert offenders == []
+
+
 def test_main_keeps_runtime_wiring_in_composition_root():
     targets = _import_targets("src/main.py")
 

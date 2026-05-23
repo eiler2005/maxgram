@@ -38,12 +38,9 @@ class BridgeStatusReporter:
 
         max_ok = "✅" if self._max.is_ready() else "❌"
         tg_ok = "✅"
-        get_last_issue = getattr(self._max, "get_last_issue", None)
-        max_issue = get_last_issue() if callable(get_last_issue) else None
-        get_last_connected_at = getattr(self._max, "get_last_connected_at", None)
-        last_connected_at = get_last_connected_at() if callable(get_last_connected_at) else None
-        get_egress_status = getattr(self._max, "get_egress_status", None)
-        egress_status = get_egress_status() if callable(get_egress_status) else None
+        max_issue = self._max.get_last_issue()
+        last_connected_at = self._max.get_last_connected_at()
+        egress_status = self._max.get_egress_status()
 
         inbound_total = msgs.get("inbound", 0)
         outbound_total = msgs.get("outbound", 0)
@@ -101,18 +98,16 @@ class BridgeStatusReporter:
                 )
         lines.append(media_retry_line)
 
-        empty_stats_getter = getattr(self._max, "get_pending_empty_recovery_stats", None)
-        if callable(empty_stats_getter):
-            empty_stats = empty_stats_getter()
-            pending_empty = int(empty_stats.get("pending_count") or 0)
-            empty_line = f"  ⏳ Empty/voice recovery: {pending_empty}"
-            oldest_empty = empty_stats.get("oldest_created_at")
-            if pending_empty and oldest_empty:
-                empty_line += (
-                    f", старейшее "
-                    f"{bridge_forwarding.format_duration_compact(int(time.time()) - int(oldest_empty))}"
-                )
-            lines.append(empty_line)
+        empty_stats = self._max.get_pending_empty_recovery_stats()
+        pending_empty = int(empty_stats.get("pending_count") or 0)
+        empty_line = f"  ⏳ Empty/voice recovery: {pending_empty}"
+        oldest_empty = empty_stats.get("oldest_created_at")
+        if pending_empty and oldest_empty:
+            empty_line += (
+                f", старейшее "
+                f"{bridge_forwarding.format_duration_compact(int(time.time()) - int(oldest_empty))}"
+            )
+        lines.append(empty_line)
 
         if chat_activity:
             lines += ["", "💬 Активные чаты"]

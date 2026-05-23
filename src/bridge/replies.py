@@ -215,10 +215,8 @@ async def handle_tg_reply(
             Path(media_path).unlink(missing_ok=True)
 
     if sent_id is None:
-        get_last_error = getattr(max_adapter, "get_last_outbound_error", None)
-        get_last_attempts = getattr(max_adapter, "get_last_outbound_attempts", None)
-        max_error = get_last_error() if callable(get_last_error) else None
-        attempts = get_last_attempts() if callable(get_last_attempts) else 0
+        max_error = max_adapter.get_last_outbound_error()
+        attempts = max_adapter.get_last_outbound_attempts()
         delivery_error = max_error or "max_send_failed"
         if attempts > 1:
             delivery_error = f"{delivery_error} (attempts={attempts})"
