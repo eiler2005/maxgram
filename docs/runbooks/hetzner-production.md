@@ -19,6 +19,9 @@
 - `UFW` + `fail2ban` + `unattended-upgrades`
 - секреты и state только на сервере
 
+Полный inventory окружения для схемы MAX через РФ WAN:
+[../environment-inventory.md](../environment-inventory.md).
+
 ## Рекомендованный сервер
 
 - Серия: `CX23`
@@ -172,6 +175,14 @@ chmod 700 data
 max:
   egress:
     active: "home_ru_proxy"
+```
+
+Рекомендуемый способ применить эти значения после генерации artifact в
+`router_configuration`:
+
+```bash
+cd infra/ansible
+ansible-playbook channel-m-reverse.yml
 ```
 
 Права:

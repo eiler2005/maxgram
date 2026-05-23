@@ -144,6 +144,15 @@ max:
 
 Для применения reverse Channel M на VPS используется `infra/ansible/channel-m-reverse.yml`: он берёт gitignored artifact из `router_configuration`, обновляет `MAX_EGRESS_PROXY_*`, пересоздаёт контейнер и проверяет socket CONNECT к MAX изнутри bridge.
 
+Схема окружения, владельцы и нужные переменные описаны в
+[../environment-inventory.md](../environment-inventory.md). Коротко:
+
+```text
+bridge container -> VPS docker bridge listener -> router SSH remote-forward
+                 -> router Channel M reverse inbound -> home WAN РФ -> MAX
+Telegram traffic -> direct VPS HTTPS -> Telegram
+```
+
 ## Запуск / Остановка
 
 ```bash

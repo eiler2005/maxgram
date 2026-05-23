@@ -179,6 +179,22 @@ MAX network traffic имеет отдельный egress-профиль внут
 
 Если Channel M/proxy недоступен, MAX часть становится `degraded` с issue `max_egress_unavailable`. Bridge не меняет egress сам, чтобы не получить незаметный переход РФ IP -> Hetzner IP. Telegram adapter продолжает работать своим обычным путём; LAN/Wi-Fi и роутерные A/B/C правила этой настройкой не затрагиваются.
 
+Reverse Channel M inventory and the full environment diagram live in
+[environment-inventory.md](environment-inventory.md). Short form:
+
+```text
+MAX adapter in bridge container
+  -> HTTP CONNECT to VPS docker bridge listener
+  -> SSH remote-forward opened by home router
+  -> router loopback Channel M inbound
+  -> direct-out / home WAN РФ
+  -> MAX API/CDN
+
+Telegram adapter
+  -> direct HTTPS from VPS
+  -> Telegram Bot API
+```
+
 ### MAX → Telegram (входящее)
 
 ```

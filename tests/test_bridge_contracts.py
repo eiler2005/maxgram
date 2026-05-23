@@ -55,6 +55,26 @@ def test_pymax_imports_stay_inside_max_adapter_boundary():
     assert offenders == []
 
 
+def test_environment_inventory_documents_reverse_channel_m():
+    inventory = (PROJECT_ROOT / "docs/environment-inventory.md").read_text(encoding="utf-8")
+    architecture = (PROJECT_ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+
+    required_inventory_terms = [
+        "SSH remote-forward",
+        "VPS docker bridge",
+        "channel-m-maxtg-reverse-egress",
+        "Telegram traffic is not routed through Channel M",
+        "MAX_EGRESS_PROXY_URL",
+        "MAX_EGRESS_PROXY_HOST",
+        "MAX_EGRESS_PROXY_GATEWAY",
+        "There is no automatic fallback",
+    ]
+    missing = [term for term in required_inventory_terms if term not in inventory]
+
+    assert missing == []
+    assert "environment-inventory.md" in architecture
+
+
 def test_max_adapter_uses_composition_not_mixins():
     adapter_source = (PROJECT_ROOT / "src/adapters/max/adapter.py").read_text(encoding="utf-8")
     assert "class MaxAdapter(" not in adapter_source

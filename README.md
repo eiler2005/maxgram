@@ -110,6 +110,9 @@ One Python service with two layers: a long-lived supervisor plus a restartable b
 
 MAX network traffic is scoped to the MAX adapter. In production `home_ru_proxy` sends MAX API and CDN downloads through reverse Channel M: the home router opens an outbound SSH remote-forward to the VPS docker bridge, and the bridge uses authenticated HTTP CONNECT against that VPS-local listener. `hetzner_direct` remains a manual break-glass profile and is never used as automatic fallback. Telegram traffic, LAN/Wi-Fi, and router A/B/C routing are not changed by this bridge setting.
 
+Runtime environment requirements and the reverse Channel M text diagram are in
+[docs/environment-inventory.md](docs/environment-inventory.md).
+
 Details: [docs/architecture.md](docs/architecture.md)
 
 ---

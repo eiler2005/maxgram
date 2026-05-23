@@ -80,6 +80,9 @@ Bridge Core (contracts) ──► TG Adapter (aiogram) ──► Telegram Topics
 
 MAX сетевой egress ограничен MAX adapter. В production `home_ru_proxy` отправляет MAX API и CDN downloads через reverse Channel M: домашний роутер открывает исходящий SSH remote-forward на VPS docker bridge, а bridge использует authenticated HTTP CONNECT к этому VPS-local listener. `hetzner_direct` остаётся ручным аварийным режимом и не используется как автоматический fallback. Telegram, LAN/Wi-Fi и роутерные A/B/C правила этим параметром bridge не меняются.
 
+Требования к окружению и текстовая схема reverse Channel M описаны в
+[docs/environment-inventory.md](docs/environment-inventory.md).
+
 Подробнее: [docs/architecture.md](docs/architecture.md)
 
 ---

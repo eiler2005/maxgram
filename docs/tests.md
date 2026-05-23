@@ -14,7 +14,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **183 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **191 тест**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -40,7 +40,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_bridge_contracts.py — архитектурная граница (9 тестов)
+## test_bridge_contracts.py — архитектурная граница (10 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -48,6 +48,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_bridge_contracts_stay_transport_neutral` | `src.bridge.contracts` не импортирует `pymax`, `aiogram` или adapter-слой. |
 | `test_main_keeps_runtime_wiring_in_composition_root` | `src.main` не импортирует concrete adapters или `BridgeCore`; runtime wiring живёт в `src.startup.composition`. |
 | `test_pymax_imports_stay_inside_max_adapter_boundary` | `pymax` imports разрешены только в `src/adapters/max/backends/pymax/*`; bridge/contracts/services остаются transport-neutral. |
+| `test_environment_inventory_documents_reverse_channel_m` | `docs/environment-inventory.md` описывает reverse Channel M, VPS docker bridge, router loopback inbound, env-переменные и отсутствие автоматического fallback; architecture doc ссылается на inventory. |
 | `test_max_adapter_uses_composition_not_mixins` | `MaxAdapter` собран composition/facade-ом, не через mixin inheritance; сервисы не принимают полный `MaxAdapter`. |
 | `test_max_services_use_explicit_dependencies` | MAX services не используют `MaxServiceRegistry`/service `__getattr__`, не принимают `MaxAdapter`, а adapter tests не subclass-ят real adapter для private overrides. |
 | `test_max_services_do_not_use_god_base_forwarders` | MAX services не наследуются от `ExplicitMaxService` и не возвращают скрытые cross-service deps-forwarders через `*args, **kwargs`. |
@@ -56,12 +57,24 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_config_loader.py — конфигурация (2 теста)
+## test_config_loader.py — конфигурация (3 теста)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_load_config_merges_optional_local_override` | `config.local.yaml` перекрывает `config.yaml`: `bridge.default_mode`, список `chats` с `max_chat_id`, `title`, `mode`. Переменные окружения (`TG_BOT_TOKEN` и др.) подставляются в YAML через env-interpolation. |
 | `test_load_config_reads_secrets_from_dotenv_secrets` | `load_config()` подхватывает секреты из `.env.secrets`, а не только из уже экспортированного окружения; заодно проверяет что `DATA_DIR` берётся из `.env`. |
+| `test_load_config_reads_max_egress_profiles` | `max.egress` читает active profile, direct backward-compatible default и `${MAX_EGRESS_PROXY_URL}` для `home_ru_proxy`. |
+
+---
+
+## test_max_egress.py — MAX-only egress (4 теста)
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_http_connect_socket_connector_sends_connect_and_auth` | `HttpConnectSocketConnector` отправляет `CONNECT api.oneme.ru:443` и `Proxy-Authorization` без глобального monkeypatch socket. |
+| `test_http_connect_socket_connector_fails_on_non_200` | Не-200 ответ proxy даёт `MaxEgressUnavailable`, а не fallback на direct. |
+| `test_max_cdn_downloader_passes_proxy_options` | MAX CDN downloader передаёт `proxy`/`proxy_auth` в `aiohttp.ClientSession`, поэтому media downloads используют тот же egress profile. |
+| `test_max_egress_unavailable_is_classified_as_fail_closed_issue` | Proxy failure классифицируется как `max_egress_unavailable` для degraded health/status. |
 
 ---
 
