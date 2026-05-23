@@ -6,6 +6,7 @@
 Дата v1.1.0: 2026-04-03  
 Дата v1.2.0: 2026-04-08
 Дата v1.3.0: 2026-05-22
+Дата full MAX client ports refactor: 2026-05-23
 
 ---
 
@@ -152,6 +153,20 @@
 
 ---
 
+## Phase 10: Full MAX client ports ✅
+
+**Дата:** 2026-05-23  
+**Цель:** полностью отделить MAX operation services от формы `pymax`-клиента, оставив библиотечную и object-shape зависимость только внутри backend boundary.
+
+- [x] **Typed MAX client port + DTO** — `src/adapters/max/ports.py` задаёт внутренний порт клиента и DTO для messages, attachments, users, chats, dialogs, outbound send result и raw interceptor result.
+- [x] **PymaxClientAdapter** — `src/adapters/max/backends/pymax/client_adapter.py` оборачивает `SocketMaxClient`, делегирует в `pymax`, создаёт pymax attachment/payload objects и конвертирует pymax objects в наши DTO.
+- [x] **Services больше не знают форму pymax-клиента** — `send`, `resolve`, `recovery`, `media`, `raw/history`, `voice_recovery`, `events` и `lifecycle` работают через typed port methods/snapshots вместо `_send_and_wait`, `_handle_message_notifications`, `fetch_history`, `get_file_by_id`, `contacts/dialogs/chats/channels/_users/me`.
+- [x] **Compatibility preserved** — public `MaxAdapter`, `BridgeCore`, compatibility imports и `client_factory.create_socket_client()` сохранены.
+- [x] **Regression coverage** — добавлен `tests/test_max_service_ports.py`, расширен `tests/test_bridge_contracts.py`, существующий `tests/test_max_adapter.py` покрывает raw voice recovery, channel unwrap/dedupe, media retry, outbound echo ack и lifecycle edge cases.
+- [x] **Verified and deployed** — локальный gate зелёный (`183 passed`), production deploy и smoke check прошли успешно; изменение merged to `master` и deployed в commit `ec03f27` (`Decouple MAX services from pymax client shape`).
+
+---
+
 ## Известные ограничения (won't fix)
 
 | Ограничение | Причина |
@@ -170,21 +185,3 @@
 |--------|-----------|
 | Per-chat управление из TG | Medium |
 | Более удобный guided UI поверх `/recovery report` для массового remap | Medium |
-| Полное отделение MAX services от формы `pymax`-клиента | Done |
-
-### Done: full MAX client ports instead of structural pymax client access
-
-**Статус:** implemented. MAX operation services больше не обращаются напрямую к форме `pymax`-клиента.
-
-**Новая граница.**
-
-- `src/adapters/max/ports.py` содержит internal typed client port и DTO для messages, attachments, users, chats, dialogs, outbound send result и raw interceptor result.
-- `src/adapters/max/backends/pymax/PymaxClientAdapter` оборачивает `SocketMaxClient`, делегирует в `pymax`, создаёт pymax attachment/payload objects и конвертирует pymax objects в наши DTO.
-- Прямые imports `pymax`, private calls вроде `_send_and_wait` / `_handle_message_notifications`, `get_file_by_id`, `fetch_history`, а также знание `contacts/dialogs/chats/_users/me` остались внутри `src/adapters/max/backends/pymax/*`.
-- `send.py`, `resolve.py`, `recovery.py`, `media/attachments.py`, `raw/history.py`, `voice_recovery.py`, `events.py` и `lifecycle.py` работают через typed port methods/snapshots.
-
-**Регрессия защищена тестами.**
-
-- `tests/test_bridge_contracts.py::test_max_operation_services_do_not_use_pymax_client_shape_directly`
-- `tests/test_max_service_ports.py`
-- существующий behavioral suite `tests/test_max_adapter.py` для raw voice recovery, channel unwrap/dedupe, media retry, outbound echo ack и lifecycle edge cases.
