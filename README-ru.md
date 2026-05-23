@@ -47,6 +47,7 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Supervisor runtime** — контейнер остаётся `Up`, даже если MAX/TG интеграция деградировала; supervisor перезапускает worker и хранит health-state
 - **Persisted health-state** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, `health_heartbeat.json`
 - **Явная adapter/backend boundary** — `BridgeCore` зависит от transport-neutral contracts; MAX operation services зависят от typed client ports/DTO, а `pymax` imports и форма pymax-клиента изолированы в `src/adapters/max/backends/pymax/`; это защищено regression-тестами
+- **MAX-only egress profiles** — MAX API/CDN может идти через authenticated HTTP CONNECT внутри reverse Channel M (`home_ru_proxy`: исходящий SSH remote-forward с домашнего РФ роутера на VPS), при этом Telegram остаётся прямым; Hetzner direct сохранён только как ручной аварийный профиль
 - **Retry Telegram API** — 3 попытки с экспоненциальным backoff, поддержка `Retry-After`
 - **Retry TG→MAX на временных ошибках транспорта** — bridge повторяет отправку в MAX при `Socket is not connected`, `Must be ONLINE session`, timeout и похожих временных сбоях
 - **Аудит неотправленных TG→MAX сообщений** — все неуспешные outbound-доставки пишутся в `delivery_log` с причиной ошибки и числом попыток
@@ -76,6 +77,8 @@ Bridge Core (contracts) ──► TG Adapter (aiogram) ──► Telegram Topics
 ```
 
 Один Python сервис с двумя слоями: supervisor и restartable worker. Runtime wiring живёт в `src/startup/composition.py`. Никаких внешних очередей. SQLite и persisted runtime-health файлы — единственное хранилище состояния.
+
+MAX сетевой egress ограничен MAX adapter. В production `home_ru_proxy` отправляет MAX API и CDN downloads через reverse Channel M: домашний роутер открывает исходящий SSH remote-forward на VPS docker bridge, а bridge использует authenticated HTTP CONNECT к этому VPS-local listener. `hetzner_direct` остаётся ручным аварийным режимом и не используется как автоматический fallback. Telegram, LAN/Wi-Fi и роутерные A/B/C правила этим параметром bridge не меняются.
 
 Подробнее: [docs/architecture.md](docs/architecture.md)
 
@@ -187,6 +190,8 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 | `TG_OWNER_ID` | Твой Telegram user_id | @userinfobot |
 | `TG_FORUM_GROUP_ID` | ID форум-супергруппы | Из URL или @userinfobot |
 | `MAX_PHONE` | Номер телефона MAX | Твой номер `+79...` |
+| `MAX_EGRESS_PROXY_URL` | Production URL для `home_ru_proxy` MAX egress; хранится в `.env.secrets` | Секрет роутера/Vault |
+| `MAX_EGRESS_PROXY_HOST`, `MAX_EGRESS_PROXY_GATEWAY` | Reverse Channel M host mapping для Docker Compose; хранится в `.env.host` | Не секрет, но local-only |
 
 ---
 

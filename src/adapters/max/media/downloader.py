@@ -287,9 +287,16 @@ def download_retry_delay(attempt: int) -> int:
 
 
 class MaxCdnDownloader:
-    def __init__(self, *, tmp_dir: Path, client_session_factory: Callable[..., Any]):
+    def __init__(
+        self,
+        *,
+        tmp_dir: Path,
+        client_session_factory: Callable[..., Any],
+        egress: Any | None = None,
+    ):
         self._tmp_dir = tmp_dir
         self._client_session_factory = client_session_factory
+        self._egress = egress
 
     async def write_download_response(self, response, part_path: Path, mode: str) -> int:
         written = 0
@@ -331,7 +338,12 @@ class MaxCdnDownloader:
                 headers = {**headers, "Range": f"bytes={resume_from}-"}
 
             try:
-                async with self._client_session_factory(headers=headers) as session:
+                session_kwargs: dict[str, Any] = {"headers": headers}
+                if self._egress is not None:
+                    session_kwargs.update(
+                        self._egress.http_client_options.as_client_session_kwargs()
+                    )
+                async with self._client_session_factory(**session_kwargs) as session:
                     async with session.get(url) as response:
                         http_status = getattr(response, "status", None)
                         if resume_from and getattr(response, "status", None) == 200:

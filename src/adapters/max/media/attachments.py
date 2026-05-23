@@ -29,6 +29,7 @@ class MaxMediaService:
         self._downloader = max_downloader.MaxCdnDownloader(
             tmp_dir=deps.tmp_dir,
             client_session_factory=deps.client_session_factory,
+            egress=deps.egress,
         )
 
     @property

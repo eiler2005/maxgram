@@ -1596,6 +1596,74 @@ async def test_build_status_message_includes_max_issue_summary():
 
 
 @pytest.mark.asyncio
+async def test_build_status_message_includes_manual_direct_egress_warning():
+    class DirectEgressMax(DummyMax):
+        def get_egress_status(self):
+            return {
+                "max_egress_active": "hetzner_direct",
+                "max_egress_label": "прямой Hetzner VPS (ручной аварийный режим)",
+                "warning": "MAX uses non-RU direct egress",
+            }
+
+    repo = DummyRepo()
+
+    async def count_messages_since(_since):
+        return {"inbound": 0, "outbound": 0}
+
+    async def count_deliveries_since(_since):
+        return {}
+
+    async def get_chat_activity_since(_since, limit=10):
+        return []
+
+    repo.count_messages_since = count_messages_since
+    repo.count_deliveries_since = count_deliveries_since
+    repo.get_chat_activity_since = get_chat_activity_since
+    repo.list_bindings = lambda: asyncio.sleep(0, result=[])
+
+    bridge = _make_bridge(repo=repo, max_adapter=DirectEgressMax())
+
+    text = await bridge._status.build_status_message(period_hours=4)
+
+    assert "MAX egress: hetzner_direct" in text
+    assert "прямой Hetzner VPS" in text
+    assert "MAX uses non-RU direct egress" in text
+
+
+@pytest.mark.asyncio
+async def test_build_status_message_describes_home_router_egress():
+    class HomeRouterEgressMax(DummyMax):
+        def get_egress_status(self):
+            return {
+                "max_egress_active": "home_ru_proxy",
+                "max_egress_label": "роутерный РФ Channel M",
+            }
+
+    repo = DummyRepo()
+
+    async def count_messages_since(_since):
+        return {"inbound": 0, "outbound": 0}
+
+    async def count_deliveries_since(_since):
+        return {}
+
+    async def get_chat_activity_since(_since, limit=10):
+        return []
+
+    repo.count_messages_since = count_messages_since
+    repo.count_deliveries_since = count_deliveries_since
+    repo.get_chat_activity_since = get_chat_activity_since
+    repo.list_bindings = lambda: asyncio.sleep(0, result=[])
+
+    bridge = _make_bridge(repo=repo, max_adapter=HomeRouterEgressMax())
+
+    text = await bridge._status.build_status_message(period_hours=4)
+
+    assert "MAX egress: home_ru_proxy" in text
+    assert "роутерный РФ Channel M" in text
+
+
+@pytest.mark.asyncio
 async def test_build_status_message_uses_shared_health_snapshot(tmp_path):
     class OfflineMax(DummyMax):
         def is_ready(self):

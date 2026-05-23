@@ -45,6 +45,7 @@ class MediaDeps:
     tmp_dir: Path
     client_session_factory: Callable[..., Any]
     raw_payload: Any
+    egress: Any | None = None
 
 
 @dataclass

@@ -21,9 +21,23 @@ class TelegramConfig:
 
 
 @dataclass
+class MaxEgressProfileConfig:
+    type: str = "direct"
+    proxy_url: Optional[str] = None
+
+
+@dataclass
+class MaxEgressConfig:
+    active: str = "hetzner_direct"
+    profiles: dict[str, MaxEgressProfileConfig] = field(default_factory=dict)
+    fallback_policy: str = "manual"
+
+
+@dataclass
 class MaxConfig:
     phone: str
     session_filename: str = "session.db"
+    egress: MaxEgressConfig = field(default_factory=MaxEgressConfig)
 
 
 @dataclass
@@ -127,6 +141,36 @@ def _resolve_optional_int(value) -> Optional[int]:
     return int(rendered)
 
 
+def _load_max_egress(raw: dict) -> MaxEgressConfig:
+    egress_raw = raw.get("egress") or {}
+    profiles_raw = egress_raw.get("profiles") or {}
+    profiles: dict[str, MaxEgressProfileConfig] = {}
+
+    for name, profile_raw in profiles_raw.items():
+        if profile_raw is None:
+            profile_raw = {}
+        profile_type = str(profile_raw.get("type", "direct")).strip() or "direct"
+        proxy_url = profile_raw.get("proxy_url")
+        profiles[str(name)] = MaxEgressProfileConfig(
+            type=profile_type,
+            proxy_url=_resolve_env(proxy_url) if proxy_url else None,
+        )
+
+    if "hetzner_direct" not in profiles:
+        profiles["hetzner_direct"] = MaxEgressProfileConfig(type="direct")
+
+    active = str(egress_raw.get("active", "hetzner_direct")).strip() or "hetzner_direct"
+    if active not in profiles:
+        raise ValueError(f"MAX egress active profile {active!r} is not defined")
+
+    fallback_policy = str(egress_raw.get("fallback_policy", "manual")).strip() or "manual"
+    return MaxEgressConfig(
+        active=active,
+        profiles=profiles,
+        fallback_policy=fallback_policy,
+    )
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Рекурсивно объединяет словари. override имеет приоритет."""
     merged = dict(base)
@@ -163,7 +207,8 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     max_raw = raw.get("max", {})
     mx = MaxConfig(
         phone=_resolve_env(max_raw.get("phone", "${MAX_PHONE}")),
-            session_filename=max_raw.get("session_filename", "session.db"),
+        session_filename=max_raw.get("session_filename", "session.db"),
+        egress=_load_max_egress(max_raw),
     )
 
     stor_raw = raw.get("storage", {})

@@ -91,6 +91,7 @@ src/
 │   │   ├── adapter.py        public MaxAdapter facade over operation services
 │   │   ├── state.py          connection/outbound/raw-history/recovery state
 │   │   ├── deps.py           explicit service dependency objects
+│   │   ├── network/          MAX-only egress profiles: direct and authenticated HTTP CONNECT
 │   │   ├── lifecycle.py      start/reconnect/readiness lifecycle service
 │   │   ├── events.py         backend events -> MaxMessage normalization
 │   │   ├── raw_payload.py    compatibility facade for raw payload helpers
@@ -134,6 +135,7 @@ src/
 - `src/bridge/*`, `src/db/*`, `src/runtime/*`, `src/main.py` не импортируют `pymax` или `aiogram`.
 - `src/adapters/tg/*` — единственная aiogram boundary; старый путь `src.adapters.tg_adapter` оставлен для совместимости.
 - `src/adapters/max/*` — MAX boundary. `pymax` imports разрешены только в `src/adapters/max/backends/pymax/*`, защищено `tests/test_bridge_contracts.py`.
+- `src/adapters/max/network/*` — отдельная MAX-only сеть: socket connector для pymax API и proxy options для MAX CDN downloads. Telegram traffic, BridgeCore и общие runtime слои его не используют.
 - `src/startup/composition.py` — composition root: здесь допустимо соединять concrete adapters с `BridgeCore`.
 - Recovery auto-scan дельты не спамят Telegram: они попадают агрегатами в 4-часовой `/status`; отдельный alert остаётся только для `account_migration_required`.
 
@@ -167,6 +169,15 @@ src/
 Supervisor never exits on MAX/TG integration failures. It restarts the worker, persists health transitions, and keeps Docker `HEALTHCHECK` green as long as the runtime loop itself is alive.
 
 ## Потоки данных
+
+### MAX egress: home_ru_proxy и hetzner_direct
+
+MAX network traffic имеет отдельный egress-профиль внутри MAX adapter:
+
+- `home_ru_proxy` — основной production-профиль. Pymax socket к MAX API и MAX CDN downloads идут с контейнера в authenticated HTTP CONNECT proxy на VPS-local reverse Channel M listener. Этот listener держится исходящим SSH remote-forward с домашнего роутера, а роутер выпускает трафик через свой `direct-out`/home WAN РФ. Это служебный Channel M, не Channel A/B/C failover.
+- `hetzner_direct` — старое прямое подключение с Hetzner. Оно остаётся только как ручной аварийный режим через изменение `max.egress.active` в конфиге. Автоматического fallback с `home_ru_proxy` на direct нет.
+
+Если Channel M/proxy недоступен, MAX часть становится `degraded` с issue `max_egress_unavailable`. Bridge не меняет egress сам, чтобы не получить незаметный переход РФ IP -> Hetzner IP. Telegram adapter продолжает работать своим обычным путём; LAN/Wi-Fi и роутерные A/B/C правила этой настройкой не затрагиваются.
 
 ### MAX → Telegram (входящее)
 

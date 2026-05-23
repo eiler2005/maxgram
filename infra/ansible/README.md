@@ -50,6 +50,7 @@ ansible-playbook deploy.yml
 | `recover.yml` | Только в аварии на пустом VM | Развернуть бэкап на свежем сервере |
 | `bootstrap.yml` | **Только для нового VM** | Юзер `deploy`, базовые пакеты, Docker |
 | `hardening.yml` | **Только для нового VM, в связке с bootstrap** | sshd, UFW, fail2ban, unattended-upgrades |
+| `channel-m-reverse.yml` | После изменения Channel M artifact или docker bridge gateway | Настроить `home_ru_proxy`, `.env.host` mapping, пересоздать контейнер и проверить MAX socket через reverse Channel M |
 
 `bootstrap.yml` и `hardening.yml` **никогда не применяются к текущему prod** — он уже захардёнен по runbook'у руками.
 
@@ -89,7 +90,7 @@ docker rm -f ansible-lab
 - Создание Hetzner VM (делается через панель).
 - Cloud Firewall в Hetzner панели (отдельный API token).
 - SMS reauth для MAX (только владелец с телефоном).
-- Содержимое `.env.secrets` / `.env` / `config.local.yaml` — копируется на сервер вручную через `scp`.
+- Содержимое `.env.secrets` / `.env` / `config.local.yaml` — копируется на сервер вручную через `scp`; reverse Channel M может обновлять только свои ключи `MAX_EGRESS_PROXY_*` и `max.egress`.
 - Auto-deploy по push в git — намеренно не делаем (запрет в [CLAUDE.md](../../CLAUDE.md)).
 - Dry-run preview контейнерного rollout — в `--check` выполняется только preflight verify, а не симуляция `docker compose build/up`.
 

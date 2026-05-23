@@ -42,6 +42,8 @@ class BridgeStatusReporter:
         max_issue = get_last_issue() if callable(get_last_issue) else None
         get_last_connected_at = getattr(self._max, "get_last_connected_at", None)
         last_connected_at = get_last_connected_at() if callable(get_last_connected_at) else None
+        get_egress_status = getattr(self._max, "get_egress_status", None)
+        egress_status = get_egress_status() if callable(get_egress_status) else None
 
         inbound_total = msgs.get("inbound", 0)
         outbound_total = msgs.get("outbound", 0)
@@ -61,6 +63,18 @@ class BridgeStatusReporter:
             "🔗 Соединение",
             f"  MAX → Telegram  {max_ok}",
             f"  Telegram → MAX  {tg_ok}",
+        ]
+        if egress_status:
+            active_egress = egress_status.get("max_egress_active")
+            egress_label = egress_status.get("max_egress_label")
+            egress_line = f"  MAX egress: {active_egress}"
+            if egress_label:
+                egress_line += f" - {egress_label}"
+            lines.append(egress_line)
+            if egress_status.get("warning"):
+                lines.append(f"  ⚠️ {egress_status['warning']}")
+
+        lines += [
             "",
             f"📨 Сообщения (за {period_hours}ч)",
             f"  Входящих  (MAX→TG): {inbound_total}"

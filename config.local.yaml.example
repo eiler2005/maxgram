@@ -12,6 +12,21 @@ health:
   heartbeat_interval_seconds: 30
   worker_restart_backoff_seconds: 5
 
+max:
+  # Основной production-режим: MAX API/CDN идёт через reverse Channel M.
+  # Роутер держит outbound SSH remote-forward на VPS, а bridge использует
+  # authenticated HTTP CONNECT к VPS-local listener. Telegram остаётся direct
+  # с VPS/host-а bridge.
+  egress:
+    active: "home_ru_proxy"
+    fallback_policy: "manual"
+    profiles:
+      home_ru_proxy:
+        type: "http_connect"
+        proxy_url: "${MAX_EGRESS_PROXY_URL}"
+      hetzner_direct:
+        type: "direct"
+
 chats:
   - max_chat_id: "-70000000000001"
     title: "Семейный чат"

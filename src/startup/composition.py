@@ -144,6 +144,7 @@ async def run_bridge_worker(
             data_dir=cfg.storage.session_path,
             session_name=cfg.max.session_filename,
             tmp_dir=str(cfg.storage.tmp_dir),
+            egress_config=cfg.max.egress,
         )
 
         tg_adapter = TelegramAdapter(

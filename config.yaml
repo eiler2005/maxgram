@@ -13,6 +13,14 @@ telegram:
 max:
   phone: "${MAX_PHONE}"
   session_filename: "session.db"
+  # По умолчанию сохраняем старый direct-режим. На production основной
+  # РФ-канал задаётся в config.local.yaml через MAX_EGRESS_PROXY_URL.
+  egress:
+    active: "hetzner_direct"
+    fallback_policy: "manual"
+    profiles:
+      hetzner_direct:
+        type: "direct"
 
 storage:
   db_filename: "bridge.db"

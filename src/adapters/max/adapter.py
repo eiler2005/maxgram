@@ -50,6 +50,7 @@ from .media.ua import (
     MAX_CDN_IOS_CHROME_USER_AGENT,
     MAX_CDN_USER_AGENT,
 )
+from .network import build_max_egress_profile
 from .raw_payload import MaxRawPayloadService
 from .recovery import MaxRecoveryService
 from .resolve import MaxResolveService
@@ -83,9 +84,11 @@ class MaxAdapter:
         tmp_dir: str,
         *,
         backend: MaxBackend | None = None,
+        egress_config=None,
     ):
         normalized_session_name = Path(session_name).name
         tmp_path = Path(tmp_dir)
+        egress = build_max_egress_profile(egress_config) if egress_config is not None else None
         if backend is None:
             from .backends.pymax import PymaxBackend
 
@@ -93,6 +96,7 @@ class MaxAdapter:
                 phone=phone,
                 data_dir=data_dir,
                 session_name=normalized_session_name,
+                egress=egress,
             )
         state = MaxRuntimeState(
             phone=phone,
@@ -129,6 +133,7 @@ class MaxAdapter:
                 backend=backend,
                 tmp_dir=state.tmp_dir,
                 client_session_factory=state.client_session_factory,
+                egress=egress,
                 raw_payload=raw_payload,
             )
         )
@@ -197,6 +202,7 @@ class MaxAdapter:
         self._media = media
         self._recovery = recovery
         self._lifecycle = lifecycle
+        self._egress = egress
         self._voice_recovery._load_pending_empty_recoveries()
 
     @staticmethod
@@ -250,6 +256,14 @@ class MaxAdapter:
 
     def get_last_connected_at(self):
         return self._runtime.get_last_connected_at()
+
+    def get_egress_status(self) -> dict[str, object] | None:
+        if self._egress is None:
+            return None
+        status = self._egress.safe_log_fields()
+        if self._egress.is_non_ru_warning:
+            status["warning"] = "MAX uses non-RU direct egress"
+        return status
 
     async def collect_recovery_snapshot(self):
         return await self._recovery.collect_recovery_snapshot()

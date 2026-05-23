@@ -1,0 +1,127 @@
+---
+- name: Configure production MAX reverse Channel M egress
+  hosts: bridge_servers
+  gather_facts: false
+  vars:
+    channel_m_artifact: "{{ lookup('env', 'CHANNEL_M_ARTIFACT') | default('/Users/DenisErmilov/aiprojects/router_configuration/ansible/out/channel-m-maxtg/maxtg-bridge.env', true) }}"
+    channel_m_reverse_port: "{{ lookup('env', 'CHANNEL_M_REVERSE_PORT') | default(18057, true) }}"
+    channel_m_docker_network: "{{ compose_project }}_default"
+  tasks:
+    - name: Copy Channel M artifact to production host temporarily
+      ansible.builtin.copy:
+        src: "{{ channel_m_artifact }}"
+        dest: /tmp/maxtg-channel-m.env
+        mode: "0600"
+      no_log: true
+
+    - name: Configure env and config.local.yaml for reverse Channel M
+      ansible.builtin.shell: |
+        set -eu
+        . /tmp/maxtg-channel-m.env
+        u="${MAX_EGRESS_PROXY_URL#https://}"
+        u="${u#http://}"
+        creds="${u%@*}"
+        hostport="${u#*@}"
+        host="${hostport%%:*}"
+        reverse_url="http://${creds}@${host}:{{ channel_m_reverse_port }}"
+        gateway="$(docker network inspect {{ channel_m_docker_network }} 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["IPAM"]["Config"][0]["Gateway"])' 2>/dev/null || true)"
+        if [ -z "$gateway" ]; then
+          gateway="$(ip -4 addr show docker0 | awk '/inet / { split($2, a, "/"); print a[1]; exit }')"
+        fi
+        python3 - "$host" "$reverse_url" "$gateway" "{{ project_root }}" <<'PY'
+        import sys
+        from pathlib import Path
+
+        import yaml
+
+        host = sys.argv[1]
+        reverse_url = sys.argv[2]
+        gateway = sys.argv[3]
+        root = Path(sys.argv[4])
+
+        def upsert_env(path: Path, key: str, value: str) -> None:
+            lines = path.read_text().splitlines() if path.exists() else []
+            prefix = key + "="
+            rendered = prefix + value
+            next_lines = []
+            replaced = False
+            for line in lines:
+                if line.startswith(prefix):
+                    next_lines.append(rendered)
+                    replaced = True
+                else:
+                    next_lines.append(line)
+            if not replaced:
+                next_lines.append(rendered)
+            path.write_text("\n".join(next_lines) + "\n")
+
+        upsert_env(root / ".env.host", "MAX_EGRESS_PROXY_HOST", host)
+        upsert_env(root / ".env.host", "MAX_EGRESS_PROXY_GATEWAY", gateway)
+        upsert_env(root / ".env.secrets", "MAX_EGRESS_PROXY_URL", reverse_url)
+
+        config_path = root / "config.local.yaml"
+        data = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+        if data is None:
+            data = {}
+        max_section = data.setdefault("max", {})
+        max_section["egress"] = {
+            "active": "home_ru_proxy",
+            "fallback_policy": "manual",
+            "profiles": {
+                "home_ru_proxy": {
+                    "type": "http_connect",
+                    "proxy_url": "${MAX_EGRESS_PROXY_URL}",
+                },
+                "hetzner_direct": {
+                    "type": "direct",
+                },
+            },
+        }
+        config_path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+        PY
+        rm -f /tmp/maxtg-channel-m.env
+      no_log: true
+
+    - name: Recreate bridge container with reverse Channel M host mapping
+      ansible.builtin.shell: >-
+        docker compose
+        --env-file {{ env_host_file }}
+        -f {{ compose_file }}
+        up -d --force-recreate bridge
+      args:
+        chdir: "{{ project_root }}"
+      changed_when: true
+
+    - name: Wait for bridge health after Channel M config
+      ansible.builtin.shell: |
+        set -eu
+        cid="$(docker compose --env-file {{ env_host_file }} -f {{ compose_file }} ps -q bridge)"
+        [ -n "$cid" ]
+        for _ in $(seq 1 40); do
+          health="$(docker inspect -f '{{ "{{" }}.State.Health.Status{{ "}}" }}' "$cid")"
+          [ "$health" = "healthy" ] && exit 0
+          sleep 3
+        done
+        docker inspect -f '{{ "{{" }}.State.Health.Status{{ "}}" }}' "$cid"
+        exit 1
+      args:
+        chdir: "{{ project_root }}"
+      changed_when: false
+
+    - name: Smoke check MAX socket through reverse Channel M from bridge container
+      ansible.builtin.shell: |
+        docker compose --env-file {{ env_host_file }} -f {{ compose_file }} exec -T bridge python - <<'PY'
+        from src.config.loader import load_config
+        from src.adapters.max.network import build_max_egress_profile
+
+        cfg = load_config()
+        profile = build_max_egress_profile(cfg.max.egress)
+        if profile.name != "home_ru_proxy" or profile.type != "http_connect":
+            raise SystemExit(f"unexpected MAX egress profile: {profile.name}/{profile.type}")
+        sock = profile.socket_connector.connect("api.oneme.ru", 443, timeout=15)
+        sock.close()
+        print("container_reverse_channel_m_socket_connect=ok")
+        PY
+      args:
+        chdir: "{{ project_root }}"
+      changed_when: false

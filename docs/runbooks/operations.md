@@ -98,6 +98,7 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 - контейнер `bridge` в статусе `Up`
 - Docker healthcheck в статусе `healthy`
 - в логах есть `MAX connected`
+- `/status` показывает `MAX egress: home_ru_proxy` в production
 - в свежем startup-логе есть `Running startup tests` и затем `Startup tests passed: ...`
 - нет непрерывных ошибок `TelegramConflictError`
 - в `message_map` и `delivery_log` появляются свежие записи
@@ -119,6 +120,29 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 - В production у контейнера `restart: always`, поэтому после обычного `reboot` VM bridge должен подняться сам.
 - Если сделать `docker compose down`, контейнер будет удалён; после reboot VM он уже не восстановится сам, пока не выполнить `docker compose ... up -d`.
 - Теперь PID1 внутри контейнера — supervisor. Даже если MAX/TG интеграция деградирует, контейнер должен оставаться `Up`, а проблема должна отражаться в `data/health_state.json` и в ops-алертах.
+
+### MAX egress / Channel M
+
+Production MAX egress должен быть явным:
+
+```yaml
+max:
+  egress:
+    active: "home_ru_proxy"
+    fallback_policy: "manual"
+    profiles:
+      home_ru_proxy:
+        type: "http_connect"
+        proxy_url: "${MAX_EGRESS_PROXY_URL}"
+      hetzner_direct:
+        type: "direct"
+```
+
+`home_ru_proxy` отправляет только MAX API/CDN трафик через authenticated HTTP CONNECT к VPS-local reverse Channel M listener. Этот listener держится исходящим SSH remote-forward с домашнего роутера; дальше роутер выпускает трафик через домашний РФ WAN. Telegram polling/send остаётся прямым Hetzner-трафиком. Домашняя LAN/Wi-Fi и GhostRoute Channel A/B/C routing этим не меняются.
+
+`hetzner_direct` — ручной аварийный режим. Он включается только изменением `max.egress.active: "hetzner_direct"` оператором и должен быть виден в `/status` как warning `MAX uses non-RU direct egress`. Автоматического fallback нет: если `home_ru_proxy` недоступен, MAX показывает issue `max_egress_unavailable`/degraded, но bridge не переключает MAX на direct сам.
+
+Для применения reverse Channel M на VPS используется `infra/ansible/channel-m-reverse.yml`: он берёт gitignored artifact из `router_configuration`, обновляет `MAX_EGRESS_PROXY_*`, пересоздаёт контейнер и проверяет socket CONNECT к MAX изнутри bridge.
 
 ## Запуск / Остановка
 

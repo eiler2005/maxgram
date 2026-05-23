@@ -40,6 +40,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 
 - **Unofficial WebSocket API** — reverse-engineered `pymax` userbot with a custom reconnect loop that fixes an OOM bug in the upstream library (`reconnect=False` + outer `while True`)
 - **Explicit adapter/backend boundary** — `BridgeCore` depends on transport-neutral contracts; MAX operation services depend on typed client ports/DTO, and `pymax` imports plus pymax client shape are isolated to `src/adapters/max/backends/pymax/`, with regression tests guarding the boundary
+- **MAX-only egress profiles** — MAX API/CDN traffic can use authenticated HTTP CONNECT through reverse Channel M (`home_ru_proxy`: router-originated SSH remote-forward to the VPS) while Telegram stays direct; Hetzner direct is retained only as a manual emergency profile
 - **Idempotent message deduplication** — `max_msg_id` is written to SQLite *before* forwarding to Telegram, making the system safe to restart at any point without duplicates
 - **Privacy-first design** — no message text or media is ever stored; SQLite only holds routing metadata (chat bindings, message ID map, delivery log)
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
@@ -106,6 +107,8 @@ Bridge Core (contracts) ──► TG Adapter (aiogram) ──► Telegram Topics
 ```
 
 One Python service with two layers: a long-lived supervisor plus a restartable bridge worker. Runtime wiring lives in `src/startup/composition.py`; SQLite and persisted health files are the only state stores.
+
+MAX network traffic is scoped to the MAX adapter. In production `home_ru_proxy` sends MAX API and CDN downloads through reverse Channel M: the home router opens an outbound SSH remote-forward to the VPS docker bridge, and the bridge uses authenticated HTTP CONNECT against that VPS-local listener. `hetzner_direct` remains a manual break-glass profile and is never used as automatic fallback. Telegram traffic, LAN/Wi-Fi, and router A/B/C routing are not changed by this bridge setting.
 
 Details: [docs/architecture.md](docs/architecture.md)
 
@@ -185,6 +188,9 @@ cp .env.example .env
 cp .env.secrets.example .env.secrets
 # Fill in secrets in .env.secrets:
 # TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE
+# Optional for production MAX home-router egress:
+# .env.secrets: MAX_EGRESS_PROXY_URL
+# .env.host: MAX_EGRESS_PROXY_HOST, MAX_EGRESS_PROXY_GATEWAY
 
 # 3. (optional) Local chat bindings
 cp config.local.yaml.example config.local.yaml

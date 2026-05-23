@@ -4,11 +4,20 @@ import asyncio
 from typing import Optional
 
 from ...bridge.contracts import MaxIssue
+from .network import MaxEgressUnavailable
 
 
 def classify_runtime_error(error: BaseException) -> Optional[MaxIssue]:
     raw_error = str(error).strip() or error.__class__.__name__
     lowered = raw_error.lower()
+
+    if isinstance(error, MaxEgressUnavailable) or "max egress proxy" in lowered:
+        return MaxIssue(
+            kind="max_egress_unavailable",
+            summary="MAX egress proxy недоступен",
+            raw_error=raw_error,
+            requires_reauth=False,
+        )
 
     corrupt_session_markers = (
         "unsupported file format",

@@ -166,6 +166,14 @@ chmod 700 data
 - `config.local.yaml`
 - содержимое `data/`
 
+Для production MAX через домашний РФ egress в `.env.secrets` также должен быть `MAX_EGRESS_PROXY_URL`. Для reverse Channel M в `.env.host` должны быть `MAX_EGRESS_PROXY_HOST` и `MAX_EGRESS_PROXY_GATEWAY`, чтобы Docker Compose направлял proxy host на VPS docker bridge listener. В `config.local.yaml`:
+
+```yaml
+max:
+  egress:
+    active: "home_ru_proxy"
+```
+
 Права:
 
 ```bash
@@ -223,6 +231,7 @@ docker run --rm -it \
 - `docker ps`
 - `docker compose --env-file .env.host -f deploy/docker-compose.prod.yml logs --tail=100`
 - startup-лог содержит `MAX connected`, затем `Running startup tests`, затем `Startup tests passed: ...`
+- `/status` показывает `MAX egress: home_ru_proxy`; `hetzner_direct` допустим только как ручной аварийный режим и должен давать warning
 - входящее MAX -> Telegram
 - reply Telegram -> MAX
 - медиа MAX -> Telegram

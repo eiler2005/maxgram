@@ -26,6 +26,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 | `src/main.py` | Тонкий entry point: logging, config load, health store, supervisor |
 | `src/startup/composition.py` | Runtime composition root: Repository, adapters, BridgeCore, startup notifications |
 | `src/adapters/max/adapter.py` (`src/adapters/max_adapter.py`) | MAX facade: operation services with explicit deps over internal backend boundary; старый import path сохранён |
+| `src/adapters/max/network/` | MAX-only egress abstraction: direct socket, authenticated HTTP CONNECT, aiohttp proxy options; не используется TG/core |
 | `src/adapters/max/backends/pymax/` | Единственная текущая pymax implementation boundary (`SocketMaxClient`, private client shape, opcodes, pymax types/files/payloads) |
 | `src/adapters/max/{payload,users,errors,media/*}.py` | Pymax-free MAX helper leaves: payload parsing, names, error classification, CDN UA/download |
 | `src/adapters/tg/adapter.py` (`src/adapters/tg_adapter.py`) | aiogram бот: топики, send, recv reply; старый import path сохранён |
@@ -83,6 +84,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `SocketMaxClient(reconnect=False, send_fake_telemetry=False)` — **обязательно оба флага**
   - `reconnect=True` → OOM (chats/dialogs растут без очистки при каждом reconnect)
   - `send_fake_telemetry=True` (default) → SSL RECORD_OVERFLOW storm
+- MAX egress выбирается только внутри `src/adapters/max/`: `home_ru_proxy` использует authenticated HTTP CONNECT к VPS-local reverse Channel M listener, который держится исходящим SSH remote-forward с домашнего РФ роутера; `hetzner_direct` оставляет старый direct egress с VPS. Автоматического fallback нет: при падении proxy MAX деградирует с issue `max_egress_unavailable`, но сам не переключается на Hetzner direct.
 - Reconnect реализован вручную: `while True: client = make_client(); await client.start()`
 - `send_message` ждёт до 15 сек если `_started=False` (reconnect window)
 
@@ -124,12 +126,23 @@ kill $(ps aux | grep 'python -m src.main' | grep -v grep | awk '{print $2}')
 
 Секреты — только в `.env.secrets` (не в git):
 ```
-TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE
+TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE,
+MAX_EGRESS_PROXY_URL
+MAX_EGRESS_PROXY_HOST, MAX_EGRESS_PROXY_GATEWAY   # .env.host для docker compose extra_hosts reverse Channel M
 ```
 
 `.env` должен содержать только не-секретные локальные env (`DATA_DIR`, optional `CONFIG_LOCAL_PATH`).
 Базовая конфигурация — в `config.yaml` (в git, без секретов).
 Локальные chat bindings и реальные названия чатов — в `config.local.yaml` (не в git).
+Production `config.local.yaml` должен явно ставить:
+
+```yaml
+max:
+  egress:
+    active: "home_ru_proxy"
+```
+
+`hetzner_direct` — только ручной аварийный режим через изменение конфига оператором; в `/status` он помечается warning-ом `MAX uses non-RU direct egress`.
 
 ## Ключевые ограничения
 
