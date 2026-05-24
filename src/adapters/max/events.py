@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import msgpack
+
 from ...bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
@@ -59,10 +61,36 @@ class MaxEventsService:
         if value is None or value == "":
             return None
         if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace") or None
+            msgpack_text = MaxEventsService._extract_msgpack_text(value)
+            if msgpack_text:
+                return msgpack_text
+            try:
+                return value.decode("utf-8") or None
+            except UnicodeDecodeError:
+                return None
         if isinstance(value, str):
             return value
         return str(value)
+
+    @staticmethod
+    def _extract_msgpack_text(value: bytes) -> str | None:
+        try:
+            payload = msgpack.unpackb(value, raw=False, strict_map_key=False)
+        except Exception:
+            return None
+        return MaxEventsService._find_text_value(payload)
+
+    @staticmethod
+    def _find_text_value(value) -> str | None:
+        if isinstance(value, dict):
+            direct = value.get("text")
+            if isinstance(direct, str) and direct:
+                return direct
+            for key in ("message", "msg", "content"):
+                nested = MaxEventsService._find_text_value(value.get(key))
+                if nested:
+                    return nested
+        return None
 
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""

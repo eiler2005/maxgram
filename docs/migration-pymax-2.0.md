@@ -877,8 +877,8 @@ backend adapter или расширить transport-neutral port, а не имп
   PyMax 2 `sessions` и не требует SMS-auth при наличии старой сессии;
 - login payload sanitizer удаляет unknown/`UNSUPPORTED` attachments до PyMax 2
   `LoginResponse` validation;
-- inbound text normalization декодирует PyMax 2 `message.text` bytes до string
-  до logging preview и bridge dispatch;
+- inbound text normalization для PyMax 2 `message.text` bytes сначала пробует
+  msgpack extraction, затем strict UTF-8, и не форвардит binary garbage;
 - PyMax 2 message callback получает `(message, client)`, а bridge handler
   получает один `MaxClientMessage`;
 - start callback получает `(client)`, а bridge start handler вызывается без
@@ -1084,7 +1084,7 @@ Errors должны проходить через существующие redac
 | Session DB несовместима | High | PyMax 1 хранит текущую сессию в `auth(token, device_id)`, PyMax 2 читает `sessions`; без import PyMax 2 уйдет в SMS-auth и может получить rate limit. | Backup перед live-run, `BridgeSessionStore` one-time import, regression test на legacy `auth`. |
 | Старый token отвергнут на `LOGIN` | High | PyMax 1 `SocketMaxClient` создавал DESKTOP session, а PyMax 2 default `Client` стартует как Android; сервер может вернуть `login.cred / FAIL_WRONG_PASSWORD`. | В factory использовать DESKTOP user-agent и sync overrides `0` до явного reauth. |
 | PyMax 2 не знает attachment variant | High | Initial sync может вернуть `lastMessage.attaches.type=UNSUPPORTED`, и upstream `LoginResponse` падает до `on_start`. | Backend-local `BridgeAuthService` sanitizes unsupported attachments before validation, regression test. |
-| `message.text` приходит bytes | Medium | Logging preview ожидает string и может сорвать обработку уже нормализованного сообщения. | Нормализовать bytes в UTF-8 string в `MaxEventsService`, regression test. |
+| `message.text` приходит binary bytes | Medium | Для SHARE payload PyMax 2 может вернуть msgpack-like bytes; blind UTF-8 replacement превращает это в `�` и raw field names в Telegram. | Msgpack extraction + strict UTF-8 fallback в `MaxEventsService`, regression tests. |
 | Native `on_raw` приходит позже typed mapping | Medium | Старый patch ловил raw wrappers до потери части данных. | Unit test на conversion, live test voice/audio и raw history recovery. |
 | `client.chats` иначе представляет dialogs/groups | Medium | Recovery и DM partner resolution зависят от реальных dialogs. | Фильтр по `Chat.type`, live test own-initiated DM. |
 | `client._app.invoke` private | Medium | Raw history/audio/video зависят от raw requests. | Изолировать в raw gateway, покрыть узким test, не использовать вне backend. |

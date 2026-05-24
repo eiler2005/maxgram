@@ -14,7 +14,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **209 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **210 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -104,7 +104,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (75 тестов)
+## test_max_adapter.py — парсинг сырых сообщений MAX (76 тестов)
 
 ### Системные события (CONTROL)
 
@@ -112,6 +112,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 |------|--------------|
 | `test_handle_raw_message_renders_control_leave` | `CONTROL/leave` → `rendered_texts == ["Имя Фамилия вышел(а) из чата"]`; `attachment_types == ["CONTROL"]`; `chat_title` подставляется из `client.chats`. |
 | `test_handle_raw_message_decodes_bytes_text_before_preview` | PyMax 2 `message.text` в bytes декодируется до UTF-8 string до logging preview и dispatch. |
+| `test_handle_raw_message_extracts_text_from_msgpack_bytes` | SHARE/msgpack-like `message.text` bytes распаковываются до настоящего text без `�` и raw field names. |
 | `test_handle_raw_message_renders_control_add_with_partial_name_resolution` | `CONTROL/add` с двумя `userIds` — один известен в кеше, другой нет → `"Добавлены участники: Имя Фамилия, ещё 1"`. Проверяет частичное разрешение имён. |
 | `test_handle_raw_message_renders_control_join_by_link` | `CONTROL/joinbylink` рендерится в человекочитаемый текст `"Присоединились по ссылке: ..."`, а не сырой `joinbylink`. |
 

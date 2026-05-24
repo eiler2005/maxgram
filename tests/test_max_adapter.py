@@ -5,6 +5,7 @@ import time
 from types import SimpleNamespace
 
 from aiohttp import ClientResponseError
+import msgpack
 import pytest
 
 from src.adapters.max_adapter import (
@@ -616,6 +617,46 @@ async def test_handle_raw_message_decodes_bytes_text_before_preview(tmp_path):
 
     assert len(received) == 1
     assert received[0].text == "Привет"
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_extracts_text_from_msgpack_bytes(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=1,
+        chat_id=123,
+        sender=7001,
+        text=msgpack.packb(
+            {
+                "text": "Самостоятельно можно записаться по ссылке",
+                "attaches": [{"_type": "SHARE", "shareId": "redacted"}],
+            },
+            use_bin_type=True,
+        ),
+        type="USER",
+        status=None,
+        attaches=[SimpleNamespace(type="SHARE")],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].text == "Самостоятельно можно записаться по ссылке"
+    assert "\ufffd" not in received[0].text
+    assert received[0].rendered_texts == ["[Вложение MAX: share]"]
 
 
 @pytest.mark.asyncio
