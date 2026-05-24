@@ -23,8 +23,11 @@ internal backend boundary:
   that operation services consume.
 - `PymaxClientAdapter` is a thin `MaxClientPort` facade over the PyMax backend
   package. PyMax 2 wiring is split into focused internal modules:
-  `client_factory.py`, `transport.py`, `events.py`, `raw_gateway.py`,
-  `models.py` and `media.py`.
+  `client_factory.py`, `session_store.py`, `transport.py`, `events.py`,
+  `raw_gateway.py`, `models.py` and `media.py`.
+- PyMax 2 session compatibility is isolated in `session_store.py`: it imports
+  legacy PyMax 1 `auth(token, device_id)` into the PyMax 2 `sessions` schema
+  once, without exposing token data outside the backend boundary.
 - Private PyMax 2 calls such as `client._app.invoke(...)` are isolated inside
   the backend raw gateway. Native `on_raw()` replaces the old private
   message-notification patch.

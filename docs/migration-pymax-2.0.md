@@ -382,6 +382,7 @@ src/adapters/max/backends/pymax/
   backend.py          # composition/factory, MaxBackend implementation
   client_adapter.py   # thin MaxClientPort implementation
   client_factory.py   # Client + ExtraConfig + auth/session wiring
+  session_store.py    # PyMax 2 SessionStore + one-time PyMax 1 auth import
   transport.py        # Channel M / MaxEgressProfile -> PyMax 2 transport
   events.py           # PyMax 2 routers/handlers -> bridge callbacks
   raw_gateway.py      # on_raw + _app.invoke isolation
@@ -432,8 +433,16 @@ from pymax.types import Message
 extra_config = ExtraConfig(
     reconnect=False,
     telemetry=False,
+    store=BridgeSessionStore(work_dir, session_name, phone=phone),
 )
 ```
+
+`BridgeSessionStore` обязателен для production migration: PyMax 1 хранил
+активную сессию в legacy table `auth(token, device_id)`, а PyMax 2 читает
+table `sessions`. Store сначала пробует native PyMax 2 `sessions`; если она
+пуста, он один раз импортирует legacy `auth` row в `sessions` без логирования
+token/device payload. Без этого PyMax 2 считает, что сессии нет, начинает
+`AUTH_REQUEST` и может быстро получить `err.limit.violate`.
 
 Direct egress:
 
@@ -843,6 +852,8 @@ backend adapter или расширить transport-neutral port, а не имп
 
 - `ExtraConfig.reconnect is False`;
 - `ExtraConfig.telemetry is False`;
+- `BridgeSessionStore` импортирует legacy PyMax 1 `auth(token, device_id)` в
+  PyMax 2 `sessions` и не требует SMS-auth при наличии старой сессии;
 - PyMax 2 message callback получает `(message, client)`, а bridge handler
   получает один `MaxClientMessage`;
 - start callback получает `(client)`, а bridge start handler вызывается без
@@ -1045,7 +1056,7 @@ Errors должны проходить через существующие redac
 | --- | --- | --- | --- |
 | Включился PyMax internal reconnect | Critical | В проекте reconnect должен создавать свежий client. Старое поведение pymax уже приводило к накоплению state. | Всегда `ExtraConfig(reconnect=False)`, unit test. |
 | Включилась telemetry | High | Старый fake telemetry режим был проблемным, плюс privacy posture требует минимум лишнего трафика. | Всегда `ExtraConfig(telemetry=False)`, unit test. |
-| Session DB несовместима | High | Первый live-run может изменить или сломать существующую session DB. | Backup перед live-run, по возможности новая session для первого теста. |
+| Session DB несовместима | High | PyMax 1 хранит текущую сессию в `auth(token, device_id)`, PyMax 2 читает `sessions`; без import PyMax 2 уйдет в SMS-auth и может получить rate limit. | Backup перед live-run, `BridgeSessionStore` one-time import, regression test на legacy `auth`. |
 | Native `on_raw` приходит позже typed mapping | Medium | Старый patch ловил raw wrappers до потери части данных. | Unit test на conversion, live test voice/audio и raw history recovery. |
 | `client.chats` иначе представляет dialogs/groups | Medium | Recovery и DM partner resolution зависят от реальных dialogs. | Фильтр по `Chat.type`, live test own-initiated DM. |
 | `client._app.invoke` private | Medium | Raw history/audio/video зависят от raw requests. | Изолировать в raw gateway, покрыть узким test, не использовать вне backend. |

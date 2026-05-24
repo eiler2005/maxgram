@@ -84,6 +84,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `Client(..., extra_config=ExtraConfig(reconnect=False, telemetry=False))` — **обязательно оба флага**
   - `reconnect=True` → не использовать: bridge держит outer reconnect loop со свежим client
   - `telemetry=True` → не использовать: сохраняем минимальный telemetry/privacy posture
+- PyMax 2 session store должен подхватывать legacy PyMax 1 table `auth(token, device_id)` через `src/adapters/max/backends/pymax/session_store.py`. Иначе PyMax 2 считает, что сессии нет, начинает SMS-auth (`AUTH_REQUEST`) и уходит в rate-limit.
 - PyMax 2 native `on_raw()` используется вместо старого private `_handle_message_notifications` patch; raw requests изолированы в backend `raw_gateway.py` через `client._app.invoke(...)`.
 - MAX egress выбирается только внутри `src/adapters/max/`: `home_ru_proxy` использует authenticated HTTP CONNECT к VPS-local reverse Channel M listener, который держится исходящим SSH remote-forward с домашнего РФ роутера; `hetzner_direct` оставляет старый direct egress с VPS. Автоматического fallback нет: при падении proxy MAX деградирует с issue `max_egress_unavailable`, но сам не переключается на Hetzner direct.
 - Reconnect реализован вручную: `while True: client = make_client(); await client.start()`

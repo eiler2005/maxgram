@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -99,8 +100,9 @@ def test_users_and_downloader_helpers_are_plain_object_based():
     assert video_url == "https://cdn.example.test/v.mp4"
 
 
-def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch):
+def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_path):
     from src.adapters.max.backends.pymax import client_factory as pymax_factory
+    from src.adapters.max.backends.pymax.session_store import BridgeSessionStore
 
     calls = {}
 
@@ -110,11 +112,42 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch):
 
     monkeypatch.setattr(pymax_factory, "Client", FakeClient)
 
-    create_socket_client(phone="+79991234567", data_dir="/data", session_name="session")
+    create_socket_client(phone="+79991234567", data_dir=str(tmp_path), session_name="session")
 
     assert calls["extra_config"].reconnect is False
     assert calls["extra_config"].telemetry is False
-    assert calls["work_dir"] == "/data"
+    assert isinstance(calls["extra_config"].store, BridgeSessionStore)
+    assert calls["work_dir"] == str(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_pymax2_session_store_imports_legacy_pymax1_auth_table(tmp_path):
+    from src.adapters.max.backends.pymax.session_store import BridgeSessionStore
+
+    db_path = tmp_path / "session.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE auth (token TEXT NOT NULL, device_id CHAR(32) NOT NULL)")
+    con.execute(
+        "INSERT INTO auth (token, device_id) VALUES (?, ?)",
+        ("test-token", "legacy-device-id"),
+    )
+    con.commit()
+    con.close()
+
+    store = BridgeSessionStore(str(tmp_path), "session.db", phone="+79991234567")
+    session = await store.load_session()
+    await store.close()
+
+    assert session is not None
+    assert session.token == "test-token"
+    assert session.device_id == "legacy-device-id"
+    assert session.phone == "+79991234567"
+
+    con = sqlite3.connect(db_path)
+    row = con.execute("SELECT device_id, phone FROM sessions").fetchone()
+    con.close()
+
+    assert row == ("legacy-device-id", "+79991234567")
 
 
 @pytest.mark.asyncio
