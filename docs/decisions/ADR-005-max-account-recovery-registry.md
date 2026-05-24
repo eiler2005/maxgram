@@ -28,7 +28,7 @@ Persist:
 - `dm_contact_recovery_registry`: personal contacts only from real MAX DM dialogs or already bound DM topics, with `max_user_id`, display name, old/current DM chat id, linked topic, source, recovery status, and `last_scan_at`. Do not copy the full MAX address book (`client.contacts`) or group writers from `known_users`.
 - `chat_recovery_events`: append-only scan/set/remap/account-change audit with compact metadata only.
 
-Add `MaxAdapter.collect_recovery_snapshot()` to collect metadata from `client.chats`, `client.channels`, `client.dialogs`, and `get_chat()`. `MaxRecoverySnapshot.contacts` is derived from `client.dialogs` only and filters out the current account id.
+Add `MaxAdapter.collect_recovery_snapshot()` to collect metadata from typed chat/channel/dialog snapshots and `get_chat()`. `MaxRecoverySnapshot.contacts` is derived from dialog snapshots only and filters out the current account id.
 
 Add owner-only Telegram commands:
 

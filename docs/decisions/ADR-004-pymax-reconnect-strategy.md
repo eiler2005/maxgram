@@ -2,6 +2,7 @@
 
 **Статус:** Принято  
 **Дата:** 2026-04  
+**Обновлено:** 2026-05-24 для PyMax 2.0.1
 **Контекст:** Обнаружен баг при отладке production
 
 ## Проблема
@@ -31,12 +32,14 @@ async def start(self):
         await asyncio.sleep(retry_delay)
 
 async def _make_client(self):
-    return SocketMaxClient(
+    return Client(
         phone=self._phone,
         work_dir=self._data_dir,
         session_name=self._session_name,
-        reconnect=False,              # ← управляем сами
-        send_fake_telemetry=False,    # ← отключаем SSL-бомбу
+        extra_config=ExtraConfig(
+            reconnect=False,          # ← управляем сами
+            telemetry=False,          # ← не включаем telemetry
+        ),
     )
 ```
 
@@ -46,3 +49,4 @@ async def _make_client(self):
 - Нет SSL storm
 - Кеш пользователей/чатов пересобирается при каждом reconnect (приемлемо)
 - `on_start` handlers вызываются при каждом reconnect — нужен флаг `_started_once` для дедупликации уведомлений
+- В PyMax 2 встроенный ping loop используется вместо bridge private ping patch; `failfast_ping_config()` для PyMax 2 возвращает `None`.

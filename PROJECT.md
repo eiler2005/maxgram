@@ -85,7 +85,7 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 - GitHub: `https://github.com/MaxApiTeam/PyMax`
 - PyPI пакет: `maxapi-python`
 - Импорт в коде: `pymax`
-- Runtime backend: `PymaxBackend` поверх `SocketMaxClient`
+- Runtime backend: `PymaxBackend` поверх PyMax 2 `Client + ExtraConfig`
 
 На 2 апреля 2026 репозиторий `PyMax` на GitHub помечен как archived/read-only, поэтому проект использует pinned dependency в `requirements.txt` и не рассчитывает на быстрые upstream-фиксы.
 
@@ -245,7 +245,7 @@ MAX не даёт штатно поменять телефон в профиле
 - `chat_recovery_registry` хранит stable key `tg_topic:<topic_id>`, старый/текущий `max_chat_id`, title, mode, priority, access type, invite link, owner/admin contacts, DM partner metadata, participant count, manual note, recovery status
 - `last_scan_at` показывает свежесть snapshot для каждой registry row; `/recovery report` показывает возраст последнего snapshot
 - `chat_recovery_events` хранит append-only audit scan/set/remap/account-change без message text/raw MAX payload
-- `MaxAdapter.collect_recovery_snapshot()` читает `client.chats`, `client.channels`, `client.dialogs`, enrich через `get_chat()`
+- `MaxAdapter.collect_recovery_snapshot()` читает typed snapshots поверх `client.chats`/`Chat.type`, enrich через `get_chat()`
 - `bridge/recovery/scheduler.py` запускает safe scan после MAX connect/reconnect, затем раз в неделю, а также event-driven при `new_binding`, `title_changed` и MAX `CONTROL`
 - Event-driven scans работают асинхронно: background task с debounce/cooldown не задерживает обычную пересылку, создание topics или rename
 - Обычные recovery auto-scan дельты попадают агрегатами в 4-часовой `/status`; отдельный owner/ops alert остаётся только для `account_migration_required`. Invite links, notes, phone numbers, message text и raw MAX payload не выводятся в status/notification/log/health
@@ -271,9 +271,11 @@ Pymax `reconnect=True` имеет OOM-баг (см. [ADR-004](docs/decisions/ADR
 # MAX Adapter держит собственный reconnect loop,
 # а внешний supervisor поднимает весь worker при crash task-group.
 while True:
-    client = SocketMaxClient(
-        reconnect=False,           # управляем сами
-        send_fake_telemetry=False, # без SSL storm
+    client = Client(
+        extra_config=ExtraConfig(
+            reconnect=False,       # управляем сами
+            telemetry=False,       # не включаем telemetry
+        ),
     )
     await client.start()           # блокирует до disconnect
     state.connection.started = False
@@ -291,10 +293,10 @@ for _ in range(3):
 
 ### Тесты
 
-В проекте есть regression-набор на `pytest` (**177 тестов**):
+В проекте есть regression-набор на `pytest` (**206 тестов**):
 
 - `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих, recovery snapshot collector
-- `tests/test_max_adapter_leaves.py` — pymax-free helper leaves и `SocketMaxClient` flags
+- `tests/test_max_adapter_leaves.py` — pymax-free helper leaves и PyMax 2 backend/factory/raw/egress contracts
 - `tests/test_bridge_contracts.py` — contracts/composition/pymax-boundary architecture regressions
 - `tests/test_bridge_core.py` — пересылка media/rendered text, `/dm`, `/recovery`, async event-driven recovery scans, remap stale-reply safety
 - `tests/test_tg_adapter.py` — приём сообщений от участников группы, public `/dm` allowlist, owner-only `/recovery`
@@ -528,9 +530,9 @@ MAX_PHONE=+79...
 | Имя пользователя | `user.names[0].first_name` | ~~`user.first_name`~~ |
 | Кеш пользователей | `client.get_cached_user(int(id))` | ~~прямой доступ~~ |
 | Reconnect | `reconnect=False` + outer loop | ~~`reconnect=True`~~ (OOM) |
-| Telemetry | `send_fake_telemetry=False` | ~~default True~~ (SSL storm) |
-| Собственный ID | `client.me` (атрибут) | ~~`client.get_me()`~~ (нет метода) |
-| Название чата | `client.chats` (после sync) | ~~`message.chat_title`~~ (нет поля) |
+| Telemetry | `ExtraConfig(telemetry=False)` | ~~default True~~ |
+| Собственный ID | `client.me.contact.id` | ~~`client.get_me()`~~ (нет метода) |
+| Название чата | `client.chats` filtered by `Chat.type` | ~~`message.chat_title`~~ (нет поля) |
 
 ---
 
@@ -697,7 +699,7 @@ fly logs -f
 | Name resolution для DM | ✅ |
 | Fallback title auto-rename | ✅ |
 | pymax OOM fix | ✅ |
-| SSL storm fix (`send_fake_telemetry=False`) | ✅ |
+| Telemetry disabled (`ExtraConfig(telemetry=False)`) | ✅ |
 | Outbound retry при reconnect (3×5s) | ✅ |
 | Запуск локально | ✅ |
 

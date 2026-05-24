@@ -27,7 +27,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 | `src/startup/composition.py` | Runtime composition root: Repository, adapters, BridgeCore, startup notifications |
 | `src/adapters/max/adapter.py` (`src/adapters/max_adapter.py`) | MAX facade: operation services with explicit deps over internal backend boundary; старый import path сохранён |
 | `src/adapters/max/network/` | MAX-only egress abstraction: direct socket, authenticated HTTP CONNECT, aiohttp proxy options; не используется TG/core |
-| `src/adapters/max/backends/pymax/` | Единственная текущая pymax implementation boundary (`SocketMaxClient`, private client shape, opcodes, pymax types/files/payloads) |
+| `src/adapters/max/backends/pymax/` | Единственная текущая pymax implementation boundary (`Client + ExtraConfig`, PyMax 2 transport/events/raw gateway/models/media helpers) |
 | `src/adapters/max/{payload,users,errors,media/*}.py` | Pymax-free MAX helper leaves: payload parsing, names, error classification, CDN UA/download |
 | `src/adapters/tg/adapter.py` (`src/adapters/tg_adapter.py`) | aiogram бот: топики, send, recv reply; старый import path сохранён |
 | `src/adapters/tg/notifier.py` | Owner DM / ops topic notifications and alert outbox flush |
@@ -52,7 +52,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `known_users` — справочник имён MAX для `/dm`
 - `max_account_generations` — поколения MAX account; новый телефон = новый account
 - `chat_recovery_registry` — recovery metadata для переноса Telegram topics на новый MAX account (`last_scan_at`, invite/admin/DM metadata, manual notes)
-- `dm_contact_recovery_registry` — DM-only recovery contacts из реальных `client.dialogs`/привязанных DM topics; не `client.contacts` и не весь `known_users`
+- `dm_contact_recovery_registry` — DM-only recovery contacts из typed dialog snapshots/привязанных DM topics; не `client.contacts` и не весь `known_users`
 - `chat_recovery_events` — append-only audit recovery lifecycle без message text/raw payload
 
 ## Recovery registry / новый телефон
@@ -76,14 +76,15 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `message.sender` — это `int` (user_id), **не** User-объект
 - `message.chat_id` — `int`; положительный = DM, отрицательный = группа
 - `User.names: list[Names]` — имя через `names[0].first_name / last_name / name`
-- `client.chats` — список групп (populated после sync)
-- `client.dialogs` — список DM-диалогов (populated после sync); каждый Dialog имеет `.id` и `.participants: dict[str, int]`
+- PyMax 2 `client.chats` может содержать dialogs/groups/channels; backend фильтрует их по `Chat.type`
+- `dialogs_snapshot()` — typed DTO поверх `client.chats` с `Chat.type == DIALOG`; старого public `client.dialogs` в PyMax 2 нет
 - `client.get_cached_user(id)` — синхронный кеш пользователей
-- **DM chat_id ≠ всегда ID собеседника**: когда наш аккаунт инициирует DM, MAX-echo может вернуть `chat_id == own_id`. Либо `resolve_user_name(chat_id)` фейлится для нового контакта и код откатывается к `sender_id == own_id`. В обоих случаях имя собеседника нужно искать через `client.dialogs` → `Dialog.participants` (фильтруя `own_id`). Реализовано в `MaxAdapter.get_dm_partner_id()`.
+- **DM chat_id ≠ всегда ID собеседника**: когда наш аккаунт инициирует DM, MAX-echo может вернуть `chat_id == own_id`. Либо `resolve_user_name(chat_id)` фейлится для нового контакта и код откатывается к `sender_id == own_id`. В обоих случаях имя собеседника нужно искать через typed `dialogs_snapshot()` → `participants` (фильтруя `own_id`). Реализовано в `MaxAdapter.get_dm_partner_id()`.
 - Signed OK CDN URL для MAX-видео чувствительны к `User-Agent`: выбирать клиент по `srcAg` (`CHROME`, `CHROME_ANDROID`, `CHROME_IPHONE`, Safari/iPhone fallback). При обрыве скачивания использовать `*.part` + `Range`; если CDN не поддержал докачку, перекачивать с нуля.
-- `SocketMaxClient(reconnect=False, send_fake_telemetry=False)` — **обязательно оба флага**
-  - `reconnect=True` → OOM (chats/dialogs растут без очистки при каждом reconnect)
-  - `send_fake_telemetry=True` (default) → SSL RECORD_OVERFLOW storm
+- `Client(..., extra_config=ExtraConfig(reconnect=False, telemetry=False))` — **обязательно оба флага**
+  - `reconnect=True` → не использовать: bridge держит outer reconnect loop со свежим client
+  - `telemetry=True` → не использовать: сохраняем минимальный telemetry/privacy posture
+- PyMax 2 native `on_raw()` используется вместо старого private `_handle_message_notifications` patch; raw requests изолированы в backend `raw_gateway.py` через `client._app.invoke(...)`.
 - MAX egress выбирается только внутри `src/adapters/max/`: `home_ru_proxy` использует authenticated HTTP CONNECT к VPS-local reverse Channel M listener, который держится исходящим SSH remote-forward с домашнего РФ роутера; `hetzner_direct` оставляет старый direct egress с VPS. Автоматического fallback нет: при падении proxy MAX деградирует с issue `max_egress_unavailable`, но сам не переключается на Hetzner direct.
 - Reconnect реализован вручную: `while True: client = make_client(); await client.start()`
 - `send_message` ждёт до 15 сек если `_started=False` (reconnect window)

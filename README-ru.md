@@ -110,7 +110,7 @@ MAX сетевой egress ограничен MAX adapter. В production `home_ru
 /recovery remap <topic_id> <new_max_chat_id>
 ```
 
-Обычный режим: bridge собирает recovery snapshot после успешного MAX connect/reconnect и дополнительно раз в неделю. Также есть event-driven обновление: новый `ChatBinding`, переименование fallback-title и MAX `CONTROL` событие ставят debounced background scan в `bridge/recovery/scheduler.py`. Эти scans выполняются асинхронно через task scheduler и не задерживают пересылку сообщений, создание topics или обычный routing. В том же scan обновляется DM contact recovery из `client.dialogs` только; `client.contacts` и `known_users` не копируются в recovery contact registry. Обычные дельты автоматического scan теперь не создают отдельный Telegram-alert: агрегаты попадают в 4-часовой `/status`, а `/recovery report` остаётся детальным view. Срочное уведомление owner/ops отправляется только если обнаружен новый MAX account и нужен migration flow.
+Обычный режим: bridge собирает recovery snapshot после успешного MAX connect/reconnect и дополнительно раз в неделю. Также есть event-driven обновление: новый `ChatBinding`, переименование fallback-title и MAX `CONTROL` событие ставят debounced background scan в `bridge/recovery/scheduler.py`. Эти scans выполняются асинхронно через task scheduler и не задерживают пересылку сообщений, создание topics или обычный routing. В том же scan обновляется DM contact recovery только из typed dialog snapshots; `client.contacts` и `known_users` не копируются в recovery contact registry. Обычные дельты автоматического scan теперь не создают отдельный Telegram-alert: агрегаты попадают в 4-часовой `/status`, а `/recovery report` остаётся детальным view. Срочное уведомление owner/ops отправляется только если обнаружен новый MAX account и нужен migration flow.
 
 Если старый MAX аккаунт потерян, нужно авторизоваться с новым телефоном, выполнить `/recovery scan`, посмотреть `/recovery report`, запросить invite у админов там, где это требуется, и затем выполнить `/recovery remap <topic_id> <new_max_chat_id>`. Telegram topic при этом сохраняется, а ответы начинают уходить в новый MAX chat.
 
@@ -365,8 +365,8 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 | Имя пользователя | `user.names[0].first_name` | ~~`user.first_name`~~ |
 | Кеш пользователей | `client.get_cached_user(int(id))` | — |
 | Reconnect | `reconnect=False` + outer loop | ~~`reconnect=True`~~ (OOM) |
-| Telemetry | `send_fake_telemetry=False` | ~~default True~~ (SSL storm) |
-| Собственный ID | `client.me` (атрибут) | ~~`client.get_me()`~~ |
+| Telemetry | `ExtraConfig(telemetry=False)` | ~~default True~~ |
+| Собственный ID | `client.me.contact.id` | ~~`client.get_me()`~~ |
 
 ---
 

@@ -2,6 +2,8 @@
 
 Date: 2026-05-22
 
+Updated: 2026-05-24 for PyMax 2 backend redesign.
+
 ## Context
 
 The first MAX adapter split removed some file-level weight but still used mixin
@@ -19,8 +21,13 @@ internal backend boundary:
   the only place allowed to import `pymax`.
 - `src/adapters/max/ports.py` defines the typed internal client port and DTOs
   that operation services consume.
-- `PymaxClientAdapter` wraps `SocketMaxClient`, hides private pymax calls and
-  converts pymax messages/users/chats/dialogs/attachments into internal views.
+- `PymaxClientAdapter` is a thin `MaxClientPort` facade over the PyMax backend
+  package. PyMax 2 wiring is split into focused internal modules:
+  `client_factory.py`, `transport.py`, `events.py`, `raw_gateway.py`,
+  `models.py` and `media.py`.
+- Private PyMax 2 calls such as `client._app.invoke(...)` are isolated inside
+  the backend raw gateway. Native `on_raw()` replaces the old private
+  message-notification patch.
 - `MaxAdapter` lazily creates `PymaxBackend` by default and also has an
   internal backend injection point for tests and future replacement work.
 - MAX operation services (`send`, `events`, `media`, `recovery`, `resolve`,
@@ -35,6 +42,9 @@ internal backend boundary:
 - Replacing `pymax` later means implementing another backend package and wiring
   it into `MaxAdapter`, while `BridgeCore`, `src/bridge/contracts.py` and MAX
   operation services remain unchanged.
+- PyMax 2 routers, raw frames, transport and Pydantic models stay inside
+  `src/adapters/max/backends/pymax/`; operation services continue consuming
+  `MaxClientPort` and DTOs.
 - Tests enforce no mixin-based `MaxAdapter` inheritance, no service registry /
   service `__getattr__`, no service dependency on full `MaxAdapter`, and no
   `pymax` imports outside `src/adapters/max/backends/pymax/`.

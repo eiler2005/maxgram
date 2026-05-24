@@ -6,6 +6,11 @@
 не меняет runtime-код. Следующий агент или инженер должен использовать его как
 готовый handoff-план и сначала получить решение владельца проекта о переходе.
 
+Implementation update 2026-05-24: миграция реализована в ветке
+`migration/pymax-2`. Фактическая реализация следует этому плану: backend
+package разделён на focused modules, dependency обновлена до PyMax 2.0.1,
+local full suite проходит.
+
 ## Короткое решение
 
 Мигрируем MAX backend с `maxapi-python==1.2.5` на
@@ -322,6 +327,16 @@ maxapi-python==1.2.5
 maxapi-python==2.0.1
 ```
 
+Также обновлено:
+
+```text
+aiosqlite==0.22.1
+pydantic>=2.10,<2.13
+```
+
+Причина: `maxapi-python==2.0.1` требует `aiosqlite>=0.22.1`, а PyMax 2
+использует Pydantic v2 API.
+
 Проверить Python:
 
 ```bash
@@ -374,9 +389,8 @@ src/adapters/max/backends/pymax/
   media.py            # send attachments, file/video/history helpers
 ```
 
-Не обязательно создавать все файлы механически. Правило такое: если логика
-остается маленькой, можно держать её рядом; если `client_adapter.py` растет
-как compatibility layer, нужно выделять модуль.
+Реализация создала эти focused modules. `client_adapter.py` оставлен тонким
+facade поверх gateway/factory/mapper modules.
 
 Цель redesign:
 
@@ -519,16 +533,14 @@ return GetVideoPayload(
 
 На первом этапе не переносить старый private fail-fast ping patch.
 
-Рекомендуемое поведение:
+Реализованное поведение:
 
-- `PymaxBackend.failfast_ping_config()` может вернуть совместимый dict, если
-  его ожидает текущий код lifecycle;
+- `PymaxBackend.failfast_ping_config()` возвращает `None`;
 - `PymaxClientAdapter.install_interactive_ping(...)` для PyMax 2 делает no-op;
 - встроенный PyMax 2 ping остается основным механизмом.
 
-Более чистый follow-up после live stability: разрешить
-`failfast_ping_config() -> dict[str, object] | None` и вернуть `None` для PyMax
-2.
+`MaxLifecycleService` уже пропускает установку bridge fail-fast ping loop, если
+backend возвращает falsy config.
 
 ### Step 3: `PymaxClientAdapter`
 
@@ -1067,6 +1079,7 @@ backend changes и восстановить session DB из backup при нео
 
 - работа выполнена в отдельной ветке, не в `master`;
 - `requirements.txt` содержит `maxapi-python==2.0.1`;
+- `requirements.txt` содержит `aiosqlite==0.22.1`, совместимый с PyMax 2;
 - `ExtraConfig(reconnect=False, telemetry=False)` покрыт тестом;
 - backend package перепроектирован под PyMax 2 или явно оставлен компактным
   после review, без старого private ping patch и raw message notification

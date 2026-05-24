@@ -69,11 +69,8 @@ async def test_pymax_client_adapter_captures_early_startup_errors():
     from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
 
     class FakeClient:
-        async def connect(self):
-            raise RuntimeError("connect boom")
-
-        async def _handshake(self):
-            raise RuntimeError("handshake boom")
+        async def start(self):
+            raise RuntimeError("start boom")
 
     captured = []
     adapter = PymaxClientAdapter(FakeClient())
@@ -84,12 +81,10 @@ async def test_pymax_client_adapter_captures_early_startup_errors():
 
     adapter.prepare_startup(capture)
 
-    with pytest.raises(RuntimeError, match="connect boom"):
-        await adapter.raw_client.connect()
-    with pytest.raises(RuntimeError, match="handshake boom"):
-        await adapter.raw_client._handshake()
+    with pytest.raises(RuntimeError, match="start boom"):
+        await adapter.raw_client.start()
 
-    assert captured == ["connect boom", "handshake boom"]
+    assert captured == ["start boom"]
 
 
 def test_users_and_downloader_helpers_are_plain_object_based():
@@ -104,22 +99,202 @@ def test_users_and_downloader_helpers_are_plain_object_based():
     assert video_url == "https://cdn.example.test/v.mp4"
 
 
-def test_client_factory_disables_pymax_reconnect_and_fake_telemetry(monkeypatch):
-    from src.adapters.max.backends.pymax import backend as pymax_backend
+def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch):
+    from src.adapters.max.backends.pymax import client_factory as pymax_factory
 
     calls = {}
 
-    class FakeSocketMaxClient:
+    class FakeClient:
         def __init__(self, **kwargs):
             calls.update(kwargs)
 
-    monkeypatch.setattr(pymax_backend, "SocketMaxClient", FakeSocketMaxClient)
+    monkeypatch.setattr(pymax_factory, "Client", FakeClient)
 
     create_socket_client(phone="+79991234567", data_dir="/data", session_name="session")
 
-    assert calls["reconnect"] is False
-    assert calls["send_fake_telemetry"] is False
+    assert calls["extra_config"].reconnect is False
+    assert calls["extra_config"].telemetry is False
     assert calls["work_dir"] == "/data"
+
+
+@pytest.mark.asyncio
+async def test_pymax2_handler_signatures_are_adapted_to_bridge_callbacks():
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+
+    class FakeClient:
+        logger = None
+
+        def on_start(self):
+            def register(handler):
+                self.start_handler = handler
+                return handler
+
+            return register
+
+        def on_message(self):
+            def register(handler):
+                self.message_handler = handler
+                return handler
+
+            return register
+
+        on_message_edit = on_message_delete = on_message
+
+    client = FakeClient()
+    adapter = PymaxClientAdapter(client)
+    start_calls = []
+    messages = []
+
+    async def on_start():
+        start_calls.append("started")
+
+    async def on_message(message):
+        messages.append(message)
+
+    adapter.register_start_handler(on_start)
+    adapter.register_message_handler(on_message)
+
+    await client.start_handler(client)
+    await client.message_handler(SimpleNamespace(id=10, chat_id=20, sender=30), client)
+
+    assert start_calls == ["started"]
+    assert messages[0].id == 10
+    assert messages[0].chat_id == 20
+
+
+@pytest.mark.asyncio
+async def test_pymax2_raw_gateway_converts_frames_and_invokes_app():
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+
+    class FakeApp:
+        def __init__(self):
+            self.calls = []
+
+        async def invoke(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(opcode=49, cmd=1, seq=7, payload={"ok": True})
+
+    class FakeClient:
+        logger = None
+
+        def __init__(self):
+            self._app = FakeApp()
+
+        def on_raw(self):
+            def register(handler):
+                self.raw_handler = handler
+                return handler
+
+            return register
+
+    client = FakeClient()
+    adapter = PymaxClientAdapter(client)
+    received = []
+
+    result = adapter.install_raw_message_interceptor(received.append)
+    await client.raw_handler(SimpleNamespace(opcode=128, cmd=0, seq=5, payload={"p": 1}), client)
+    response = await adapter.raw_request(
+        opcode_name="CHAT_HISTORY",
+        payload={"chatId": 1},
+        timeout=10,
+    )
+
+    assert result.installed is True
+    assert received == [{"opcode": 128, "cmd": 0, "seq": 5, "payload": {"p": 1}}]
+    assert client._app.calls[0]["opcode"] == 49
+    assert client._app.calls[0]["payload"] == {"chatId": 1}
+    assert response == {"opcode": 49, "cmd": 1, "seq": 7, "payload": {"ok": True}}
+
+
+@pytest.mark.asyncio
+async def test_pymax2_send_uses_attachments_list(tmp_path):
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+
+    class FakeClient:
+        logger = None
+
+        async def send_message(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(id=123)
+
+    media_path = tmp_path / "photo.jpg"
+    media_path.write_bytes(b"fake image")
+
+    client = FakeClient()
+    adapter = PymaxClientAdapter(client)
+
+    result = await adapter.send_outbound_message(
+        chat_id=1,
+        text="hello",
+        reply_to=2,
+        media_path=str(media_path),
+        media_type="photo",
+    )
+
+    assert result.message_id == "123"
+    assert "attachment" not in client.kwargs
+    assert len(client.kwargs["attachments"]) == 1
+
+
+def test_pymax2_snapshots_use_profile_users_and_chat_types():
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+
+    client = SimpleNamespace(
+        logger=None,
+        me=SimpleNamespace(contact=SimpleNamespace(id=100)),
+        contacts=[SimpleNamespace(id=1)],
+        _app=SimpleNamespace(users={2: SimpleNamespace(id=2)}),
+        chats=[
+            SimpleNamespace(id=10, type="DIALOG", participants={}),
+            SimpleNamespace(id=20, type="CHAT", title="group"),
+            SimpleNamespace(id=30, type="CHANNEL", title="channel"),
+        ],
+    )
+    adapter = PymaxClientAdapter(client)
+
+    assert adapter.own_user_id() == "100"
+    assert list(adapter.users_cache_snapshot()) == [2]
+    assert [item.id for item in adapter.contacts_snapshot()] == [1]
+    assert [item.id for item in adapter.dialogs_snapshot()] == [10]
+    assert [item.id for item in adapter.group_chats_snapshot()] == [20]
+    assert [item.id for item in adapter.channels_snapshot()] == [30]
+
+
+@pytest.mark.asyncio
+async def test_pymax2_egress_transport_uses_configured_socket_connector(monkeypatch):
+    from src.adapters.max.backends.pymax.transport import EgressTCPTransport
+
+    calls = []
+
+    class FakeSocket:
+        def setsockopt(self, *args):
+            calls.append(("setsockopt", args))
+
+        def setblocking(self, value):
+            calls.append(("setblocking", value))
+
+    class FakeConnector:
+        def connect(self, host, port, timeout=None):
+            calls.append(("connect", host, port, timeout))
+            return FakeSocket()
+
+    async def fake_open_connection(**kwargs):
+        calls.append(("open_connection", kwargs))
+        return object(), object()
+
+    monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+
+    transport = EgressTCPTransport(
+        socket_connector=FakeConnector(),
+        host="api.oneme.ru",
+        port=443,
+    )
+    await transport.connect()
+
+    assert calls[0] == ("connect", "api.oneme.ru", 443, 20.0)
+    assert calls[-1][0] == "open_connection"
+    assert calls[-1][1]["ssl"] is True
+    assert calls[-1][1]["server_hostname"] == "api.oneme.ru"
 
 
 def test_max_adapter_can_be_composed_with_fake_backend(tmp_path):

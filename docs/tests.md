@@ -14,7 +14,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **201 тест**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **206 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -180,7 +180,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 |------|--------------|
 | `test_resolve_user_name_uses_contacts_cache_before_live_lookup` | Имя пользователя берётся из локального `contacts` cache без live `CONTACT_INFO`. |
 | `test_resolve_user_name_live_lookup_has_short_timeout` | Live lookup имени имеет короткий timeout и не блокирует routing надолго при socket timeout. |
-| `test_collect_recovery_snapshot_captures_access_metadata_without_messages` | `MaxAdapter.collect_recovery_snapshot()` собирает group/channel/DM metadata и DM contact snapshot только из `client.dialogs`: chat kind, invite link, owner/admin contacts, DM partner, participant count, masked phone и session fingerprint hash без message text/raw payload; `client.contacts` без dialog не попадает в snapshot. |
+| `test_collect_recovery_snapshot_captures_access_metadata_without_messages` | `MaxAdapter.collect_recovery_snapshot()` собирает group/channel/DM metadata и DM contact snapshot только из typed dialog snapshots: chat kind, invite link, owner/admin contacts, DM partner, participant count, masked phone и session fingerprint hash без message text/raw payload; `client.contacts` без dialog не попадает в snapshot. |
 
 ### Устойчивость reconnect и video CDN
 
@@ -204,16 +204,21 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_adapter_leaves.py — pymax-free MAX helper leaves (7 тестов)
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (12 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_max_ua_mapping_selects_chrome_android_profile` | `media/ua.py` выбирает корректный MAX CDN User-Agent для Chrome/Android/iOS/Safari fallback. |
 | `test_payload_helpers_match_case_and_strip_unsafe_fields` | `payload.py` читает nested payload values и чистит unsafe raw fields без pymax. |
 | `test_error_classification_is_pymax_free` | `errors.py` классифицирует runtime issue и retryable outbound errors без pymax imports. |
-| `test_pymax_client_adapter_captures_early_startup_errors` | `PymaxClientAdapter.prepare_startup()` ловит ранние `connect`/`_handshake` ошибки до `on_start`. |
+| `test_pymax_client_adapter_captures_early_startup_errors` | `PymaxClientAdapter.prepare_startup()` ловит PyMax 2 `start()` ошибки до `on_start`. |
 | `test_users_and_downloader_helpers_are_plain_object_based` | `users.py` и downloader helpers работают с plain objects/URL metadata. |
-| `test_client_factory_disables_pymax_reconnect_and_fake_telemetry` | `PymaxBackend`/`client_factory.py` создают `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`. |
+| `test_client_factory_disables_pymax_reconnect_and_telemetry` | `client_factory.py` создаёт PyMax 2 `Client` с `ExtraConfig(reconnect=False, telemetry=False)`. |
+| `test_pymax2_handler_signatures_are_adapted_to_bridge_callbacks` | PyMax 2 callbacks `(event, client)` адаптируются к bridge callbacks без pymax types снаружи. |
+| `test_pymax2_raw_gateway_converts_frames_and_invokes_app` | Native `on_raw` конвертируется в bridge raw dict, а raw requests изолированы через `_app.invoke`. |
+| `test_pymax2_send_uses_attachments_list` | Outbound media отправляется через PyMax 2 `attachments=[...]`, не старый `attachment=`. |
+| `test_pymax2_snapshots_use_profile_users_and_chat_types` | Own id берётся из `client.me.contact.id`, users/chats snapshots нормализуются через PyMax 2 shape. |
+| `test_pymax2_egress_transport_uses_configured_socket_connector` | Custom PyMax 2 transport использует `MaxEgressProfile.socket_connector` и сохраняет TLS server hostname. |
 | `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |
 
 ---
@@ -371,7 +376,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 - `run_max_watchdog` покрыт базовым reconnect-сценарием, но full production-поведение также проверяется вручную
 - `run_weekly_recovery_snapshot` как бесконечный scheduler-loop проверяется через командный scan/repo tests и вручную в production
 - Реальные сетевые вызовы (MAX WebSocket, Telegram Bot API)
-- Полный live MAX recovery snapshot зависит от реального `pymax` cache/API; unit tests покрывают fake chat/dialog/channel objects и DM contacts из `client.dialogs`
+- Полный live MAX recovery snapshot зависит от реального `pymax` cache/API; unit tests покрывают fake chat/dialog/channel objects и DM contacts из typed dialog snapshots.
 
 Смоук-проверка по реальной БД:
 ```bash

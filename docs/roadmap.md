@@ -35,7 +35,7 @@
 
 ### Критические баги Phase 1 ✅
 - [x] **pymax OOM**: `reconnect=True` → exponential growth chats/dialogs → fix: outer reconnect loop
-- [x] **SSL storm**: `send_fake_telemetry=True` (default) → TLSV1_ALERT_RECORD_OVERFLOW → fix: `send_fake_telemetry=False`
+- [x] **Telemetry disabled**: PyMax 2 client создаётся с `ExtraConfig(telemetry=False)`; старый pymax 1 `send_fake_telemetry=True` SSL storm не возвращаем
 - [x] **sender_name=None**: `message.sender` это `int`, не User-объект → fix: `get_cached_user(int(sender_id))`
 - [x] **send_message fails on reconnect**: "Socket is not connected" → fix: retry 3×5s
 - [x] **5 startup notifications**: `on_start` fires on every reconnect → fix: `_started_once` flag
@@ -89,7 +89,7 @@
 - [x] **`/help` команда** — статическая справка со всеми командами
 - [x] **Стартовое сообщение** — перечисляет все доступные команды (`/status · /chats · /dm · /help`)
 - [x] **`known_users` таблица** — SQLite-справочник пользователей MAX; пополняется из входящих сообщений; основа для /dm
-- [x] **DM topic title fix** — правильное имя топика при DM, инициированном с нашей стороны; `get_dm_partner_id()` фильтрует `own_id` из `client.dialogs`
+- [x] **DM topic title fix** — правильное имя топика при DM, инициированном с нашей стороны; `get_dm_partner_id()` фильтрует `own_id` из typed dialog snapshots
 - [ ] **Длинные сообщения** — разбивать >4096 символов на части
 - [ ] **Per-chat управление из Telegram** — `/mode -70000000000001 readonly`
 
@@ -118,7 +118,7 @@
 - [x] **DM contact recovery registry** — `dm_contact_recovery_registry` хранит личных собеседников только из реальных MAX dialogs/DM topics, не всю address book и не group writers из `known_users`
 - [x] **Snapshot freshness** — у каждой registry row есть `last_scan_at`; `/recovery report` показывает возраст последнего snapshot
 - [x] **Append-only recovery events** — scan/set/remap/account-change пишутся в `chat_recovery_events`, без message text/raw payload
-- [x] **MAX snapshot collector** — `MaxAdapter.collect_recovery_snapshot()` собирает `client.chats`, `client.channels`, `client.dialogs`, enrich через `get_chat()`, плюс DM contact snapshot из dialogs only
+- [x] **MAX snapshot collector** — `MaxAdapter.collect_recovery_snapshot()` собирает typed chat/channel/dialog snapshots, enrich через `get_chat()`, плюс DM contact snapshot из dialogs only
 - [x] **Owner-only recovery commands** — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, `/recovery remap`
 - [x] **Hybrid snapshot triggers** — safe scan после MAX connect/reconnect, weekly safety-net и event-driven scans на `new_binding`, `title_changed`, MAX `CONTROL`
 - [x] **Async debounced scheduler** — event-driven scans выполняются background task'ом, схлопывают повторные события и не задерживают forwarding/topic creation
@@ -159,7 +159,7 @@
 **Цель:** полностью отделить MAX operation services от формы `pymax`-клиента, оставив библиотечную и object-shape зависимость только внутри backend boundary.
 
 - [x] **Typed MAX client port + DTO** — `src/adapters/max/ports.py` задаёт внутренний порт клиента и DTO для messages, attachments, users, chats, dialogs, outbound send result и raw interceptor result.
-- [x] **PymaxClientAdapter** — `src/adapters/max/backends/pymax/client_adapter.py` оборачивает `SocketMaxClient`, делегирует в `pymax`, создаёт pymax attachment/payload objects и конвертирует pymax objects в наши DTO.
+- [x] **PymaxClientAdapter** — `src/adapters/max/backends/pymax/client_adapter.py` тонкий facade над PyMax 2 backend modules (`client_factory`, `transport`, `events`, `raw_gateway`, `models`, `media`) и конвертирует pymax objects в наши DTO.
 - [x] **Services больше не знают форму pymax-клиента** — `send`, `resolve`, `recovery`, `media`, `raw/history`, `voice_recovery`, `events` и `lifecycle` работают через typed port methods/snapshots вместо `_send_and_wait`, `_handle_message_notifications`, `fetch_history`, `get_file_by_id`, `contacts/dialogs/chats/channels/_users/me`.
 - [x] **Compatibility preserved** — public `MaxAdapter`, `BridgeCore`, compatibility imports и `client_factory.create_socket_client()` сохранены.
 - [x] **Regression coverage** — добавлен `tests/test_max_service_ports.py`, расширен `tests/test_bridge_contracts.py`, существующий `tests/test_max_adapter.py` покрывает raw voice recovery, channel unwrap/dedupe, media retry, outbound echo ack и lifecycle edge cases.

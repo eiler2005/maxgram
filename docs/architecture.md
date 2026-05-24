@@ -318,12 +318,12 @@ src.adapters.max_adapter compatibility alias
         ├─ state.py             connection/outbound/raw-history/empty-recovery
         └─ MaxBackend
               └─► PymaxBackend/PymaxClientAdapter
-                    only pymax imports, SocketMaxClient, payloads/files/client shape
+                    only pymax imports, Client+ExtraConfig, transport/events/raw/media gateways
 ```
 
 - `ports.py` — internal role-based `MaxClientPort` and DTO (`MaxClientMessage`, attachments, users, chats, dialogs, send/interceptor results). Operation services depend on these views instead of the concrete client object shape.
 - `backends/base.py` — internal `MaxBackend` protocol: create a typed MAX client port; legacy helper methods remain for compatibility only.
-- `backends/pymax/` — `PymaxBackend` + `PymaxClientAdapter`; единственное место с `pymax` imports, `SocketMaxClient(reconnect=False, send_fake_telemetry=False)`, private pymax calls, pymax payload/file construction and conversion into our DTO.
+- `backends/pymax/` — `PymaxBackend` + тонкий `PymaxClientAdapter`; единственное место с `pymax` imports. Внутри пакет разделён на `client_factory.py`, `transport.py`, `events.py`, `raw_gateway.py`, `models.py`, `media.py`: PyMax 2 `Client + ExtraConfig`, custom MAX egress transport, native `on_raw`, raw requests через isolated gateway, payload/file construction and conversion into our DTO.
 - `state.py` — явный mutable state по доменам: connection, outbound, raw history, empty recovery.
 - `deps.py` — explicit dependency objects for operation services; старый service registry / dynamic `__getattr__` и общий base service не используются.
 - `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Каждый сервис владеет собственным typed deps object, не наследуется от god base class, не импортирует `pymax`, не принимает полный `MaxAdapter` и не обращается к pymax-private/client-shape methods directly.
@@ -346,9 +346,9 @@ The adapter facade manages:
 - PyPI: `maxapi-python`
 - Импорт: `pymax`
 
-**Флаги SocketMaxClient (обязательно):**
+**Флаги PyMax 2 Client (обязательно):**
 ```python
-SocketMaxClient(reconnect=False, send_fake_telemetry=False)
+Client(..., extra_config=ExtraConfig(reconnect=False, telemetry=False))
 ```
 
 ### Telegram Adapter (`src/adapters/tg/`, compatibility `src/adapters/tg_adapter.py`)
@@ -408,7 +408,7 @@ Leaf modules:
 - `max_connect` и `weekly` остаются safety net: scan после успешного connect/reconnect и weekly background scan.
 - `manual` (`/recovery scan`) выполняется сразу и возвращает видимый оператору результат со свежестью.
 
-Планировщик в `bridge/recovery/scheduler.py` использует `asyncio.create_task`: message forwarding, topic creation и rename не ждут snapshot. Несколько событий схлопываются в один scan task; snapshot errors логируются безопасно, без raw payload и без invite links. Этот же scan обновляет `dm_contact_recovery_registry` из `MaxRecoverySnapshot.contacts`; источником являются только `client.dialogs` и уже привязанные DM topics, не `client.contacts` и не `known_users`.
+Планировщик в `bridge/recovery/scheduler.py` использует `asyncio.create_task`: message forwarding, topic creation и rename не ждут snapshot. Несколько событий схлопываются в один scan task; snapshot errors логируются безопасно, без raw payload и без invite links. Этот же scan обновляет `dm_contact_recovery_registry` из `MaxRecoverySnapshot.contacts`; источником являются только typed dialog snapshots и уже привязанные DM topics, не `client.contacts` и не `known_users`.
 
 Routine recovery deltas from auto scans are quiet: новые registry rows, unmapped MAX chats, `needs_invite`, `manual_admin_required` и DM contact status changes попадают агрегатами в 4-часовой `/status`, где `/recovery report` остаётся detail view. Immediate owner/ops alert сохраняется только для `account_migration_required`. Любой recovery status/notification текст содержит только counts/statuses; invite links, manual notes, phone numbers, message text, titles, DM contact names и raw MAX fields не попадают в notification/log/health.
 
@@ -616,7 +616,7 @@ chat_recovery_registry (
 )
 
 -- DM-only контакты для восстановления после нового телефона.
--- Источник: реальные client.dialogs и уже привязанные DM topics, не полная address book.
+-- Источник: typed dialog snapshots и уже привязанные DM topics, не полная address book.
 dm_contact_recovery_registry (
     max_user_id              TEXT PK,
     display_name             TEXT,
