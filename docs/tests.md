@@ -179,6 +179,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_send_message_exposes_final_error_after_retries` | После исчерпания retry `send_message()` возвращает `None`, а адаптер сохраняет последнюю ошибку и реальное число попыток для последующей записи в `delivery_log`. |
 | `test_send_message_sanitizes_pymax_sequence_overflow_error` | PyMax TCP seq overflow нормализуется в безопасный `pymax_tcp_sequence_overflow` без логирования текста исходящего сообщения. |
 | `test_start_path_logs_masked_phone_without_name_error` | Start/reconnect path логирует masked phone без production-only `NameError` после split lifecycle module. |
+| `test_is_ready_tracks_underlying_transport_state` | `MaxAdapter.is_ready()` остаётся true только пока `_started=True` и реальный PyMax transport `client.is_connected=True`; закрытый socket виден watchdog/self-heal. |
 
 ### Резолв имён пользователей
 

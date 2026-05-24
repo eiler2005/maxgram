@@ -332,4 +332,15 @@ class MaxLifecycleService:
             await asyncio.sleep(retry_delay)
 
     def is_ready(self) -> bool:
-        return self._started
+        if not self._started:
+            return False
+        client = self._client
+        if client is None:
+            return False
+
+        is_connected = getattr(client, "is_connected", None)
+        if is_connected is None:
+            return False
+        if callable(is_connected):
+            is_connected = is_connected()
+        return bool(is_connected)

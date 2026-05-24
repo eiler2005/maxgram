@@ -50,3 +50,4 @@ async def _make_client(self):
 - Кеш пользователей/чатов пересобирается при каждом reconnect (приемлемо)
 - `on_start` handlers вызываются при каждом reconnect — нужен флаг `_started_once` для дедупликации уведомлений
 - В PyMax 2 встроенный ping loop используется вместо bridge private ping patch; `failfast_ping_config()` для PyMax 2 возвращает `None`.
+- Readiness не равен только `_started`: после network/router flap PyMax 2 может закрыть внутренний transport, но не вернуть управление из `start()`. Поэтому `MaxAdapter.is_ready()` проверяет `client.is_connected`; watchdog видит закрытый transport и после grace-period может выполнить self-heal restart процесса.

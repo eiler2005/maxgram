@@ -3428,6 +3428,26 @@ async def test_make_client_wraps_startup_stage_errors_with_runtime_capture(tmp_p
     assert adapter.get_last_start_error() == "sync-boom"
 
 
+def test_is_ready_tracks_underlying_transport_state(tmp_path):
+    class TransportClient:
+        is_connected = True
+
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    client = TransportClient()
+
+    adapter._started = True
+    adapter._client = client
+    assert adapter.is_ready() is True
+
+    client.is_connected = False
+    assert adapter.is_ready() is False
+
+
 @pytest.mark.asyncio
 async def test_failfast_ping_closes_client_after_consecutive_failures(tmp_path):
     adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
