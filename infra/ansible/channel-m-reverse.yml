@@ -3,7 +3,14 @@
   hosts: bridge_servers
   gather_facts: false
   vars:
-    channel_m_artifact: "{{ lookup('env', 'CHANNEL_M_ARTIFACT') | default('/Users/DenisErmilov/aiprojects/router_configuration/ansible/out/channel-m-maxtg/maxtg-bridge.env', true) }}"
+    channel_m_artifact: >-
+      {{
+        lookup('env', 'CHANNEL_M_ARTIFACT')
+        | default(
+          '/Users/DenisErmilov/aiprojects/router_configuration/ansible/out/channel-m-maxtg/maxtg-bridge.env',
+          true,
+        )
+      }}
     channel_m_reverse_port: "{{ lookup('env', 'CHANNEL_M_REVERSE_PORT') | default(18057, true) }}"
     channel_m_docker_network: "{{ compose_project }}_default"
   tasks:
@@ -16,7 +23,7 @@
 
     - name: Configure env and config.local.yaml for reverse Channel M
       ansible.builtin.shell: |
-        set -eu
+        set -euo pipefail
         . /tmp/maxtg-channel-m.env
         u="${MAX_EGRESS_PROXY_URL#https://}"
         u="${u#http://}"
@@ -24,7 +31,12 @@
         hostport="${u#*@}"
         host="${hostport%%:*}"
         reverse_url="http://${creds}@${host}:{{ channel_m_reverse_port }}"
-        gateway="$(docker network inspect {{ channel_m_docker_network }} 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["IPAM"]["Config"][0]["Gateway"])' 2>/dev/null || true)"
+        gateway="$(
+          docker network inspect {{ channel_m_docker_network }} 2>/dev/null \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["IPAM"]["Config"][0]["Gateway"])' \
+              2>/dev/null \
+            || true
+        )"
         if [ -z "$gateway" ]; then
           gateway="$(ip -4 addr show docker0 | awk '/inet / { split($2, a, "/"); print a[1]; exit }')"
         fi
@@ -80,10 +92,13 @@
         config_path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
         PY
         rm -f /tmp/maxtg-channel-m.env
+      args:
+        executable: /bin/bash
+      changed_when: true
       no_log: true
 
     - name: Recreate bridge container with reverse Channel M host mapping
-      ansible.builtin.shell: >-
+      ansible.builtin.command: >-
         docker compose
         --env-file {{ env_host_file }}
         -f {{ compose_file }}

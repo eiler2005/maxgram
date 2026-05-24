@@ -673,6 +673,69 @@ rg 'event=max\.outbound\.(retry|failed|sent)' data/bridge.log
 pymax **не воспроизводит историю** после reconnect. Сообщения отправленные во время downtime теряются.
 Это известное ограничение — не баг.
 
+## PyMax 2 live validation и rollback
+
+Эта проверка нужна перед production restart/deploy после изменений в MAX backend,
+DM history sweep, session auth, media download или dependency update.
+
+1. Снять backup state до rollout:
+
+   ```bash
+   cd infra/ansible
+   ansible-playbook backup.yml
+   ```
+
+   Минимум должен быть сохранён MAX session DB из активного `DATA_DIR`.
+
+2. Убедиться, что запущен один bridge instance:
+
+   ```bash
+   docker compose --env-file .env.host -f deploy/docker-compose.prod.yml ps
+   ```
+
+3. После deploy проверить startup path:
+
+   - нет неожиданного SMS-auth flow при существующей session;
+   - в логах есть `MAX connected`;
+   - startup self-tests завершились `Startup tests passed`;
+   - healthcheck и `scripts/smoke_check.py` зелёные.
+
+4. Проверить live traffic:
+
+   - MAX → Telegram: DM text, group text, edit/delete/control event, photo,
+     video, audio/voice;
+   - Telegram → MAX: обычный send, reply и media send;
+   - reconnect создаёт fresh client и возвращает readiness;
+   - серия raw/history/send requests больше 255 не даёт
+     `pymax_tcp_sequence_overflow`;
+   - DM history sweep пишет `bridge.dm_history_sweep.worker_started` и
+     `bridge.dm_history_sweep.cycle_finished`, не создавая лишнюю MAX API
+     нагрузку в steady phase.
+
+5. Проверить privacy в логах. Не должно быть message text, raw payload, signed
+   CDN URLs, tokens, phones, invite links или proxy credentials.
+
+Known brittle PyMax internals остаются только внутри
+`src/adapters/max/backends/pymax/`: `_app.invoke`, connection/protocol shape,
+Pydantic model validation и transport hooks. Если они ломаются после upstream
+change, first fix должен быть в backend boundary или узком `MaxClientPort`
+extension, без протаскивания PyMax objects в `BridgeCore`.
+
+Rollback path:
+
+1. Остановить rollout / не делать повторный deploy.
+2. Восстановить session DB из backup, если новая версия успела изменить auth
+   state или ушла в reauth loop.
+3. Вернуть код и `maxapi-python` dependency через git rollback к последнему
+   known-good commit.
+4. Запустить `ansible-playbook deploy.yml --check --diff`, затем
+   `ansible-playbook deploy.yml`.
+
+Dependency review: PyMax использует unofficial MAX internal API. При каждом
+обновлении `maxapi-python` сверять release/source diff и повторять checks для
+login sanitizer, legacy session import, raw gateway, msgpack guard, TCP seq
+guard, MAX-only egress transport и media URL handling.
+
 ## Обновление зависимостей
 
 ```bash
