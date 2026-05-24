@@ -382,6 +382,7 @@ src/adapters/max/backends/pymax/
   backend.py          # composition/factory, MaxBackend implementation
   client_adapter.py   # thin MaxClientPort implementation
   client_factory.py   # Client + ExtraConfig + auth/session wiring
+  login.py            # tolerant PyMax 2 login payload validation
   session_store.py    # PyMax 2 SessionStore + one-time PyMax 1 auth import
   transport.py        # Channel M / MaxEgressProfile -> PyMax 2 transport
   events.py           # PyMax 2 routers/handlers -> bridge callbacks
@@ -454,6 +455,13 @@ login profile:
 
 Если оставить PyMax 2 default Android user-agent и sync `-1`, старый token может
 быть отвергнут на `LOGIN` с `login.cred / FAIL_WRONG_PASSWORD`.
+
+`login.py` устанавливает backend-local `BridgeAuthService`: перед PyMax 2
+`LoginResponse` validation он удаляет только attachment variants, которых нет в
+upstream union (`type=UNSUPPORTED`). Это нужно, потому что MAX может вернуть
+такие вложения в `lastMessage.attaches` при initial sync; bridge всё равно
+работает с raw/media recovery отдельно и не должен падать на неизвестном
+preview attachment.
 
 Direct egress:
 
@@ -867,6 +875,8 @@ backend adapter или расширить transport-neutral port, а не имп
   overrides `0` для старых `SocketMaxClient` sessions;
 - `BridgeSessionStore` импортирует legacy PyMax 1 `auth(token, device_id)` в
   PyMax 2 `sessions` и не требует SMS-auth при наличии старой сессии;
+- login payload sanitizer удаляет unknown/`UNSUPPORTED` attachments до PyMax 2
+  `LoginResponse` validation;
 - PyMax 2 message callback получает `(message, client)`, а bridge handler
   получает один `MaxClientMessage`;
 - start callback получает `(client)`, а bridge start handler вызывается без
@@ -1071,6 +1081,7 @@ Errors должны проходить через существующие redac
 | Включилась telemetry | High | Старый fake telemetry режим был проблемным, плюс privacy posture требует минимум лишнего трафика. | Всегда `ExtraConfig(telemetry=False)`, unit test. |
 | Session DB несовместима | High | PyMax 1 хранит текущую сессию в `auth(token, device_id)`, PyMax 2 читает `sessions`; без import PyMax 2 уйдет в SMS-auth и может получить rate limit. | Backup перед live-run, `BridgeSessionStore` one-time import, regression test на legacy `auth`. |
 | Старый token отвергнут на `LOGIN` | High | PyMax 1 `SocketMaxClient` создавал DESKTOP session, а PyMax 2 default `Client` стартует как Android; сервер может вернуть `login.cred / FAIL_WRONG_PASSWORD`. | В factory использовать DESKTOP user-agent и sync overrides `0` до явного reauth. |
+| PyMax 2 не знает attachment variant | High | Initial sync может вернуть `lastMessage.attaches.type=UNSUPPORTED`, и upstream `LoginResponse` падает до `on_start`. | Backend-local `BridgeAuthService` sanitizes unsupported attachments before validation, regression test. |
 | Native `on_raw` приходит позже typed mapping | Medium | Старый patch ловил raw wrappers до потери части данных. | Unit test на conversion, live test voice/audio и raw history recovery. |
 | `client.chats` иначе представляет dialogs/groups | Medium | Recovery и DM partner resolution зависят от реальных dialogs. | Фильтр по `Chat.type`, live test own-initiated DM. |
 | `client._app.invoke` private | Medium | Raw history/audio/video зависят от raw requests. | Изолировать в raw gateway, покрыть узким test, не использовать вне backend. |

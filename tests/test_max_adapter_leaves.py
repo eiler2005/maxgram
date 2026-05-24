@@ -153,6 +153,43 @@ async def test_pymax2_session_store_imports_legacy_pymax1_auth_table(tmp_path):
     assert row == ("legacy-device-id", "+79991234567")
 
 
+def test_pymax2_login_payload_drops_unsupported_attachments():
+    from src.adapters.max.backends.pymax.login import sanitize_login_payload
+
+    payload = {
+        "chats": [
+            {
+                "lastMessage": {
+                    "attaches": [
+                        {"type": "UNSUPPORTED", "audioId": "redacted"},
+                        {"type": "FILE", "fileId": 1},
+                    ]
+                }
+            }
+        ],
+        "messages": {
+            1: [
+                {
+                    "attaches": [
+                        {"_type": "UNSUPPORTED", "token": "redacted"},
+                        {"type": "PHOTO", "photoId": 2},
+                    ]
+                }
+            ]
+        },
+    }
+
+    sanitized = sanitize_login_payload(payload)
+
+    assert sanitized["chats"][0]["lastMessage"]["attaches"] == [
+        {"type": "FILE", "fileId": 1}
+    ]
+    assert sanitized["messages"][1][0]["attaches"] == [
+        {"type": "PHOTO", "photoId": 2}
+    ]
+    assert len(payload["chats"][0]["lastMessage"]["attaches"]) == 2
+
+
 @pytest.mark.asyncio
 async def test_pymax2_handler_signatures_are_adapted_to_bridge_callbacks():
     from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter

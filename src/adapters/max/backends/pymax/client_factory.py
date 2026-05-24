@@ -5,6 +5,7 @@ from pymax.api.session.enums import DeviceType
 from pymax.api.session.payloads import MobileUserAgentPayload
 
 from ...network import MaxEgressProfile
+from .login import BridgeAuthService
 from .session_store import BridgeSessionStore
 from .transport import EgressClient
 
@@ -66,5 +67,15 @@ def create_pymax_client(
         "extra_config": extra_config,
     }
     if egress is None:
-        return Client(**kwargs)
-    return EgressClient(**kwargs, socket_connector=egress.socket_connector)
+        return _install_bridge_auth_service(Client(**kwargs))
+    return _install_bridge_auth_service(
+        EgressClient(**kwargs, socket_connector=egress.socket_connector)
+    )
+
+
+def _install_bridge_auth_service(client):
+    app = getattr(client, "_app", None)
+    api = getattr(app, "api", None)
+    if api is not None:
+        api.auth = BridgeAuthService(app)
+    return client
