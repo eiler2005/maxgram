@@ -60,6 +60,18 @@ class StorageConfig:
 
 
 @dataclass
+class DmHistorySweepConfig:
+    enabled: bool = True
+    warmup_seconds: int = 10 * 60
+    warmup_interval_seconds: int = 120
+    steady_interval_seconds: int = 15 * 60
+    limit: int = 30
+    backfill_seconds: int = 48 * 60 * 60
+    cycle_jitter_seconds: int = 30
+    per_chat_delay_seconds: float = 0.5
+
+
+@dataclass
 class HealthConfig:
     reminder_interval_hours: int = 4
     heartbeat_interval_seconds: int = 30
@@ -67,6 +79,7 @@ class HealthConfig:
     max_egress_probe_interval_seconds: int = 30
     max_self_heal_grace_seconds: int = 180
     max_self_heal_restart_cooldown_seconds: int = 1800
+    dm_history_sweep: DmHistorySweepConfig = field(default_factory=DmHistorySweepConfig)
 
 
 @dataclass
@@ -142,6 +155,58 @@ def _resolve_optional_int(value) -> Optional[int]:
     if not rendered:
         return None
     return int(rendered)
+
+
+def _resolve_int(value, default: int) -> int:
+    if value is None:
+        return default
+    return int(_resolve_env(str(value)))
+
+
+def _resolve_float(value, default: float) -> float:
+    if value is None:
+        return default
+    return float(_resolve_env(str(value)))
+
+
+def _resolve_bool(value, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    rendered = _resolve_env(str(value)).strip().lower()
+    if rendered in {"1", "true", "yes", "on"}:
+        return True
+    if rendered in {"0", "false", "no", "off"}:
+        return False
+    return bool(value)
+
+
+def _load_dm_history_sweep(raw: dict) -> DmHistorySweepConfig:
+    defaults = DmHistorySweepConfig()
+    sweep_raw = raw.get("dm_history_sweep") or {}
+    return DmHistorySweepConfig(
+        enabled=_resolve_bool(sweep_raw.get("enabled"), defaults.enabled),
+        warmup_seconds=_resolve_int(sweep_raw.get("warmup_seconds"), defaults.warmup_seconds),
+        warmup_interval_seconds=_resolve_int(
+            sweep_raw.get("warmup_interval_seconds"),
+            defaults.warmup_interval_seconds,
+        ),
+        steady_interval_seconds=_resolve_int(
+            sweep_raw.get("steady_interval_seconds"),
+            defaults.steady_interval_seconds,
+        ),
+        limit=_resolve_int(sweep_raw.get("limit"), defaults.limit),
+        backfill_seconds=_resolve_int(sweep_raw.get("backfill_seconds"), defaults.backfill_seconds),
+        cycle_jitter_seconds=_resolve_int(
+            sweep_raw.get("cycle_jitter_seconds"),
+            defaults.cycle_jitter_seconds,
+        ),
+        per_chat_delay_seconds=_resolve_float(
+            sweep_raw.get("per_chat_delay_seconds"),
+            defaults.per_chat_delay_seconds,
+        ),
+    )
 
 
 def _load_max_egress(raw: dict) -> MaxEgressConfig:
@@ -236,6 +301,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         max_self_heal_restart_cooldown_seconds=int(
             health_raw.get("max_self_heal_restart_cooldown_seconds", 1800)
         ),
+        dm_history_sweep=_load_dm_history_sweep(health_raw),
     )
 
     br_raw = raw.get("bridge", {})

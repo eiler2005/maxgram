@@ -14,7 +14,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **224 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **229 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -58,11 +58,12 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_config_loader.py — конфигурация (3 теста)
+## test_config_loader.py — конфигурация (4 теста)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_load_config_merges_optional_local_override` | `config.local.yaml` перекрывает `config.yaml`: `bridge.default_mode`, список `chats` с `max_chat_id`, `title`, `mode`. Переменные окружения (`TG_BOT_TOKEN` и др.) подставляются в YAML через env-interpolation. |
+| `test_load_config_reads_dm_history_sweep_overrides` | `health.dm_history_sweep` читает balanced-настройки нагрузки: enabled, warmup/steady intervals, limit, backfill, jitter и per-chat delay. |
 | `test_load_config_reads_secrets_from_dotenv_secrets` | `load_config()` подхватывает секреты из `.env.secrets`, а не только из уже экспортированного окружения; заодно проверяет что `DATA_DIR` берётся из `.env`. |
 | `test_load_config_reads_max_egress_profiles` | `max.egress` читает active profile, direct backward-compatible default и `${MAX_EGRESS_PROXY_URL}` для `home_ru_proxy`. |
 
@@ -104,7 +105,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (77 тестов)
+## test_max_adapter.py — парсинг сырых сообщений MAX (79 тестов)
 
 ### Системные события (CONTROL)
 
@@ -140,6 +141,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_typed_empty_message_waits_for_delayed_raw_history_cache` | Если raw `CHAT_HISTORY` приходит позже immediate recovery, adapter держит короткую in-memory wait job и досылает найденное `AUDIO`. |
 | `test_pending_empty_recovery_worker_delivers_late_audio` | Durable empty-message retry перечитывает history по `chat_id/msg_id`, доставляет поздно появившееся `AUDIO` и очищает meta-only job. |
 | `test_pending_empty_recovery_worker_reschedules_empty_history` | Если history всё ещё возвращает пустой message, durable retry увеличивает attempts и планирует следующую попытку без terminal cutoff. |
+| `test_replay_recent_history_pre_dedups_known_messages_but_keeps_pending` | DM history sweep пропускает уже известные `(chat_id,msg_id)` до тяжёлой нормализации, но не ломает pending empty recovery. |
 | `test_handle_raw_receive_logs_safe_empty_message_diagnostic` | Raw empty-event diagnostic логирует только тип, id и безопасные имена полей, без URL/token/text. |
 | `test_handle_raw_receive_logs_top_level_empty_message_diagnostic` | Top-level raw empty payload логируется безопасно, без URL/token/text. |
 | `test_download_audio_attachment_uses_direct_url_and_preserves_duration` | `AUDIO` скачивается по прямому `url`; `duration` сохраняется в `MaxAttachment`. |
@@ -184,6 +186,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 |------|--------------|
 | `test_resolve_user_name_uses_contacts_cache_before_live_lookup` | Имя пользователя берётся из локального `contacts` cache без live `CONTACT_INFO`. |
 | `test_resolve_user_name_live_lookup_has_short_timeout` | Live lookup имени имеет короткий timeout и не блокирует routing надолго при socket timeout. |
+| `test_resolve_user_name_negative_cache_suppresses_repeated_live_lookup` | После failed live `get_users` повторный resolve в TTL не делает новый MAX API request; после expiry lookup снова разрешён. |
 | `test_collect_recovery_snapshot_captures_access_metadata_without_messages` | `MaxAdapter.collect_recovery_snapshot()` собирает group/channel/DM metadata и DM contact snapshot только из typed dialog snapshots: chat kind, invite link, owner/admin contacts, DM partner, participant count, masked phone и session fingerprint hash без message text/raw payload; `client.contacts` без dialog не попадает в snapshot. |
 
 ### Устойчивость reconnect и video CDN
@@ -250,7 +253,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (55 тестов)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (57 тестов)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -292,6 +295,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_max_watchdog_reports_egress_down_without_restart` | При упавшем `home_ru_proxy` watchdog пишет `max_egress_unavailable`, но не рестартит процесс. |
 | `test_max_watchdog_restarts_once_when_proxy_ok_but_max_stays_offline` | При healthy proxy/TLS и зависшем MAX watchdog пишет cooldown-файл и запускает rate-limited self-exit. |
 | `test_dm_history_sweep_skips_until_max_is_ready` | DM history sweep не стреляет `CHAT_HISTORY` raw requests до `MAX connected`, чтобы не шуметь `Not connected`/pending futures на старте. |
+| `test_dm_history_sweep_uses_warmup_interval` | После ready sweep работает в warmup-фазе с коротким интервалом. |
+| `test_dm_history_sweep_uses_steady_interval_after_warmup` | После warmup window sweep переходит на спокойный steady interval. |
 
 ### Кодировка файлов
 

@@ -97,6 +97,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - Reconnect реализован вручную: `while True: client = make_client(); await client.start()`
 - `send_message` ждёт до 15 сек если `_started=False` (reconnect window)
 - DM history sweep должен ждать `max_adapter.is_ready()`: запуск `CHAT_HISTORY` до `MAX connected` даёт пачку `Not connected`/pending future шумов и может мешать диагностике reauth/reconnect.
+- DM history sweep должен быть бережным к MAX API: balanced config живёт в `health.dm_history_sweep` (`120s` warmup после старта/reconnect, затем `900s` steady, jitter и per-chat delay). `replay_recent_history` получает pre-dedup callback через существующий `message_map`, чтобы не нормализовать/качать повторно уже доставленные history messages; pending empty recovery не пропускать.
 
 ## Принципы (не нарушать)
 

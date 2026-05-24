@@ -266,16 +266,27 @@ class BridgeCore:
 
     async def run_dm_history_sweep(
         self,
-        poll_interval: int = 120,
-        limit: int = 30,
-        backfill_seconds: int = MAX_DM_SWEEP_BACKFILL_SECONDS,
+        poll_interval: int | None = None,
+        limit: int | None = None,
+        backfill_seconds: int | None = None,
     ):
+        sweep_cfg = getattr(getattr(self._cfg, "health", None), "dm_history_sweep", None)
         await bridge_background.run_dm_history_sweep(
             repo=self._repo,
             max_adapter=self._max,
             poll_interval=poll_interval,
-            limit=limit,
-            backfill_seconds=backfill_seconds,
+            enabled=getattr(sweep_cfg, "enabled", True),
+            warmup_seconds=getattr(sweep_cfg, "warmup_seconds", 10 * 60),
+            warmup_interval_seconds=getattr(sweep_cfg, "warmup_interval_seconds", 120),
+            steady_interval_seconds=getattr(sweep_cfg, "steady_interval_seconds", 15 * 60),
+            limit=limit if limit is not None else getattr(sweep_cfg, "limit", 30),
+            backfill_seconds=(
+                backfill_seconds
+                if backfill_seconds is not None
+                else getattr(sweep_cfg, "backfill_seconds", MAX_DM_SWEEP_BACKFILL_SECONDS)
+            ),
+            cycle_jitter_seconds=getattr(sweep_cfg, "cycle_jitter_seconds", 30),
+            per_chat_delay_seconds=getattr(sweep_cfg, "per_chat_delay_seconds", 0.5),
         )
 
     async def cleanup_phantom_topics(self) -> dict[str, int]:

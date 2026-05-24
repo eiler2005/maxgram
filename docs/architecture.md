@@ -276,6 +276,7 @@ Runtime слой разделён на supervisor и health package:
 - dataclass-модели `MaxMessage`, `MaxAttachment`, `MaxAttachmentFailure`, `MaxIssue`, `MaxRecoverySnapshot`
 - Protocol-порты `MaxBridgePort`, `TelegramBridgePort`, `OpsNotifierPort`
 - helper-политики, которые нужны core и adapter-слою одинаково (`is_probable_client_cid`, DM history sweep window)
+- `MaxBridgePort.replay_recent_history(..., is_known_message=...)` принимает transport-neutral pre-dedup callback: core проверяет существующий `message_map`, а MAX adapter пропускает уже известные history messages до нормализации/скачивания; pending empty recovery остаётся исключением.
 
 `src/bridge/contracts.py` не импортирует `pymax`, `aiogram` или concrete adapters. Канонический импорт общих моделей:
 
@@ -388,7 +389,7 @@ Leaf modules:
 - `recovery/scheduler.py`, `recovery/orchestrator.py`, `recovery/reporter.py`
 - `background.py`
 
-Ключевые инварианты прежние: `message_map` пишется до отправки в Telegram; event-driven recovery scans выполняются background task и не блокируют forwarding/topic creation/rename; `/recovery export` остаётся owner-only DM.
+Ключевые инварианты прежние: `message_map` пишется до отправки в Telegram; event-driven recovery scans выполняются background task и не блокируют forwarding/topic creation/rename; `/recovery export` остаётся owner-only DM. DM history sweep работает adaptive: короткий warmup после старта/reconnect, затем спокойный steady interval с jitter/per-chat delay из `health.dm_history_sweep`, чтобы не создавать лишнюю регулярную MAX API нагрузку.
 
 **`/dm` — инициация нового DM в MAX из Telegram:**
 Алгоритм longest-prefix matching (до 4 слов для имени, минимум 1 слово сообщение).

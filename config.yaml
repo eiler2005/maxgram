@@ -33,6 +33,15 @@ health:
   max_egress_probe_interval_seconds: 30
   max_self_heal_grace_seconds: 180
   max_self_heal_restart_cooldown_seconds: 1800
+  dm_history_sweep:
+    enabled: true
+    warmup_seconds: 600
+    warmup_interval_seconds: 120
+    steady_interval_seconds: 900
+    limit: 30
+    backfill_seconds: 172800
+    cycle_jitter_seconds: 30
+    per_chat_delay_seconds: 0.5
 
 bridge:
   # forward_all: true — автоматически форвардить все чаты из MAX

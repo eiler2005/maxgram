@@ -249,8 +249,16 @@ class DummyMax:
         self.audio_reference_calls.append(kwargs)
         return self.audio_reference_result
 
-    async def replay_recent_history(self, chat_id: str, *, limit: int = 30, since_ts=None, flow_id=None):
-        self.replay_calls.append((chat_id, limit, since_ts, flow_id))
+    async def replay_recent_history(
+        self,
+        chat_id: str,
+        *,
+        limit: int = 30,
+        since_ts=None,
+        flow_id=None,
+        is_known_message=None,
+    ):
+        self.replay_calls.append((chat_id, limit, since_ts, flow_id, is_known_message))
         return 0
 
     async def collect_recovery_snapshot(self):
@@ -518,11 +526,14 @@ async def test_dm_history_sweep_replays_active_direct_chats(monkeypatch):
         await bridge.run_dm_history_sweep(poll_interval=120, limit=30, backfill_seconds=48 * 60 * 60)
 
     assert len(max_adapter.replay_calls) == 1
-    chat_id, limit, since_ts, flow_id = max_adapter.replay_calls[0]
+    chat_id, limit, since_ts, flow_id, is_known_message = max_adapter.replay_calls[0]
     assert chat_id == "200056208"
     assert limit == 30
     assert since_ts is not None
     assert flow_id == "mx:200056208:history-sweep"
+    assert callable(is_known_message)
+    repo.duplicates.add(("mx-1", "200056208"))
+    assert await is_known_message("200056208", "mx-1") is True
 
 
 @pytest.mark.asyncio
@@ -543,6 +554,62 @@ async def test_dm_history_sweep_skips_until_max_is_ready(monkeypatch):
         await bridge.run_dm_history_sweep(poll_interval=120, limit=30, backfill_seconds=48 * 60 * 60)
 
     assert max_adapter.replay_calls == []
+
+
+@pytest.mark.asyncio
+async def test_dm_history_sweep_uses_warmup_interval(monkeypatch):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    repo.bindings = [
+        SimpleNamespace(max_chat_id="200056208", tg_topic_id=1, title="Людмила", mode="active"),
+    ]
+    sleeps = []
+
+    async def stop_after_cycle(delay):
+        sleeps.append(delay)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("src.bridge.background.asyncio.sleep", stop_after_cycle)
+    with pytest.raises(asyncio.CancelledError):
+        await bridge_background.run_dm_history_sweep(
+            repo=repo,
+            max_adapter=max_adapter,
+            warmup_seconds=600,
+            warmup_interval_seconds=120,
+            steady_interval_seconds=900,
+            cycle_jitter_seconds=0,
+            per_chat_delay_seconds=0,
+        )
+
+    assert sleeps == [120]
+
+
+@pytest.mark.asyncio
+async def test_dm_history_sweep_uses_steady_interval_after_warmup(monkeypatch):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    repo.bindings = [
+        SimpleNamespace(max_chat_id="200056208", tg_topic_id=1, title="Людмила", mode="active"),
+    ]
+    sleeps = []
+
+    async def stop_after_cycle(delay):
+        sleeps.append(delay)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("src.bridge.background.asyncio.sleep", stop_after_cycle)
+    with pytest.raises(asyncio.CancelledError):
+        await bridge_background.run_dm_history_sweep(
+            repo=repo,
+            max_adapter=max_adapter,
+            warmup_seconds=0,
+            warmup_interval_seconds=120,
+            steady_interval_seconds=900,
+            cycle_jitter_seconds=0,
+            per_chat_delay_seconds=0,
+        )
+
+    assert sleeps == [900]
 
 
 @pytest.mark.asyncio

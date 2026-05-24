@@ -1,9 +1,11 @@
 """Bridge background loops."""
 
 import asyncio
+import inspect
 import json
 import logging
 import os
+import random
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -331,23 +333,70 @@ async def run_dm_history_sweep(
     *,
     repo: Repository,
     max_adapter: MaxBridgePort,
-    poll_interval: int = 120,
+    poll_interval: int | None = None,
+    enabled: bool = True,
+    warmup_seconds: int = 10 * 60,
+    warmup_interval_seconds: int = 120,
+    steady_interval_seconds: int = 15 * 60,
     limit: int = 30,
     backfill_seconds: int = MAX_DM_SWEEP_BACKFILL_SECONDS,
+    cycle_jitter_seconds: int = 30,
+    per_chat_delay_seconds: float = 0.5,
+    jitter_fn: Callable[[float, float], float] | None = None,
 ):
+    if poll_interval is not None:
+        warmup_interval_seconds = poll_interval
+        steady_interval_seconds = poll_interval
+        if cycle_jitter_seconds == 30:
+            cycle_jitter_seconds = 0
+        if per_chat_delay_seconds == 0.5:
+            per_chat_delay_seconds = 0.0
+    warmup_interval_seconds = max(1, int(warmup_interval_seconds))
+    steady_interval_seconds = max(1, int(steady_interval_seconds))
+    warmup_seconds = max(0, int(warmup_seconds))
+    cycle_jitter_seconds = max(0, int(cycle_jitter_seconds))
+    per_chat_delay_seconds = max(0.0, float(per_chat_delay_seconds))
+    jitter = jitter_fn or random.uniform
+
     log_event(
         logger,
         logging.INFO,
         "bridge.dm_history_sweep.worker_started",
         stage="history_sweep",
         outcome="started",
-        poll_interval_seconds=poll_interval,
+        enabled=enabled,
+        warmup_seconds=warmup_seconds,
+        warmup_interval_seconds=warmup_interval_seconds,
+        steady_interval_seconds=steady_interval_seconds,
         limit=limit,
         backfill_seconds=backfill_seconds,
+        cycle_jitter_seconds=cycle_jitter_seconds,
+        per_chat_delay_seconds=per_chat_delay_seconds,
     )
+    if not enabled:
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.dm_history_sweep.disabled",
+            stage="history_sweep",
+            outcome="skipped",
+            reason="disabled",
+        )
+        return
+
+    ready_since: float | None = None
+
+    async def is_known_message(chat_id: str, msg_id: str) -> bool:
+        result = repo.is_duplicate(str(msg_id), str(chat_id))
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+
     while True:
+        next_interval = steady_interval_seconds
         try:
             if not max_adapter.is_ready():
+                ready_since = None
                 log_event(
                     logger,
                     logging.INFO,
@@ -355,27 +404,60 @@ async def run_dm_history_sweep(
                     stage="history_sweep",
                     outcome="skipped",
                     reason="max_not_ready",
+                    next_interval_seconds=warmup_interval_seconds,
                 )
-                await asyncio.sleep(poll_interval)
+                await asyncio.sleep(warmup_interval_seconds)
                 continue
 
+            now = time.time()
+            if ready_since is None:
+                ready_since = now
+            phase = "warmup" if now - ready_since < warmup_seconds else "steady"
+            next_interval = (
+                warmup_interval_seconds if phase == "warmup" else steady_interval_seconds
+            )
             since_ts = int(time.time()) - int(backfill_seconds)
             bindings = await repo.list_bindings()
+            checked_chats = 0
+            skipped_chats = 0
+            replayed_total = 0
             for binding in bindings:
                 if not max_adapter.is_ready():
                     break
                 chat_id = str(binding.max_chat_id)
                 if binding.mode != "active":
+                    skipped_chats += 1
                     continue
                 if chat_id.startswith("-") or is_probable_client_cid(chat_id):
+                    skipped_chats += 1
                     continue
                 flow_id = build_max_flow_id(chat_id, "history-sweep")
-                await max_adapter.replay_recent_history(
+                replayed_total += await max_adapter.replay_recent_history(
                     chat_id,
                     limit=limit,
                     since_ts=since_ts,
                     flow_id=flow_id,
+                    is_known_message=is_known_message,
                 )
+                checked_chats += 1
+                if per_chat_delay_seconds > 0:
+                    await asyncio.sleep(per_chat_delay_seconds)
+            sleep_jitter = (
+                float(jitter(0, cycle_jitter_seconds)) if cycle_jitter_seconds else 0.0
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.dm_history_sweep.cycle_finished",
+                stage="history_sweep",
+                outcome="completed",
+                phase=phase,
+                checked_chats=checked_chats,
+                skipped_chats=skipped_chats,
+                replayed_count=replayed_total,
+                next_interval_seconds=next_interval,
+                jitter_seconds=round(sleep_jitter, 3),
+            )
         except Exception as e:
             log_event(
                 logger,
@@ -385,7 +467,8 @@ async def run_dm_history_sweep(
                 outcome="failed",
                 error=str(e),
             )
-        await asyncio.sleep(poll_interval)
+            sleep_jitter = 0.0
+        await asyncio.sleep(next_interval + sleep_jitter)
 
 
 async def cleanup_phantom_topics(

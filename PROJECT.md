@@ -293,12 +293,12 @@ for _ in range(3):
 
 ### Тесты
 
-В проекте есть regression-набор на `pytest` (**224 теста**):
+В проекте есть regression-набор на `pytest` (**229 тестов**):
 
-- `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих, recovery snapshot collector
+- `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих, history pre-dedup, recovery snapshot collector
 - `tests/test_max_adapter_leaves.py` — pymax-free helper leaves и PyMax 2 backend/factory/raw/egress contracts
 - `tests/test_bridge_contracts.py` — contracts/composition/pymax-boundary architecture regressions
-- `tests/test_bridge_core.py` — пересылка media/rendered text, `/dm`, `/recovery`, async event-driven recovery scans, remap stale-reply safety
+- `tests/test_bridge_core.py` — пересылка media/rendered text, `/dm`, `/recovery`, adaptive DM history sweep, async event-driven recovery scans, remap stale-reply safety
 - `tests/test_tg_adapter.py` — приём сообщений от участников группы, public `/dm` allowlist, owner-only `/recovery`
 - `tests/test_main.py` — startup notification с runtime/location/masked IP и статусом startup `pytest`
 - `tests/test_repository.py` — upsert `message_map`, MAX ↔ TG маппинг, recovery migrations/idempotency/deltas/report/export/remap

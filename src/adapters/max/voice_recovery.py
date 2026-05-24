@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Optional
 
@@ -209,6 +211,8 @@ class MaxVoiceRecoveryService:
             if isinstance(message, dict)
             else getattr(message, "time", None)
         )
+        if value is None:
+            return None
         try:
             ts = int(value)
         except (TypeError, ValueError):
@@ -277,6 +281,7 @@ class MaxVoiceRecoveryService:
         limit: int = 30,
         since_ts: Optional[int] = None,
         flow_id: Optional[str] = None,
+        is_known_message: Callable[[str, str], Awaitable[bool] | bool] | None = None,
     ) -> int:
         try:
             chat_id_int = int(chat_id)
@@ -294,6 +299,7 @@ class MaxVoiceRecoveryService:
             flow_id=flow_id,
         )
         candidates: list[object] = []
+        dedup_checked: set[tuple[str, str]] = set()
         if raw_payload is not None:
             pending_ids = self._pending_empty_recovery_ids_for_chat(str(chat_id))
             seen_pending_ids: set[str] = set()
@@ -317,6 +323,19 @@ class MaxVoiceRecoveryService:
                 )
                 if is_probable_client_cid(candidate_chat_id):
                     candidate_chat_id = chat_id
+                dedup_key = (str(candidate_chat_id), raw_history_msg_id_str)
+                if (
+                    raw_history_msg_id_str
+                    and raw_history_msg_id_str not in pending_ids
+                    and await self._is_known_history_message(
+                        is_known_message,
+                        str(candidate_chat_id),
+                        raw_history_msg_id_str,
+                    )
+                ):
+                    continue
+                if raw_history_msg_id_str:
+                    dedup_checked.add(dedup_key)
                 if not self._raw_payload._message_dict_has_content(message):
                     if raw_history_msg_id_str in pending_ids:
                         self._log_history_sweep_pending_diagnostic(
@@ -381,6 +400,22 @@ class MaxVoiceRecoveryService:
                 setattr(candidate, "chat_id", chat_id_int)
             if not self._raw_payload._message_object_has_content(candidate):
                 continue
+            candidate_msg_id = str(
+                getattr(candidate, "msg_id", None)
+                or getattr(candidate, "id", None)
+                or ""
+            )
+            if (
+                candidate_msg_id
+                and candidate_msg_id not in self._pending_empty_recovery_ids_for_chat(str(chat_id))
+                and (str(candidate_chat_id), candidate_msg_id) not in dedup_checked
+                and await self._is_known_history_message(
+                    is_known_message,
+                    candidate_chat_id,
+                    candidate_msg_id,
+                )
+            ):
+                continue
             await self._events._handle_raw_message(candidate)
             replayed += 1
 
@@ -397,6 +432,33 @@ class MaxVoiceRecoveryService:
                 replayed_count=replayed,
             )
         return replayed
+
+    async def _is_known_history_message(
+        self,
+        is_known_message: Callable[[str, str], Awaitable[bool] | bool] | None,
+        chat_id: str,
+        msg_id: str,
+    ) -> bool:
+        if is_known_message is None:
+            return False
+        try:
+            result = is_known_message(str(chat_id), str(msg_id))
+            if inspect.isawaitable(result):
+                result = await result
+            return bool(result)
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.INFO,
+                "max.history_sweep.dedup_check_failed",
+                direction="inbound",
+                stage="history_sweep",
+                outcome="failed",
+                max_chat_id=str(chat_id),
+                max_msg_id=str(msg_id),
+                error=str(exc),
+            )
+            return False
 
     def _pending_empty_recovery_path(self) -> Path:
         return Path(self._data_dir) / max_constants.get("MAX_EMPTY_RECOVERY_STATE_FILE")

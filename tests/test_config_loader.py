@@ -61,12 +61,71 @@ chats:
     assert cfg.health.reminder_interval_hours == 4
     assert cfg.health.heartbeat_interval_seconds == 30
     assert cfg.health.worker_restart_backoff_seconds == 5
+    assert cfg.health.dm_history_sweep.enabled is True
+    assert cfg.health.dm_history_sweep.warmup_seconds == 600
+    assert cfg.health.dm_history_sweep.warmup_interval_seconds == 120
+    assert cfg.health.dm_history_sweep.steady_interval_seconds == 900
+    assert cfg.health.dm_history_sweep.limit == 30
+    assert cfg.health.dm_history_sweep.backfill_seconds == 48 * 60 * 60
+    assert cfg.health.dm_history_sweep.cycle_jitter_seconds == 30
+    assert cfg.health.dm_history_sweep.per_chat_delay_seconds == 0.5
     assert cfg.content.forward_voice is True
     assert cfg.bridge.default_mode == "readonly"
     assert len(cfg.chats) == 1
     assert cfg.chats[0].max_chat_id == "-70000000000001"
     assert cfg.chats[0].title == "Локальный чат"
     assert cfg.chats[0].mode == "disabled"
+
+
+def test_load_config_reads_dm_history_sweep_overrides(tmp_path, monkeypatch):
+    base_path = tmp_path / "config.yaml"
+    base_path.write_text(
+        """
+telegram:
+  bot_token: "${TG_BOT_TOKEN}"
+  owner_id: "${TG_OWNER_ID}"
+  forum_group_id: "${TG_FORUM_GROUP_ID}"
+
+max:
+  phone: "${MAX_PHONE}"
+
+storage: {}
+
+health:
+  dm_history_sweep:
+    enabled: false
+    warmup_seconds: 300
+    warmup_interval_seconds: 60
+    steady_interval_seconds: 1200
+    limit: 12
+    backfill_seconds: 3600
+    cycle_jitter_seconds: 5
+    per_chat_delay_seconds: 0.25
+
+bridge: {}
+content: {}
+chats: []
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TG_BOT_TOKEN", "123456:token")
+    monkeypatch.setenv("TG_OWNER_ID", "123")
+    monkeypatch.setenv("TG_FORUM_GROUP_ID", "-1001234567890")
+    monkeypatch.setenv("MAX_PHONE", "+79990000000")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("CONFIG_LOCAL_PATH", raising=False)
+
+    cfg = load_config(str(base_path))
+
+    sweep = cfg.health.dm_history_sweep
+    assert sweep.enabled is False
+    assert sweep.warmup_seconds == 300
+    assert sweep.warmup_interval_seconds == 60
+    assert sweep.steady_interval_seconds == 1200
+    assert sweep.limit == 12
+    assert sweep.backfill_seconds == 3600
+    assert sweep.cycle_jitter_seconds == 5
+    assert sweep.per_chat_delay_seconds == 0.25
 
 
 def test_load_config_reads_secrets_from_dotenv_secrets(tmp_path, monkeypatch):

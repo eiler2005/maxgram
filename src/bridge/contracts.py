@@ -176,6 +176,7 @@ class MaxBridgePort(Protocol):
         limit: int = 30,
         since_ts=None,
         flow_id: Optional[str] = None,
+        is_known_message: Optional[Callable[[str, str], Awaitable[bool]]] = None,
     ) -> int: ...
     def get_pending_empty_recovery_stats(self) -> dict[str, Optional[int]]: ...
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
 from . import users as max_users
@@ -9,10 +10,13 @@ from .deps import ResolveDeps
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
+MAX_RESOLVE_NEGATIVE_TTL_SECONDS = 10 * 60
+
 
 class MaxResolveService:
     def __init__(self, deps: ResolveDeps):
         self._deps = deps
+        self._negative_user_lookup_until: dict[int, float] = {}
 
     @property
     def _client(self):
@@ -40,6 +44,7 @@ class MaxResolveService:
                 name = self._extract_user_name(cached)
                 if name:
                     logger.debug("resolve_user_name (cache) user_id=%s → %r", user_id, name)
+                    self._negative_user_lookup_until.pop(user_id_int, None)
                     return name
         except Exception as e:
             logger.debug("cached user lookup failed user_id=%s: %s", user_id, e)
@@ -60,20 +65,35 @@ class MaxResolveService:
                             user_id,
                             name,
                         )
+                        self._negative_user_lookup_until.pop(user_id_int, None)
                         return name
             except Exception as e:
                 logger.debug("resolve_user_name %s lookup failed user_id=%s: %s", source_name, user_id, e)
 
         # 2. Live-запрос (требует активного сокета)
+        now = time.monotonic()
+        if self._negative_user_lookup_until.get(user_id_int, 0) > now:
+            return None
         try:
             users = await asyncio.wait_for(self._client.load_users([user_id_int]), timeout=5)
             if users:
                 name = self._extract_user_name(users[0])
                 logger.debug("resolve_user_name (live) user_id=%s → %r", user_id, name)
-                return name or None
+                if name:
+                    self._negative_user_lookup_until.pop(user_id_int, None)
+                    return name
+            self._negative_user_lookup_until[user_id_int] = (
+                time.monotonic() + MAX_RESOLVE_NEGATIVE_TTL_SECONDS
+            )
         except asyncio.TimeoutError:
+            self._negative_user_lookup_until[user_id_int] = (
+                time.monotonic() + MAX_RESOLVE_NEGATIVE_TTL_SECONDS
+            )
             logger.warning("resolve_user_name timed out user_id=%s", user_id)
         except Exception as e:
+            self._negative_user_lookup_until[user_id_int] = (
+                time.monotonic() + MAX_RESOLVE_NEGATIVE_TTL_SECONDS
+            )
             logger.warning("resolve_user_name failed user_id=%s: %s", user_id, e)
         return None
 

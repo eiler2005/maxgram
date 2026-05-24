@@ -1661,6 +1661,71 @@ async def test_replay_recent_history_reclassifies_unsupported_nested_audio(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_replay_recent_history_pre_dedups_known_messages_but_keeps_pending(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    class RawHistoryClient(LookupClient):
+        def __init__(self):
+            super().__init__(users={7001: make_user("Людмила")})
+
+        async def _send_and_wait(self, opcode, payload, timeout=10):
+            return {
+                "payload": {
+                    "messages": [
+                        {
+                            "cid": 1779274610031002,
+                            "id": 116605799957888782,
+                            "sender": 7001,
+                            "time": 1779263296000,
+                            "type": "USER",
+                            "text": "known",
+                        },
+                        {
+                            "cid": 1779274610031003,
+                            "id": 116605799957888783,
+                            "sender": 7001,
+                            "time": 1779263297000,
+                            "type": "USER",
+                            "text": "pending",
+                        },
+                    ]
+                }
+            }
+
+    adapter._client = RawHistoryClient()
+    adapter._remember_pending_empty_recovery(
+        chat_id="200056208",
+        raw_msg_id="116605799957888783",
+        msg_id="116605799957888783",
+        message_type="USER",
+        flow_id="mx:200056208:pending",
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    async def is_known_message(_chat_id, _msg_id):
+        return True
+
+    adapter.on_message(handler)
+    replayed = await adapter.replay_recent_history(
+        "200056208",
+        limit=30,
+        since_ts=0,
+        is_known_message=is_known_message,
+    )
+
+    assert replayed == 1
+    assert [msg.msg_id for msg in received] == ["116605799957888783"]
+
+
+@pytest.mark.asyncio
 async def test_download_audio_reference_refreshes_raw_history_url(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",
@@ -2951,6 +3016,35 @@ async def test_resolve_user_name_live_lookup_has_short_timeout(tmp_path, monkeyp
     adapter._client = SlowClient()
 
     assert await adapter.resolve_user_name("99577134") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_user_name_negative_cache_suppresses_repeated_live_lookup(tmp_path):
+    class FailingClient(LookupClient):
+        def __init__(self):
+            super().__init__()
+            self.live_calls = 0
+
+        async def get_users(self, user_ids: list[int]):
+            self.live_calls += 1
+            raise ValueError("bad user payload")
+
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    client = FailingClient()
+    adapter._client = client
+
+    assert await adapter.resolve_user_name("99577134") is None
+    assert await adapter.resolve_user_name("99577134") is None
+    assert client.live_calls == 1
+
+    adapter._adapter._resolver._negative_user_lookup_until[99577134] = 0
+    assert await adapter.resolve_user_name("99577134") is None
+    assert client.live_calls == 2
 
 
 @pytest.mark.asyncio
