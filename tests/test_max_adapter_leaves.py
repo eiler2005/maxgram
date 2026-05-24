@@ -1,4 +1,5 @@
 import asyncio
+import ssl
 import sqlite3
 from types import SimpleNamespace
 
@@ -268,6 +269,30 @@ async def test_pymax2_session_store_can_clear_saved_sessions(tmp_path):
     con.close()
 
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_reauth_close_after_success_suppresses_ssl_shutdown_noise():
+    from src.adapters.max.backends.pymax import reauth as pymax_reauth
+
+    class FakeClient:
+        async def stop(self):
+            raise ssl.SSLError("application data after close notify")
+
+    await pymax_reauth._close_after_success(FakeClient())
+
+
+@pytest.mark.asyncio
+async def test_reauth_done_callback_suppresses_close_task_noise():
+    from src.adapters.max.backends.pymax import reauth as pymax_reauth
+
+    async def fail_close():
+        raise ssl.SSLError("application data after close notify")
+
+    task = asyncio.create_task(fail_close())
+    await asyncio.sleep(0)
+
+    pymax_reauth._ignore_close_error(task)
 
 
 def test_pymax2_login_payload_drops_unsupported_attachments():

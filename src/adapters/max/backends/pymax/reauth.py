@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import ssl
 
 from pymax.auth import ConsoleSmsCodeProvider, SmsAuthFlow
 
@@ -45,14 +47,30 @@ async def reauthorize_with_console(
     )
 
     @client.on_start()
-    async def _stop_after_success(_client):
+    def _stop_after_success(_client):
         started.set()
-        await _client.stop()
+        task = asyncio.create_task(_close_after_success(_client))
+        task.add_done_callback(_ignore_close_error)
 
     try:
         await client.start()
+    except (asyncio.CancelledError, ssl.SSLError):
+        if not started.is_set():
+            raise
     finally:
-        await client.close()
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await client.close()
 
     if not started.is_set():
         raise RuntimeError("MAX reauth did not reach a successful login")
+
+
+async def _close_after_success(client) -> None:
+    await asyncio.sleep(0)
+    with contextlib.suppress(Exception, asyncio.CancelledError):
+        await client.stop()
+
+
+def _ignore_close_error(task: asyncio.Task[None]) -> None:
+    with contextlib.suppress(Exception, asyncio.CancelledError):
+        task.result()
