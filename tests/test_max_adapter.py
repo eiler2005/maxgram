@@ -587,6 +587,38 @@ async def test_handle_raw_message_renders_control_leave(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_decodes_bytes_text_before_preview(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=1,
+        chat_id=123,
+        sender=7001,
+        text="Привет".encode(),
+        type="TEXT",
+        status=None,
+        attaches=[],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].text == "Привет"
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
     adapter = CapturingDownloadAdapter(
         phone="+7",

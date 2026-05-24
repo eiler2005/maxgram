@@ -54,6 +54,16 @@ class MaxEventsService:
     def _voice_recovery(self):
         return self._deps.voice_recovery
 
+    @staticmethod
+    def _normalize_text(value) -> str | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace") or None
+        if isinstance(value, str):
+            return value
+        return str(value)
+
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""
         raw_opcode = data.get("opcode") if isinstance(data, dict) else None
@@ -389,13 +399,11 @@ class MaxEventsService:
             forwarded = self._raw_payload._extract_forwarded_payload(message)
             content_message = forwarded.message if forwarded else message
 
-            text = (
+            text = self._normalize_text(
                 getattr(content_message, "text", None)
                 or getattr(message, "text", None)
                 or None
             )
-            if text == "":
-                text = None
             message_type = str(
                 getattr(content_message, "type", None)
                 or getattr(message, "type", None)
