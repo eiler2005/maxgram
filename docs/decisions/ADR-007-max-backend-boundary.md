@@ -28,6 +28,9 @@ internal backend boundary:
 - PyMax 2 session compatibility is isolated in `session_store.py`: it imports
   legacy PyMax 1 `auth(token, device_id)` into the PyMax 2 `sessions` schema
   once, without exposing token data outside the backend boundary.
+- Existing PyMax 1 `SocketMaxClient` sessions are DESKTOP sessions, so
+  `client_factory.py` pins a DESKTOP user-agent and sync overrides for the
+  migration path instead of leaking that compatibility concern outward.
 - Private PyMax 2 calls such as `client._app.invoke(...)` are isolated inside
   the backend raw gateway. Native `on_raw()` replaces the old private
   message-notification patch.

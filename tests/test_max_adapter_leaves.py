@@ -117,6 +117,9 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_
     assert calls["extra_config"].reconnect is False
     assert calls["extra_config"].telemetry is False
     assert isinstance(calls["extra_config"].store, BridgeSessionStore)
+    assert calls["extra_config"].user_agent.device_type.value == "DESKTOP"
+    assert calls["extra_config"].sync.chats_sync == 0
+    assert calls["extra_config"].sync.contacts_sync == 0
     assert calls["work_dir"] == str(tmp_path)
 
 

@@ -444,6 +444,17 @@ table `sessions`. Store сначала пробует native PyMax 2 `sessions`;
 token/device payload. Без этого PyMax 2 считает, что сессии нет, начинает
 `AUTH_REQUEST` и может быстро получить `err.limit.violate`.
 
+Для существующих PyMax 1 `SocketMaxClient` sessions также нужен v1-compatible
+login profile:
+
+- `DeviceType.DESKTOP`;
+- desktop-shaped `MobileUserAgentPayload`;
+- sync overrides `chats_sync=0`, `contacts_sync=0`, `drafts_sync=0`,
+  `presence_sync=0`.
+
+Если оставить PyMax 2 default Android user-agent и sync `-1`, старый token может
+быть отвергнут на `LOGIN` с `login.cred / FAIL_WRONG_PASSWORD`.
+
 Direct egress:
 
 ```python
@@ -852,6 +863,8 @@ backend adapter или расширить transport-neutral port, а не имп
 
 - `ExtraConfig.reconnect is False`;
 - `ExtraConfig.telemetry is False`;
+- factory использует v1-compatible `DeviceType.DESKTOP` user-agent и sync
+  overrides `0` для старых `SocketMaxClient` sessions;
 - `BridgeSessionStore` импортирует legacy PyMax 1 `auth(token, device_id)` в
   PyMax 2 `sessions` и не требует SMS-auth при наличии старой сессии;
 - PyMax 2 message callback получает `(message, client)`, а bridge handler
@@ -1057,6 +1070,7 @@ Errors должны проходить через существующие redac
 | Включился PyMax internal reconnect | Critical | В проекте reconnect должен создавать свежий client. Старое поведение pymax уже приводило к накоплению state. | Всегда `ExtraConfig(reconnect=False)`, unit test. |
 | Включилась telemetry | High | Старый fake telemetry режим был проблемным, плюс privacy posture требует минимум лишнего трафика. | Всегда `ExtraConfig(telemetry=False)`, unit test. |
 | Session DB несовместима | High | PyMax 1 хранит текущую сессию в `auth(token, device_id)`, PyMax 2 читает `sessions`; без import PyMax 2 уйдет в SMS-auth и может получить rate limit. | Backup перед live-run, `BridgeSessionStore` one-time import, regression test на legacy `auth`. |
+| Старый token отвергнут на `LOGIN` | High | PyMax 1 `SocketMaxClient` создавал DESKTOP session, а PyMax 2 default `Client` стартует как Android; сервер может вернуть `login.cred / FAIL_WRONG_PASSWORD`. | В factory использовать DESKTOP user-agent и sync overrides `0` до явного reauth. |
 | Native `on_raw` приходит позже typed mapping | Medium | Старый patch ловил raw wrappers до потери части данных. | Unit test на conversion, live test voice/audio и raw history recovery. |
 | `client.chats` иначе представляет dialogs/groups | Medium | Recovery и DM partner resolution зависят от реальных dialogs. | Фильтр по `Chat.type`, live test own-initiated DM. |
 | `client._app.invoke` private | Medium | Raw history/audio/video зависят от raw requests. | Изолировать в raw gateway, покрыть узким test, не использовать вне backend. |

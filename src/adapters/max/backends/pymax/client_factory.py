@@ -1,10 +1,39 @@
 from __future__ import annotations
 
-from pymax import Client, ExtraConfig
+from pymax import Client, ExtraConfig, SyncOverrides
+from pymax.api.session.enums import DeviceType
+from pymax.api.session.payloads import MobileUserAgentPayload
 
 from ...network import MaxEgressProfile
 from .session_store import BridgeSessionStore
 from .transport import EgressClient
+
+
+def legacy_desktop_user_agent() -> MobileUserAgentPayload:
+    return MobileUserAgentPayload(
+        device_type=DeviceType.DESKTOP,
+        app_version="25.12.14",
+        os_version="Windows 10",
+        timezone="Europe/Moscow",
+        screen="1080x1920 1.0x",
+        locale="ru",
+        device_name="Chrome",
+        device_locale="ru",
+        build_number=0x97CB,
+        header_user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+    )
+
+
+def legacy_sync_overrides() -> SyncOverrides:
+    return SyncOverrides(
+        chats_sync=0,
+        contacts_sync=0,
+        drafts_sync=0,
+        presence_sync=0,
+    )
 
 
 def make_extra_config(*, store=None) -> ExtraConfig:
@@ -12,6 +41,8 @@ def make_extra_config(*, store=None) -> ExtraConfig:
         reconnect=False,
         telemetry=False,
         store=store,
+        user_agent=legacy_desktop_user_agent(),
+        sync=legacy_sync_overrides(),
     )
 
 
