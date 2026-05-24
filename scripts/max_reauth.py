@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.adapters.max.backends.pymax.reauth import reauthorize_with_console
 from src.adapters.max.network import build_max_egress_profile

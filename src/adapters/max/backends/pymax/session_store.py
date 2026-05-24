@@ -7,14 +7,25 @@ from pymax.session.models import SessionInfo
 class BridgeSessionStore(SessionStore):
     """PyMax 2 session store with one-time import from PyMax 1 auth table."""
 
-    def __init__(self, work_dir: str, db_name: str, *, phone: str) -> None:
+    def __init__(
+        self,
+        work_dir: str,
+        db_name: str,
+        *,
+        phone: str,
+        import_legacy: bool = True,
+    ) -> None:
         super().__init__(work_dir, db_name)
         self._bridge_phone = phone
+        self._import_legacy = import_legacy
 
     async def load_session(self) -> SessionInfo | None:
         session = await super().load_session()
         if session is not None:
             return session
+
+        if not self._import_legacy:
+            return None
 
         session = await self._load_legacy_auth_session()
         if session is None:

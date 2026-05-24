@@ -145,6 +145,30 @@ def test_client_factory_passes_custom_auth_flow(monkeypatch, tmp_path):
     assert calls["auth_flow"] is auth_flow
 
 
+def test_client_factory_can_disable_legacy_session_import(monkeypatch, tmp_path):
+    from src.adapters.max.backends.pymax import client_factory as pymax_factory
+    from src.adapters.max.backends.pymax.session_store import BridgeSessionStore
+
+    calls = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
+
+    monkeypatch.setattr(pymax_factory, "Client", FakeClient)
+
+    pymax_factory.create_pymax_client(
+        phone="+79991234567",
+        data_dir=str(tmp_path),
+        session_name="session",
+        import_legacy_session=False,
+    )
+
+    store = calls["extra_config"].store
+    assert isinstance(store, BridgeSessionStore)
+    assert store._import_legacy is False
+
+
 @pytest.mark.asyncio
 async def test_pymax2_session_store_imports_legacy_pymax1_auth_table(tmp_path):
     from src.adapters.max.backends.pymax.session_store import BridgeSessionStore
@@ -173,6 +197,32 @@ async def test_pymax2_session_store_imports_legacy_pymax1_auth_table(tmp_path):
     con.close()
 
     assert row == ("legacy-device-id", "+79991234567")
+
+
+@pytest.mark.asyncio
+async def test_pymax2_session_store_can_skip_legacy_pymax1_auth_import(tmp_path):
+    from src.adapters.max.backends.pymax.session_store import BridgeSessionStore
+
+    db_path = tmp_path / "session.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE auth (token TEXT NOT NULL, device_id CHAR(32) NOT NULL)")
+    con.execute(
+        "INSERT INTO auth (token, device_id) VALUES (?, ?)",
+        ("stale-token", "legacy-device-id"),
+    )
+    con.commit()
+    con.close()
+
+    store = BridgeSessionStore(
+        str(tmp_path),
+        "session.db",
+        phone="+79991234567",
+        import_legacy=False,
+    )
+    session = await store.load_session()
+    await store.close()
+
+    assert session is None
 
 
 @pytest.mark.asyncio

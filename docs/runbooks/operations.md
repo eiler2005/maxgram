@@ -86,6 +86,9 @@ docker compose --project-name deploy --env-file .env.host -f deploy/docker-compo
 python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 ```
 
+Reauth deliberately disables legacy PyMax 1 `auth` import, иначе старый
+invalid token может быть импортирован обратно вместо SMS-flow.
+
 Ожидаемо: после reauth в логах появляется `MAX connected`, `requires_reauth`
 исчезает, а `/status` снова показывает рабочий MAX link и `MAX egress:
 home_ru_proxy`.

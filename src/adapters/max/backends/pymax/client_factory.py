@@ -56,8 +56,14 @@ def create_pymax_client(
     egress: MaxEgressProfile | None = None,
     extra_config: ExtraConfig | None = None,
     auth_flow: AuthFlow | None = None,
+    import_legacy_session: bool = True,
 ):
-    session_store = BridgeSessionStore(data_dir, session_name, phone=phone)
+    session_store = BridgeSessionStore(
+        data_dir,
+        session_name,
+        phone=phone,
+        import_legacy=import_legacy_session,
+    )
     if extra_config is None:
         extra_config = make_extra_config(store=session_store)
     elif extra_config.store is None:

@@ -10,7 +10,7 @@ from .session_store import BridgeSessionStore
 
 
 async def clear_saved_sessions(*, data_dir: str, session_name: str, phone: str) -> None:
-    store = BridgeSessionStore(data_dir, session_name, phone=phone)
+    store = BridgeSessionStore(data_dir, session_name, phone=phone, import_legacy=False)
     try:
         await store.clear_sessions()
     finally:
@@ -41,6 +41,7 @@ async def reauthorize_with_console(
         session_name=session_name,
         egress=egress,
         auth_flow=auth_flow,
+        import_legacy_session=False,
     )
 
     @client.on_start()
