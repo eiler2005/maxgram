@@ -1,6 +1,8 @@
 import asyncio
+import os
 import ssl
 import sqlite3
+import stat
 import struct
 from types import SimpleNamespace
 
@@ -381,6 +383,33 @@ async def test_reauth_done_callback_suppresses_close_task_noise():
     await asyncio.sleep(0)
 
     pymax_reauth._ignore_close_error(task)
+
+
+def test_max_reauth_refuses_fresh_bridge_heartbeat(tmp_path):
+    import time
+    from scripts import max_reauth
+
+    heartbeat = tmp_path / "health_heartbeat.json"
+    heartbeat.write_text("{}")
+
+    assert max_reauth.bridge_heartbeat_is_fresh(tmp_path) is True
+    old = time.time() - 300
+    os.utime(heartbeat, (old, old))
+    assert max_reauth.bridge_heartbeat_is_fresh(tmp_path) is False
+
+
+def test_max_reauth_snapshot_session_db_copies_without_token_output(tmp_path):
+    from scripts import max_reauth
+
+    session = tmp_path / "session.db"
+    session.write_bytes(b"opaque sqlite bytes with token")
+
+    snapshot = max_reauth.snapshot_session_db(tmp_path, "session.db")
+
+    assert snapshot is not None
+    assert snapshot.name.startswith("session.db.before-reauth-")
+    assert snapshot.read_bytes() == session.read_bytes()
+    assert stat.S_IMODE(snapshot.stat().st_mode) == 0o600
 
 
 def test_pymax2_login_payload_drops_unsupported_attachments():

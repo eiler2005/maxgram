@@ -70,6 +70,13 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml logs --tai
 текущий MAX token больше не принимается. Такое может случиться после включения
 дополнительного пароля/SMS в MAX.
 
+Не делать профилактический reauth "на всякий случай": обычный reboot/offline
+должен восстанавливаться через существующую device session, как обычный
+клиент мессенджера. Reauth запускается только при явном invalid token /
+`requires_reauth=true` или при осознанной ручной проверке. Скрипт откажется
+очищать saved session без `--confirm-clear-session` и не должен запускаться,
+пока bridge heartbeat свежий.
+
 ```bash
 ssh -i ~/.ssh/id_rsa deploy@<SERVER_IP>
 cd /opt/maxtg-bridge
@@ -79,7 +86,7 @@ docker compose --project-name deploy --env-file .env.host -f deploy/docker-compo
 
 # Ввести SMS-код и, если MAX попросит, 2FA-пароль. Скрипт не сохраняет пароль.
 docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml run --rm -it bridge \
-  python scripts/max_reauth.py
+  python scripts/max_reauth.py --confirm-clear-session
 
 docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml up -d bridge
 docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml logs --tail=80 --since=5m bridge
@@ -88,6 +95,10 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 
 Reauth deliberately disables legacy PyMax 1 `auth` import, иначе старый
 invalid token может быть импортирован обратно вместо SMS-flow.
+
+Перед изменением session DB скрипт сохраняет `data/session.db.before-reauth-*`
+с правами `0600`. Это файл с token, его не копировать в логи/чат и не
+публиковать.
 
 Не закрывать старые MAX sessions через bridge/PyMax `SESSIONS_CLOSE`: live-run
 показал, что этот opcode может завершить все desktop sessions (`FAIL_LOGOUT_ALL`),

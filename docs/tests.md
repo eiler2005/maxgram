@@ -232,6 +232,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pymax2_session_store_can_clear_saved_sessions` | `session_store.py` умеет очищать PyMax 2 `sessions` перед интерактивным reauth. |
 | `test_reauth_close_after_success_suppresses_ssl_shutdown_noise` | One-shot reauth не считает PyMax SSL close noise ошибкой после успешной авторизации. |
 | `test_reauth_done_callback_suppresses_close_task_noise` | Callback фоновой остановки reauth гасит ожидаемый close noise без `startup task failed`. |
+| `test_max_reauth_refuses_fresh_bridge_heartbeat` | Reauth guard не даёт запускать SMS-flow рядом с живым bridge heartbeat без явного `--force`. |
+| `test_max_reauth_snapshot_session_db_copies_without_token_output` | Перед reauth создаётся `session.db.before-reauth-*` snapshot с правами `0600`, без чтения/печати token. |
 | `test_pymax2_login_payload_drops_unsupported_attachments` | `login.py` удаляет unsupported attachments из initial sync payload до strict PyMax 2 `LoginResponse` validation. |
 | `test_pymax2_handler_signatures_are_adapted_to_bridge_callbacks` | PyMax 2 callbacks `(event, client)` адаптируются к bridge callbacks без pymax types снаружи. |
 | `test_pymax2_raw_gateway_converts_frames_and_invokes_app` | Native `on_raw` конвертируется в bridge raw dict, а raw requests изолированы через `_app.invoke`. |
