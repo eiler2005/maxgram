@@ -14,7 +14,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **220 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **224 теста**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -175,6 +175,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_own_echo_is_suppressed_when_send_message_returns_real_id` | Когда pymax возвращает настоящий `id`, он сохраняется как "отправленный". Последующее эхо-сообщение с тем же `id` от MAX подавляется — обработчик не вызывается. |
 | `test_send_message_retries_retryable_transport_error_and_succeeds` | Временная ошибка транспорта (`Socket is not connected`) вызывает retry; следующая успешная попытка возвращает `msg_id`, а в логах появляется `max.outbound.retry`. |
 | `test_send_message_exposes_final_error_after_retries` | После исчерпания retry `send_message()` возвращает `None`, а адаптер сохраняет последнюю ошибку и реальное число попыток для последующей записи в `delivery_log`. |
+| `test_send_message_sanitizes_pymax_sequence_overflow_error` | PyMax TCP seq overflow нормализуется в безопасный `pymax_tcp_sequence_overflow` без логирования текста исходящего сообщения. |
 | `test_start_path_logs_masked_phone_without_name_error` | Start/reconnect path логирует masked phone без production-only `NameError` после split lifecycle module. |
 
 ### Резолв имён пользователей
@@ -207,7 +208,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (22 теста)
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (24 теста)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -220,7 +221,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_client_factory_passes_custom_auth_flow` | `client_factory.py` умеет принять custom auth flow для one-shot MAX reauth без изменения runtime path. |
 | `test_client_factory_can_disable_legacy_session_import` | Reauth path может отключить legacy PyMax 1 `auth` import, чтобы stale token не импортировался обратно. |
 | `test_pymax_msgpack_codec_tolerates_array_map_keys` | Backend-local PyMax codec не падает на raw msgpack map с array-like key, который встречается в некоторых `CHAT_HISTORY` ответах. |
-| `test_client_factory_installs_bridge_msgpack_guard` | `client_factory.py` ставит bridge msgpack guard на PyMax connection/protocol при создании клиента. |
+| `test_pymax_sequence_guard_wraps_to_one_byte` | Backend-local PyMax connection guard заворачивает TCP `seq` в one-byte диапазон, чтобы framer не падал после 255 requests. |
+| `test_client_factory_installs_bridge_protocol_guards` | `client_factory.py` ставит bridge msgpack и sequence guards на PyMax connection/protocol при создании клиента. |
 | `test_pymax2_session_store_imports_legacy_pymax1_auth_table` | `session_store.py` импортирует legacy PyMax 1 `auth(token, device_id)` в PyMax 2 `sessions`, чтобы сохранить existing session без SMS-auth. |
 | `test_pymax2_session_store_can_skip_legacy_pymax1_auth_import` | `session_store.py` по явному флагу не импортирует stale legacy token и позволяет начать SMS-flow. |
 | `test_pymax2_session_store_can_clear_saved_sessions` | `session_store.py` умеет очищать PyMax 2 `sessions` перед интерактивным reauth. |
@@ -232,6 +234,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pymax2_send_uses_attachments_list` | Outbound media отправляется через PyMax 2 `attachments=[...]`, не старый `attachment=`. |
 | `test_pymax2_snapshots_use_profile_users_and_chat_types` | Own id берётся из `client.me.contact.id`, users/chats snapshots нормализуются через PyMax 2 shape. |
 | `test_pymax2_egress_transport_uses_configured_socket_connector` | Custom PyMax 2 transport использует `MaxEgressProfile.socket_connector` и сохраняет TLS server hostname. |
+| `test_pymax2_egress_client_uses_bridge_connection_manager` | Egress PyMax client строит guarded `BridgeConnectionManager`, а не upstream `ConnectionManager` с 32-bit seq. |
 | `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |
 
 ---
@@ -247,7 +250,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (54 теста)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX (55 тестов)
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -262,6 +265,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_on_tg_reply_rejects_too_large_media` | TG→MAX: если файл превышает лимит `max_file_size_mb`, bridge не отправляет его в MAX и отдаёт явное сообщение в топик. |
 | `test_on_tg_reply_logs_forward_completion` | После успешной доставки TG→MAX в логах присутствует событие `bridge.outbound.forward_finished` с `outcome=delivered`. |
 | `test_on_tg_reply_logs_failed_delivery_with_max_error` | Если TG→MAX отправка окончательно не удалась, bridge пишет `failed` в `delivery_log` с последней ошибкой MAX и числом попыток. |
+| `test_on_tg_reply_reports_safe_pymax_sequence_overflow_error` | TG failure notice показывает безопасную причину `pymax_tcp_sequence_overflow`, а `delivery_log` не содержит текст сообщения. |
 | `test_on_tg_reply_logs_too_large_outbound_failure` | Явно отклонённый oversized TG→MAX файл тоже фиксируется в `delivery_log`, а не только показывается в Telegram topic. |
 | `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает queued-placeholder и создаёт `pending_media_downloads` job. |
 | `test_existing_pending_audio_failure_does_not_duplicate_placeholder` | Повторный replay того же voice по `media_msg_id/reference_id` переиспользует активный pending job и не отправляет второй queued-placeholder. |

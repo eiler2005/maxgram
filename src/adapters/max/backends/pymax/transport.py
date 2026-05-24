@@ -17,6 +17,15 @@ from ...network import DirectSocketConnector
 from ...network.egress import MaxSocketConnector
 
 
+class BridgeConnectionManager(ConnectionManager):
+    """PyMax TCP connection guard for one-byte MAX sequence numbers."""
+
+    def next_seq(self) -> int:
+        seq = (int(getattr(self, "_seq", -1)) + 1) % 0x100
+        setattr(self, "_seq", seq)
+        return seq
+
+
 class BridgeMsgpackPayloadCodec(MsgpackPayloadCodec):
     """PyMax msgpack codec tolerant to MAX maps with array-like keys."""
 
@@ -107,11 +116,27 @@ def install_bridge_msgpack_codec(protocol) -> None:
 
 def install_bridge_protocol_guards(client):
     connection = getattr(client, "_connection", None)
+    install_bridge_sequence_guard(connection)
     protocol = getattr(connection, "protocol", None)
     if protocol is not None:
         install_bridge_msgpack_codec(protocol)
         client._maxtg_msgpack_guard_installed = True
     return client
+
+
+def install_bridge_sequence_guard(connection) -> None:
+    if connection is None:
+        return
+    if isinstance(connection, BridgeConnectionManager):
+        connection._maxtg_seq_guard_installed = True
+        return
+
+    def next_seq() -> int:
+        connection._seq = (getattr(connection, "_seq", -1) + 1) % 0x100
+        return connection._seq
+
+    connection.next_seq = next_seq
+    connection._maxtg_seq_guard_installed = True
 
 
 class EgressTCPTransport(TCPTransport):
@@ -167,7 +192,7 @@ class EgressClient(Client):
             transport=transport,
             framer=TcpPacketFramer(),
         )
-        return ConnectionManager(
+        return BridgeConnectionManager(
             reader=reader,
             transport=transport,
             protocol=bridge_tcp_protocol(),

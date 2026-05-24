@@ -2089,6 +2089,41 @@ async def test_on_tg_reply_logs_failed_delivery_with_max_error():
 
 
 @pytest.mark.asyncio
+async def test_on_tg_reply_reports_safe_pymax_sequence_overflow_error():
+    class FailingMax(DummyMax):
+        async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None,
+                               media_path=None, media_type=None, flow_id=None):
+            self.sent = (chat_id, text, reply_to_msg_id, flow_id)
+            self._last_outbound_error = "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
+            self._last_outbound_attempts = 1
+            return None
+
+    repo = DummyRepo()
+    max_adapter = FailingMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    await bridge._on_tg_reply(
+        topic_id=99,
+        tg_msg_id=890,
+        text="do not leak this text",
+        reply_to_tg_msg_id=None,
+        sender_name="Мария Иванова",
+    )
+
+    assert tg_adapter.calls[-1] == (
+        "text",
+        "❌ Не удалось отправить сообщение в MAX (MAX transport: pymax_tcp_sequence_overflow)",
+    )
+    args, kwargs = repo.delivery_logs[-1]
+    assert args[0] == "out_fail:99:890"
+    assert args[3] == "failed"
+    assert args[4] == "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
+    assert "do not leak this text" not in str(repo.delivery_logs)
+    assert kwargs["attempts"] == 1
+
+
+@pytest.mark.asyncio
 async def test_on_tg_reply_logs_too_large_outbound_failure(tmp_path):
     repo = DummyRepo()
     max_adapter = DummyMax()

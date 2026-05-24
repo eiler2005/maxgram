@@ -169,6 +169,9 @@ class MaxRuntimeService:
     def _is_retryable_send_error(self, error: BaseException) -> bool:
         return max_errors.is_retryable_send_error(error)
 
+    def _safe_send_error(self, error: BaseException) -> str:
+        return max_errors.safe_send_error(error)
+
     def _cleanup_pending_state(self):
         now = time.monotonic()
         self._pending_outbound_acks = [

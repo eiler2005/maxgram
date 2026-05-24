@@ -1,6 +1,7 @@
 import asyncio
 import ssl
 import sqlite3
+import struct
 from types import SimpleNamespace
 
 import msgpack
@@ -57,6 +58,9 @@ def test_error_classification_is_pymax_free():
     incomplete = max_errors.classify_runtime_error(
         RuntimeError("MAX client start returned before on_start")
     )
+    seq_overflow = max_errors.classify_runtime_error(
+        struct.error("'B' format requires 0 <= number <= 255")
+    )
 
     assert corrupt is not None
     assert corrupt.kind == "session_corrupt"
@@ -65,6 +69,9 @@ def test_error_classification_is_pymax_free():
     assert invalid.kind == "session_invalid"
     assert incomplete is not None
     assert incomplete.kind == "max_start_incomplete"
+    assert seq_overflow is not None
+    assert seq_overflow.kind == "pymax_tcp_sequence_overflow"
+    assert seq_overflow.requires_reauth is False
 
 
 @pytest.mark.asyncio
@@ -189,7 +196,37 @@ def test_pymax_msgpack_codec_tolerates_array_map_keys():
     assert decoded["messages"] == []
 
 
-def test_client_factory_installs_bridge_msgpack_guard(monkeypatch, tmp_path):
+def test_pymax_sequence_guard_wraps_to_one_byte():
+    from pymax.protocol import OutboundFrame
+
+    from src.adapters.max.backends.pymax.transport import (
+        BridgeConnectionManager,
+        bridge_tcp_protocol,
+    )
+
+    connection = BridgeConnectionManager(
+        reader=object(),
+        transport=object(),
+        protocol=bridge_tcp_protocol(),
+    )
+    connection._seq = 253
+
+    assert [connection.next_seq() for _ in range(4)] == [254, 255, 0, 1]
+
+    connection._seq = -1
+    for _ in range(300):
+        seq = connection.next_seq()
+        connection.protocol.encode(
+            OutboundFrame(ver=10, opcode=49, cmd=0, seq=seq, payload={"chatId": 1})
+        )
+
+    with pytest.raises(struct.error):
+        connection.protocol.encode(
+            OutboundFrame(ver=10, opcode=49, cmd=0, seq=256, payload={"chatId": 1})
+        )
+
+
+def test_client_factory_installs_bridge_protocol_guards(monkeypatch, tmp_path):
     from src.adapters.max.backends.pymax import client_factory as pymax_factory
     from src.adapters.max.backends.pymax.transport import BridgeMsgpackPayloadCodec
 
@@ -202,7 +239,7 @@ def test_client_factory_installs_bridge_msgpack_guard(monkeypatch, tmp_path):
 
     class FakeClient:
         def __init__(self, **_kwargs):
-            self._connection = SimpleNamespace(protocol=FakeProtocol())
+            self._connection = SimpleNamespace(protocol=FakeProtocol(), _seq=253)
             self._app = SimpleNamespace(api=SimpleNamespace(auth=None))
 
     monkeypatch.setattr(pymax_factory, "Client", FakeClient)
@@ -215,7 +252,9 @@ def test_client_factory_installs_bridge_msgpack_guard(monkeypatch, tmp_path):
 
     assert isinstance(client._connection.protocol.serializer, BridgeMsgpackPayloadCodec)
     assert isinstance(client._connection.protocol.payload_decoder.serializer, BridgeMsgpackPayloadCodec)
+    assert [client._connection.next_seq() for _ in range(4)] == [254, 255, 0, 1]
     assert client._maxtg_msgpack_guard_installed is True
+    assert client._connection._maxtg_seq_guard_installed is True
     assert client._app.api.auth.__class__.__name__ == "BridgeAuthService"
 
 
@@ -559,6 +598,19 @@ async def test_pymax2_egress_transport_uses_configured_socket_connector(monkeypa
     assert calls[-1][0] == "open_connection"
     assert calls[-1][1]["ssl"] is True
     assert calls[-1][1]["server_hostname"] == "api.oneme.ru"
+
+
+def test_pymax2_egress_client_uses_bridge_connection_manager(tmp_path):
+    from src.adapters.max.backends.pymax.transport import BridgeConnectionManager, EgressClient
+
+    client = EgressClient(
+        phone="+79991234567",
+        work_dir=str(tmp_path),
+        session_name="session",
+    )
+
+    assert isinstance(client._connection, BridgeConnectionManager)
+    assert client._connection.next_seq() == 0
 
 
 def test_max_adapter_can_be_composed_with_fake_backend(tmp_path):

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import struct
 import time
 from types import SimpleNamespace
 
@@ -3161,6 +3162,39 @@ async def test_send_message_exposes_final_error_after_retries(tmp_path, monkeypa
     assert adapter._client.calls == 3
     assert adapter.get_last_outbound_error() == "Socket is not connected"
     assert adapter.get_last_outbound_attempts() == 3
+
+
+@pytest.mark.asyncio
+async def test_send_message_sanitizes_pymax_sequence_overflow_error(tmp_path, caplog):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._started = True
+    adapter._client = FlakyRetryClient(
+        [struct.error("'B' format requires 0 <= number <= 255")]
+    )
+
+    with caplog.at_level(logging.ERROR, logger="src.adapters.max_adapter"):
+        msg_id = await adapter.send_message("123456789", "secret text")
+
+    assert msg_id is None
+    assert adapter._client.calls == 1
+    assert (
+        adapter.get_last_outbound_error()
+        == "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
+    )
+    assert adapter.get_last_outbound_attempts() == 1
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    assert any(
+        event.get("event") == "max.outbound.failed"
+        and event.get("error") == "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
+        and event.get("retryable") is False
+        for event in events
+    )
+    assert "secret text" not in caplog.text
 
 
 class FakeSocketNotConnectedError(Exception):

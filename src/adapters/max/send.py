@@ -213,7 +213,7 @@ class MaxSendService:
                     )
                     return None
             except Exception as e:
-                error = str(e)
+                error = self._deps.runtime._safe_send_error(e)
                 retryable = self._deps.runtime._is_retryable_send_error(e)
                 if retryable and attempt < max_attempts:
                     retry_in_seconds = retry_delays[attempt - 1]

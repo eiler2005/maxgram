@@ -27,6 +27,12 @@ def compose_tg_outbound_text(text: str, sender_name: Optional[str]) -> str:
     return f"[{sender_name}]\n{clean_text}" if clean_text else f"[{sender_name}]"
 
 
+def compose_tg_outbound_failure_notice(max_error: Optional[str]) -> str:
+    if max_error and "pymax_tcp_sequence_overflow" in max_error:
+        return "❌ Не удалось отправить сообщение в MAX (MAX transport: pymax_tcp_sequence_overflow)"
+    return "❌ Не удалось отправить сообщение в MAX"
+
+
 async def handle_tg_reply(
     *,
     cfg: AppConfig,
@@ -228,7 +234,11 @@ async def handle_tg_reply(
             error=delivery_error,
             attempts=attempts or 1,
         )
-        await tg.send_text(topic_id, "❌ Не удалось отправить сообщение в MAX", flow_id=flow_id)
+        await tg.send_text(
+            topic_id,
+            compose_tg_outbound_failure_notice(max_error),
+            flow_id=flow_id,
+        )
         stats["failed_outbound"] += 1
         log_event(
             logger,

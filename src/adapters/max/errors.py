@@ -7,6 +7,12 @@ from ...bridge.contracts import MaxIssue
 from .network import MaxEgressUnavailable
 
 
+PYMAX_TCP_SEQUENCE_OVERFLOW_KIND = "pymax_tcp_sequence_overflow"
+PYMAX_TCP_SEQUENCE_OVERFLOW_ERROR = (
+    "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
+)
+
+
 def _error_text_with_context(error: BaseException) -> str:
     parts: list[str] = []
     seen: set[int] = set()
@@ -22,6 +28,14 @@ def _error_text_with_context(error: BaseException) -> str:
 def classify_runtime_error(error: BaseException) -> Optional[MaxIssue]:
     raw_error = str(error).strip() or error.__class__.__name__
     lowered = _error_text_with_context(error).lower()
+
+    if is_pymax_tcp_sequence_overflow_error(error):
+        return MaxIssue(
+            kind=PYMAX_TCP_SEQUENCE_OVERFLOW_KIND,
+            summary="PyMax TCP seq вышел за one-byte лимит MAX protocol",
+            raw_error=raw_error,
+            requires_reauth=False,
+        )
 
     if isinstance(error, MaxEgressUnavailable) or "max egress proxy" in lowered:
         return MaxIssue(
@@ -107,6 +121,16 @@ def is_retryable_send_error(error: BaseException) -> bool:
         "ssl:",
     )
     return any(marker in error_text for marker in retryable_markers)
+
+
+def is_pymax_tcp_sequence_overflow_error(error: BaseException) -> bool:
+    return "'b' format requires 0 <= number <= 255" in _error_text_with_context(error).lower()
+
+
+def safe_send_error(error: BaseException) -> str:
+    if is_pymax_tcp_sequence_overflow_error(error):
+        return PYMAX_TCP_SEQUENCE_OVERFLOW_ERROR
+    return str(error).strip() or error.__class__.__name__
 
 
 def is_socket_probe_error(exc: Exception) -> bool:
