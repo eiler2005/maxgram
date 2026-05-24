@@ -123,6 +123,28 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_
     assert calls["work_dir"] == str(tmp_path)
 
 
+def test_client_factory_passes_custom_auth_flow(monkeypatch, tmp_path):
+    from src.adapters.max.backends.pymax import client_factory as pymax_factory
+
+    calls = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls.update(kwargs)
+
+    auth_flow = object()
+    monkeypatch.setattr(pymax_factory, "Client", FakeClient)
+
+    pymax_factory.create_pymax_client(
+        phone="+79991234567",
+        data_dir=str(tmp_path),
+        session_name="session",
+        auth_flow=auth_flow,
+    )
+
+    assert calls["auth_flow"] is auth_flow
+
+
 @pytest.mark.asyncio
 async def test_pymax2_session_store_imports_legacy_pymax1_auth_table(tmp_path):
     from src.adapters.max.backends.pymax.session_store import BridgeSessionStore
@@ -151,6 +173,51 @@ async def test_pymax2_session_store_imports_legacy_pymax1_auth_table(tmp_path):
     con.close()
 
     assert row == ("legacy-device-id", "+79991234567")
+
+
+@pytest.mark.asyncio
+async def test_pymax2_session_store_can_clear_saved_sessions(tmp_path):
+    from src.adapters.max.backends.pymax.session_store import BridgeSessionStore
+
+    db_path = tmp_path / "session.db"
+    con = sqlite3.connect(db_path)
+    con.execute(
+        """
+        CREATE TABLE sessions (
+            token TEXT NOT NULL PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            mt_instance_id TEXT NOT NULL DEFAULT '',
+            chats_sync INTEGER NOT NULL DEFAULT -1,
+            contacts_sync INTEGER NOT NULL DEFAULT -1,
+            drafts_sync INTEGER NOT NULL DEFAULT -1,
+            presence_sync INTEGER NOT NULL DEFAULT -1,
+            config_hash TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    con.execute(
+        """
+        INSERT INTO sessions (
+            token, device_id, phone, mt_instance_id,
+            chats_sync, contacts_sync, drafts_sync, presence_sync, config_hash
+        )
+        VALUES (?, ?, ?, '', 0, 0, 0, 0, 'hash')
+        """,
+        ("old-token", "old-device", "+79991234567"),
+    )
+    con.commit()
+    con.close()
+
+    store = BridgeSessionStore(str(tmp_path), "session.db", phone="+79991234567")
+    await store.clear_sessions()
+    await store.close()
+
+    con = sqlite3.connect(db_path)
+    count = con.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    con.close()
+
+    assert count == 0
 
 
 def test_pymax2_login_payload_drops_unsupported_attachments():

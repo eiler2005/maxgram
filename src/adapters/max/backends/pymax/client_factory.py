@@ -3,6 +3,7 @@ from __future__ import annotations
 from pymax import Client, ExtraConfig, SyncOverrides
 from pymax.api.session.enums import DeviceType
 from pymax.api.session.payloads import MobileUserAgentPayload
+from pymax.auth import AuthFlow
 
 from ...network import MaxEgressProfile
 from .login import BridgeAuthService
@@ -54,6 +55,7 @@ def create_pymax_client(
     session_name: str,
     egress: MaxEgressProfile | None = None,
     extra_config: ExtraConfig | None = None,
+    auth_flow: AuthFlow | None = None,
 ):
     session_store = BridgeSessionStore(data_dir, session_name, phone=phone)
     if extra_config is None:
@@ -66,6 +68,8 @@ def create_pymax_client(
         "session_name": session_name,
         "extra_config": extra_config,
     }
+    if auth_flow is not None:
+        kwargs["auth_flow"] = auth_flow
     if egress is None:
         return _install_bridge_auth_service(Client(**kwargs))
     return _install_bridge_auth_service(

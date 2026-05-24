@@ -23,6 +23,11 @@ class BridgeSessionStore(SessionStore):
         await self.save_session(session)
         return session
 
+    async def clear_sessions(self) -> None:
+        conn = await self._get_connection()
+        await conn.execute("DELETE FROM sessions")
+        await conn.commit()
+
     async def _load_legacy_auth_session(self) -> SessionInfo | None:
         conn = await self._get_connection()
         async with conn.execute(

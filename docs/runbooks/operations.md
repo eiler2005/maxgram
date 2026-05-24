@@ -64,6 +64,32 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 docker compose --env-file .env.host -f deploy/docker-compose.prod.yml logs --tail=80
 ```
 
+### Как сделать MAX reauth после сброса session token
+
+Если в `/status` или логах видно `FAIL_LOGIN_TOKEN` / `requires_reauth=true`,
+текущий MAX token больше не принимается. Такое может случиться после включения
+дополнительного пароля/SMS в MAX.
+
+```bash
+ssh -i ~/.ssh/id_rsa deploy@<SERVER_IP>
+cd /opt/maxtg-bridge
+
+# Не держим два MAX-клиента одновременно.
+docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml stop bridge
+
+# Ввести SMS-код и, если MAX попросит, 2FA-пароль. Скрипт не сохраняет пароль.
+docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml run --rm -it bridge \
+  python scripts/max_reauth.py
+
+docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml up -d bridge
+docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml logs --tail=80 --since=5m bridge
+python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
+```
+
+Ожидаемо: после reauth в логах появляется `MAX connected`, `requires_reauth`
+исчезает, а `/status` снова показывает рабочий MAX link и `MAX egress:
+home_ru_proxy`.
+
 ### Как восстановиться, если домашний IP сменился
 
 Сейчас SSH разрешён только с твоего текущего IP.
