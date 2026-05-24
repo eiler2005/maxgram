@@ -3,6 +3,7 @@ import ssl
 import sqlite3
 from types import SimpleNamespace
 
+import msgpack
 import pytest
 
 from src.adapters.max import errors as max_errors
@@ -168,6 +169,54 @@ def test_client_factory_can_disable_legacy_session_import(monkeypatch, tmp_path)
     store = calls["extra_config"].store
     assert isinstance(store, BridgeSessionStore)
     assert store._import_legacy is False
+
+
+def test_pymax_msgpack_codec_tolerates_array_map_keys():
+    from src.adapters.max.backends.pymax.transport import BridgeMsgpackPayloadCodec
+
+    packer = msgpack.Packer(use_bin_type=True)
+    payload = (
+        packer.pack_map_header(2)
+        + packer.pack(["complex", "key"])
+        + packer.pack({"safe": True})
+        + packer.pack("messages")
+        + packer.pack([])
+    )
+
+    decoded = BridgeMsgpackPayloadCodec().decode(payload)
+
+    assert decoded[("complex", "key")] == {"safe": True}
+    assert decoded["messages"] == []
+
+
+def test_client_factory_installs_bridge_msgpack_guard(monkeypatch, tmp_path):
+    from src.adapters.max.backends.pymax import client_factory as pymax_factory
+    from src.adapters.max.backends.pymax.transport import BridgeMsgpackPayloadCodec
+
+    class FakeDecoder:
+        serializer = object()
+
+    class FakeProtocol:
+        serializer = object()
+        payload_decoder = FakeDecoder()
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self._connection = SimpleNamespace(protocol=FakeProtocol())
+            self._app = SimpleNamespace(api=SimpleNamespace(auth=None))
+
+    monkeypatch.setattr(pymax_factory, "Client", FakeClient)
+
+    client = pymax_factory.create_pymax_client(
+        phone="+79991234567",
+        data_dir=str(tmp_path),
+        session_name="session",
+    )
+
+    assert isinstance(client._connection.protocol.serializer, BridgeMsgpackPayloadCodec)
+    assert isinstance(client._connection.protocol.payload_decoder.serializer, BridgeMsgpackPayloadCodec)
+    assert client._maxtg_msgpack_guard_installed is True
+    assert client._app.api.auth.__class__.__name__ == "BridgeAuthService"
 
 
 @pytest.mark.asyncio

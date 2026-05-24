@@ -8,7 +8,7 @@ from pymax.auth import AuthFlow
 from ...network import MaxEgressProfile
 from .login import BridgeAuthService
 from .session_store import BridgeSessionStore
-from .transport import EgressClient
+from .transport import EgressClient, install_bridge_protocol_guards
 
 
 def legacy_desktop_user_agent() -> MobileUserAgentPayload:
@@ -88,4 +88,5 @@ def _install_bridge_auth_service(client):
     api = getattr(app, "api", None)
     if api is not None:
         api.auth = BridgeAuthService(app)
+    install_bridge_protocol_guards(client)
     return client

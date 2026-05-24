@@ -2,16 +2,116 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from typing import Any
 
+import msgpack
 from pymax.client import Client
 from pymax.connection import ConnectionManager
 from pymax.connection.readers import TCPReader
 from pymax.protocol.tcp import TcpProtocol
 from pymax.protocol.tcp.framing import TcpPacketFramer
+from pymax.protocol.tcp.payload import MsgpackPayloadCodec
 from pymax.transport.tcp import TCPTransport
 
 from ...network import DirectSocketConnector
 from ...network.egress import MaxSocketConnector
+
+
+class BridgeMsgpackPayloadCodec(MsgpackPayloadCodec):
+    """PyMax msgpack codec tolerant to MAX maps with array-like keys."""
+
+    def decode(self, payload_bytes: bytes) -> dict[Any, Any]:
+        try:
+            return super().decode(payload_bytes)
+        except TypeError as exc:
+            if "unhashable type" not in str(exc):
+                raise
+            return self._decode_with_hashable_keys(payload_bytes)
+
+    def _decode_with_hashable_keys(self, payload_bytes: bytes) -> dict[Any, Any]:
+        try:
+            value = self._unpackb_with_pairs(payload_bytes, raw=False)
+        except msgpack.exceptions.ExtraData as exc:
+            if isinstance(exc.unpacked, dict):
+                return exc.unpacked
+            try:
+                values = self._unpack_stream_with_pairs(payload_bytes, raw=False)
+            except UnicodeDecodeError:
+                values = self._unpack_stream_with_pairs(payload_bytes, raw=True)
+            for item in values:
+                if isinstance(item, dict):
+                    return item
+            raise
+        except UnicodeDecodeError:
+            value = self._unpackb_with_pairs(payload_bytes, raw=True)
+
+        return value if isinstance(value, dict) else {}
+
+    def _unpackb_with_pairs(self, payload_bytes: bytes, *, raw: bool) -> Any:
+        return msgpack.unpackb(
+            payload_bytes,
+            raw=raw,
+            strict_map_key=False,
+            object_pairs_hook=self._pairs_to_dict,
+        )
+
+    def _unpack_stream_with_pairs(self, payload_bytes: bytes, *, raw: bool) -> list[Any]:
+        unpacker = msgpack.Unpacker(
+            raw=raw,
+            strict_map_key=False,
+            object_pairs_hook=self._pairs_to_dict,
+        )
+        unpacker.feed(payload_bytes)
+        return list(unpacker)
+
+    def _pairs_to_dict(self, pairs: list[tuple[Any, Any]]) -> dict[Any, Any]:
+        return {self._hashable_key(key): value for key, value in pairs}
+
+    def _hashable_key(self, key: Any) -> Any:
+        if isinstance(key, list):
+            return tuple(self._hashable_key(item) for item in key)
+        if isinstance(key, dict):
+            return tuple(
+                sorted(
+                    (
+                        (
+                            self._hashable_key(item_key),
+                            self._hashable_key(item_value),
+                        )
+                        for item_key, item_value in key.items()
+                    ),
+                    key=repr,
+                ),
+            )
+        try:
+            hash(key)
+        except TypeError:
+            return repr(key)
+        return key
+
+
+def bridge_tcp_protocol() -> TcpProtocol:
+    protocol = TcpProtocol()
+    install_bridge_msgpack_codec(protocol)
+    return protocol
+
+
+def install_bridge_msgpack_codec(protocol) -> None:
+    codec = BridgeMsgpackPayloadCodec()
+    if hasattr(protocol, "serializer"):
+        protocol.serializer = codec
+    decoder = getattr(protocol, "payload_decoder", None)
+    if decoder is not None:
+        decoder.serializer = codec
+
+
+def install_bridge_protocol_guards(client):
+    connection = getattr(client, "_connection", None)
+    protocol = getattr(connection, "protocol", None)
+    if protocol is not None:
+        install_bridge_msgpack_codec(protocol)
+        client._maxtg_msgpack_guard_installed = True
+    return client
 
 
 class EgressTCPTransport(TCPTransport):
@@ -70,5 +170,5 @@ class EgressClient(Client):
         return ConnectionManager(
             reader=reader,
             transport=transport,
-            protocol=TcpProtocol(),
+            protocol=bridge_tcp_protocol(),
         )

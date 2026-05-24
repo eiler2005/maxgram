@@ -14,7 +14,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **218 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **220 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
 
@@ -207,7 +207,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (20 тестов)
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (22 теста)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -219,6 +219,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_client_factory_disables_pymax_reconnect_and_telemetry` | `client_factory.py` создаёт PyMax 2 `Client` с `ExtraConfig(reconnect=False, telemetry=False)`, backend session store, DESKTOP user-agent и sync overrides для legacy session. |
 | `test_client_factory_passes_custom_auth_flow` | `client_factory.py` умеет принять custom auth flow для one-shot MAX reauth без изменения runtime path. |
 | `test_client_factory_can_disable_legacy_session_import` | Reauth path может отключить legacy PyMax 1 `auth` import, чтобы stale token не импортировался обратно. |
+| `test_pymax_msgpack_codec_tolerates_array_map_keys` | Backend-local PyMax codec не падает на raw msgpack map с array-like key, который встречается в некоторых `CHAT_HISTORY` ответах. |
+| `test_client_factory_installs_bridge_msgpack_guard` | `client_factory.py` ставит bridge msgpack guard на PyMax connection/protocol при создании клиента. |
 | `test_pymax2_session_store_imports_legacy_pymax1_auth_table` | `session_store.py` импортирует legacy PyMax 1 `auth(token, device_id)` в PyMax 2 `sessions`, чтобы сохранить existing session без SMS-auth. |
 | `test_pymax2_session_store_can_skip_legacy_pymax1_auth_import` | `session_store.py` по явному флагу не импортирует stale legacy token и позволяет начать SMS-flow. |
 | `test_pymax2_session_store_can_clear_saved_sessions` | `session_store.py` умеет очищать PyMax 2 `sessions` перед интерактивным reauth. |
