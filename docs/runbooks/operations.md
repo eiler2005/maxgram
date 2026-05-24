@@ -89,6 +89,10 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 Reauth deliberately disables legacy PyMax 1 `auth` import, иначе старый
 invalid token может быть импортирован обратно вместо SMS-flow.
 
+Не закрывать старые MAX sessions через bridge/PyMax `SESSIONS_CLOSE`: live-run
+показал, что этот opcode может завершить все desktop sessions (`FAIL_LOGOUT_ALL`),
+а не одну выбранную запись. Лишние sessions закрывать вручную в телефоне.
+
 Ожидаемо: после reauth в логах появляется `MAX connected`, `requires_reauth`
 исчезает, а `/status` снова показывает рабочий MAX link и `MAX egress:
 home_ru_proxy`.
