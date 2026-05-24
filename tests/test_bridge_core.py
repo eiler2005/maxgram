@@ -207,6 +207,7 @@ class DummyMax:
         self.last_connected_at = None
         self.egress_status = None
         self.last_egress_probe = None
+        self.ready = True
 
     def on_message(self, handler):
         self.handler = handler
@@ -218,7 +219,7 @@ class DummyMax:
         self.issue_handlers.append(handler)
 
     def is_ready(self):
-        return True
+        return self.ready
 
     def get_own_id(self) -> str | None:
         return "999"
@@ -522,6 +523,26 @@ async def test_dm_history_sweep_replays_active_direct_chats(monkeypatch):
     assert limit == 30
     assert since_ts is not None
     assert flow_id == "mx:200056208:history-sweep"
+
+
+@pytest.mark.asyncio
+async def test_dm_history_sweep_skips_until_max_is_ready(monkeypatch):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    max_adapter.ready = False
+    repo.bindings = [
+        SimpleNamespace(max_chat_id="200056208", tg_topic_id=1, title="Людмила", mode="active"),
+    ]
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter)
+
+    async def stop_after_first_sleep(_delay):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("src.bridge.background.asyncio.sleep", stop_after_first_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await bridge.run_dm_history_sweep(poll_interval=120, limit=30, backfill_seconds=48 * 60 * 60)
+
+    assert max_adapter.replay_calls == []
 
 
 @pytest.mark.asyncio

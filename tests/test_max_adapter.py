@@ -3365,6 +3365,22 @@ def test_classify_runtime_error_marks_malformed_session_as_reauth(tmp_path):
     assert issue.requires_reauth is True
 
 
+def test_classify_runtime_error_uses_exception_context_for_logout_all(tmp_path):
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+
+    try:
+        try:
+            raise RuntimeError("FAIL_LOGOUT_ALL [login.token]")
+        except RuntimeError:
+            raise OSError("[SSL: APPLICATION_DATA_AFTER_CLOSE_NOTIFY] application data after close notify")
+    except OSError as exc:
+        issue = adapter._classify_runtime_error(exc)
+
+    assert issue is not None
+    assert issue.kind == "session_invalid"
+    assert issue.requires_reauth is True
+
+
 @pytest.mark.asyncio
 async def test_emit_runtime_issue_notifies_only_once_per_signature(tmp_path):
     adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))

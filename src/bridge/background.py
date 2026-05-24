@@ -145,7 +145,7 @@ async def run_max_watchdog(
         await asyncio.sleep(check_interval)
 
         if max_adapter.is_ready():
-            if alert_sent and health is None:
+            if alert_sent and health is None and disconnected_since is not None:
                 downtime = int(time.time() - disconnected_since)
                 await send_ops_notification(
                     f"⚠️ Возможен пропуск сообщений MAX за время простоя (~{downtime}с): "
@@ -347,9 +347,23 @@ async def run_dm_history_sweep(
     )
     while True:
         try:
+            if not max_adapter.is_ready():
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "bridge.dm_history_sweep.skipped",
+                    stage="history_sweep",
+                    outcome="skipped",
+                    reason="max_not_ready",
+                )
+                await asyncio.sleep(poll_interval)
+                continue
+
             since_ts = int(time.time()) - int(backfill_seconds)
             bindings = await repo.list_bindings()
             for binding in bindings:
+                if not max_adapter.is_ready():
+                    break
                 chat_id = str(binding.max_chat_id)
                 if binding.mode != "active":
                     continue

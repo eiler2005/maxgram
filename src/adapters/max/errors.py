@@ -7,9 +7,21 @@ from ...bridge.contracts import MaxIssue
 from .network import MaxEgressUnavailable
 
 
+def _error_text_with_context(error: BaseException) -> str:
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current).strip() or current.__class__.__name__
+        parts.append(text)
+        current = current.__cause__ or current.__context__
+    return " | ".join(parts)
+
+
 def classify_runtime_error(error: BaseException) -> Optional[MaxIssue]:
     raw_error = str(error).strip() or error.__class__.__name__
-    lowered = raw_error.lower()
+    lowered = _error_text_with_context(error).lower()
 
     if isinstance(error, MaxEgressUnavailable) or "max egress proxy" in lowered:
         return MaxIssue(
@@ -42,6 +54,8 @@ def classify_runtime_error(error: BaseException) -> Optional[MaxIssue]:
     invalid_token_markers = (
         "invalid token",
         "login.token",
+        "fail_login_token",
+        "fail_logout_all",
         "авторизируйтесь снова",
         "please, login again",
     )
