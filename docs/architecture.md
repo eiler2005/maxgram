@@ -740,4 +740,4 @@ deploy/hetzner.env.example
 
 Подробнее: `docs/runbooks/deployment.md`
 
-Last reviewed: 2026-05-25 against commit `PENDING-FOLLOWUP-COMMIT`.
+Last reviewed: 2026-05-25 against implementation commit `8e46d02`.
