@@ -183,7 +183,7 @@
 - [x] **PyMax surface pin** — `tests/test_pymax_surface_pin.py` проверяет фактические PyMax 2 imports (`pymax.connection`, `pymax.connection.readers`, protocol/session/auth modules).
 - [x] **Maintainability pass** — typed `MaxError`/`BridgeError`, split `tests/test_max_adapter/`, Hypothesis guards для raw payload parser.
 
-Детали: [docs/audit-2026-05-25.md](audit-2026-05-25.md).
+Детали: [docs/archive/audit-2026-05-25.md](archive/audit-2026-05-25.md).
 
 ---
 

@@ -104,4 +104,4 @@ SQLite stores routing and delivery metadata, not successful message content. The
 - [ADR-010: PyMax v2 migration](decisions/ADR-010-pymax-v2-migration.md)
 - [Operations runbook](runbooks/operations.md)
 - [Production deploy runbook](runbooks/hetzner-production.md)
-- [Architecture audit](audit-2026-05-25.md)
+- [Architecture audit](archive/audit-2026-05-25.md)
