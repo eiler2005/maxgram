@@ -5,7 +5,7 @@
 ```bash
 pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
-PYTHONPATH=. .venv/bin/pytest --cov=src --cov-report=term-missing --cov-fail-under=75
+PYTHONPATH=. .venv/bin/pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75
 PYTHONPATH=. .venv/bin/pytest -q -m "not architecture"  # business/functional regression only
 PYTHONPATH=. .venv/bin/pytest -q -m architecture        # service-boundary/refactor guards
 PYTHONPATH=. .venv/bin/python -m compileall src tests
@@ -15,9 +15,9 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **273 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **276 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
-GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-fail-under=75`.
+GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
 Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
 
@@ -129,7 +129,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (82 теста)
+## tests/test_max_adapter/ — MAX adapter behavior split (83 теста)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -423,13 +423,17 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_runtime_health.py — runtime health / supervisor (3 теста)
+## test_runtime_health.py — runtime health / supervisor (7 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_report_issue_deduplicates_same_signature` | Повтор той же причины деградации не создаёт новый alert-state-change и не должен спамить оператора. |
 | `test_mark_healthy_after_issue_returns_recovered_and_clears_issue` | Переход `degraded → healthy` формирует `recovered`, очищает active issue и готовит recovery alert. |
+| `test_health_snapshot_schema_version_and_mismatch_falls_back` | `health_state.json` пишет `schema_version`; несовместимый persisted snapshot не валит старт и заменяется fresh state. |
 | `test_supervisor_restarts_worker_and_writes_heartbeat` | Supervisor перезапускает упавший worker, увеличивает restart counter и пишет heartbeat для Docker healthcheck. |
+| `test_supervisor_stops_worker_without_crash_alert` | Intentional shutdown через stop event не шлёт crash alert и корректно закрывает worker. |
+| `test_supervisor_restart_delay_is_capped` | Exponential backoff с jitter растёт до cap и не превращает сетевой flap в сотни рестартов. |
+| `test_logged_detached_task_reports_exception` | Detached task exception логируется с traceback, а не теряется как unhandled asyncio task. |
 
 ---
 

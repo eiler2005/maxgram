@@ -11,6 +11,7 @@ from aiohttp import ClientResponseError
 
 from .. import constants as max_constants
 from ....logging_utils import log_event, sanitize_path, sanitize_url
+from ....runtime.timeouts import MEDIA_TRANSFER_TIMEOUT_SECONDS, with_timeout
 from .ua import download_client_profile_for_url
 
 logger = logging.getLogger("src.adapters.max_adapter")
@@ -298,21 +299,38 @@ class MaxCdnDownloader:
         self._client_session_factory = client_session_factory
         self._egress = egress
 
-    async def write_download_response(self, response, part_path: Path, mode: str) -> int:
+    async def _download_chunks(self, response, part_path: Path, mode: str) -> int:
         written = 0
-        with part_path.open(mode) as fh:
-            stream = getattr(getattr(response, "content", None), "iter_chunked", None)
-            if callable(stream):
-                async for chunk in stream(max_constants.get("MAX_DOWNLOAD_CHUNK_SIZE")):
-                    if not chunk:
-                        continue
-                    fh.write(chunk)
-                    written += len(chunk)
-            else:
-                content = await response.read()
+        stream = getattr(getattr(response, "content", None), "iter_chunked", None)
+        if not callable(stream):
+            content = await with_timeout(
+                response.read(),
+                timeout_seconds=MEDIA_TRANSFER_TIMEOUT_SECONDS,
+                operation="max.media.response_read",
+            )
+            with part_path.open(mode) as fh:
                 fh.write(content)
-                written += len(content)
+            return len(content)
+
+        iterator = stream(max_constants.get("MAX_DOWNLOAD_CHUNK_SIZE")).__aiter__()
+        with part_path.open(mode) as fh:
+            while True:
+                try:
+                    chunk = await with_timeout(
+                        iterator.__anext__(),
+                        timeout_seconds=MEDIA_TRANSFER_TIMEOUT_SECONDS,
+                        operation="max.media.chunk_read",
+                    )
+                except StopAsyncIteration:
+                    break
+                if not chunk:
+                    continue
+                fh.write(chunk)
+                written += len(chunk)
         return written
+
+    async def write_download_response(self, response, part_path: Path, mode: str) -> int:
+        return await self._download_chunks(response, part_path, mode)
 
     async def download_from_url(
         self,
@@ -344,7 +362,13 @@ class MaxCdnDownloader:
                         self._egress.http_client_options.as_client_session_kwargs()
                     )
                 async with self._client_session_factory(**session_kwargs) as session:
-                    async with session.get(url) as response:
+                    response_context = session.get(url)
+                    response = await with_timeout(
+                        response_context.__aenter__(),
+                        timeout_seconds=MEDIA_TRANSFER_TIMEOUT_SECONDS,
+                        operation="max.media.response_open",
+                    )
+                    try:
                         http_status = getattr(response, "status", None)
                         if resume_from and getattr(response, "status", None) == 200:
                             part_path.unlink(missing_ok=True)
@@ -369,6 +393,8 @@ class MaxCdnDownloader:
                         content_type = response.headers.get("Content-Type", "").split(";")[0].strip() or None
                         mode = "ab" if resume_from and getattr(response, "status", None) == 206 else "wb"
                         bytes_written = await self.write_download_response(response, part_path, mode)
+                    finally:
+                        await response_context.__aexit__(None, None, None)
 
                 if bytes_written <= 0 and not part_path.exists():
                     raise RuntimeError("download returned no content")

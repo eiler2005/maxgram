@@ -89,7 +89,20 @@ class RecoveryScheduler:
 
     def log_scan_failure(self, *, reason: str, error: Exception):
         error_type = type(error).__name__
-        logger.warning("recovery snapshot failed: %s", error_type)
+        logger.exception(
+            "recovery snapshot failed: %s",
+            error_type,
+            exc_info=(type(error), error, error.__traceback__),
+            extra={
+                "event_fields": {
+                    "event": "bridge.recovery.scan_exception",
+                    "stage": "recovery",
+                    "outcome": "failed",
+                    "reason": reason,
+                    "error_type": error_type,
+                }
+            },
+        )
         log_event(
             logger,
             logging.WARNING,

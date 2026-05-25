@@ -10,6 +10,11 @@ from typing import Optional
 from .deps import SendDeps
 from .types import PendingOutboundAck
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
+from ...runtime.timeouts import (
+    DEFAULT_OPERATION_TIMEOUT_SECONDS,
+    MEDIA_TRANSFER_TIMEOUT_SECONDS,
+    with_timeout,
+)
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
@@ -148,12 +153,21 @@ class MaxSendService:
 
             try:
                 reply_to = int(reply_to_msg_id) if reply_to_msg_id else None
-                result = await self._client.send_outbound_message(
-                    chat_id=int(chat_id),
-                    text=text,
-                    reply_to=reply_to,
-                    media_path=media_path if media_path and Path(media_path).exists() else None,
-                    media_type=media_type,
+                media_file_path = media_path if media_path and Path(media_path).exists() else None
+                result = await with_timeout(
+                    self._client.send_outbound_message(
+                        chat_id=int(chat_id),
+                        text=text,
+                        reply_to=reply_to,
+                        media_path=media_file_path,
+                        media_type=media_type,
+                    ),
+                    timeout_seconds=(
+                        MEDIA_TRANSFER_TIMEOUT_SECONDS
+                        if media_file_path
+                        else DEFAULT_OPERATION_TIMEOUT_SECONDS
+                    ),
+                    operation="max.send_outbound_message",
                 )
                 msg_id = result.message_id
                 if msg_id:

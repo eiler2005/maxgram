@@ -6,6 +6,21 @@
 
 ---
 
+## Почему это нетривиально
+
+1. API MAX не документирован и фактически reverse-engineered. Python-обёртка `maxapi-python` остаётся beta-quality.
+2. Bridge работает 24/7 на одной VPS с одним MAX-аккаунтом; любой необработанный disconnect может превратиться в тихую потерю сообщений.
+3. Риск снижен 6 точечными PyMax compatibility shim'ами, каждый небольшой и покрыт regression-marker тестом:
+   - `BridgeSessionStore` — one-shot импорт legacy PyMax v1 session table в v2 schema
+   - `BridgeConnectionManager` — заворачивает TCP sequence numbers на 256 при расхождении PyMax / MAX server
+   - `BridgeMsgpackPayloadCodec` — обрабатывает MAX maps с array-valued keys, которые strict msgpack отвергает
+   - `BridgeAuthService` + `sanitize_login_payload` — убирает неизвестные upstream `UNSUPPORTED` attachment variants до validation
+   - `EgressTCPTransport` — внедряет authenticated HTTP CONNECT proxy только для MAX RU egress
+   - `PymaxInternalsContractError` — централизует доступ к private PyMax attrs и падает явно при upstream drift
+4. Заменяемость архитектуры проверяется, а не просто декларируется: `tests/integration/test_bridge_end_to_end.py` гоняет полный bridge против `tests/fakes/fake_max_backend.py` в CI. Короткий walkthrough: [docs/architecture-tour.md](docs/architecture-tour.md), 30-секундное demo: `examples/swap_max_backend.py`.
+
+---
+
 ## Как это работает
 
 ```

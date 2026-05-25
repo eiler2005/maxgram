@@ -14,7 +14,7 @@ payload classes enough that direct use from bridge code would make future
 upstream drift risky.
 
 The long migration journal is kept in
-[docs/migration-pymax-2.0.md](../migration-pymax-2.0.md).
+[docs/archive/migration-pymax-2.0.md](../archive/migration-pymax-2.0.md).
 
 ## Decision
 

@@ -1,5 +1,7 @@
 from .conftest import *  # noqa: F403
 
+from src.adapters.max import send as max_send_module
+
 
 class EchoAckClient(LookupClient):
     def __init__(self, adapter):
@@ -98,6 +100,16 @@ class FlakyRetryClient(LookupClient):
         return outcome
 
 
+class HangingClient(LookupClient):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    async def send_message(self, **kwargs):
+        self.calls += 1
+        await asyncio.sleep(3600)
+
+
 @pytest.mark.asyncio
 async def test_send_message_retries_retryable_transport_error_and_succeeds(tmp_path, monkeypatch, caplog):
     adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
@@ -123,6 +135,29 @@ async def test_send_message_retries_retryable_transport_error_and_succeeds(tmp_p
     events = [getattr(record, "event_fields", {}) for record in caplog.records]
     assert any(event.get("event") == "max.outbound.retry" for event in events)
     assert any(event.get("event") == "max.outbound.sent" and event.get("attempt") == 2 for event in events)
+
+
+@pytest.mark.asyncio
+async def test_send_message_timeout_flows_through_retry_layer(tmp_path, monkeypatch):
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._started = True
+    adapter._client = HangingClient()
+
+    original_sleep = asyncio.sleep
+
+    async def fake_sleep(delay):
+        if delay == 3600:
+            await original_sleep(delay)
+        return None
+
+    monkeypatch.setattr(max_send_module, "DEFAULT_OPERATION_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    msg_id = await adapter.send_message("123456789", "тест")
+
+    assert msg_id is None
+    assert adapter._client.calls == 3
+    assert "timed out" in (adapter.get_last_outbound_error() or "")
 
 
 @pytest.mark.asyncio

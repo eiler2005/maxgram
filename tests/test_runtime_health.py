@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 
 import pytest
@@ -58,6 +59,23 @@ async def test_mark_healthy_after_issue_returns_recovered_and_clears_issue(tmp_p
     assert snapshot.subsystems["runtime"].issue is None
     assert snapshot.subsystems["runtime"].status == "healthy"
     assert "восстановлен" in build_operator_alert(change)
+
+
+@pytest.mark.asyncio
+async def test_health_snapshot_schema_version_and_mismatch_falls_back(tmp_path):
+    health = RuntimeHealthStore(tmp_path)
+    await health.mark_healthy("runtime", summary="Worker running", notify=False)
+
+    raw = json.loads((tmp_path / "health_state.json").read_text(encoding="utf-8"))
+    assert raw["schema_version"] == 1
+
+    raw["schema_version"] = 999
+    (tmp_path / "health_state.json").write_text(json.dumps(raw), encoding="utf-8")
+    reloaded = RuntimeHealthStore(tmp_path)
+    snapshot = await reloaded.get_snapshot()
+
+    assert snapshot.schema_version == 1
+    assert snapshot.overall_status == "starting"
 
 
 @pytest.mark.asyncio

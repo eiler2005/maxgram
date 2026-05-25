@@ -793,6 +793,37 @@ async def test_dm_history_sweep_uses_steady_interval_after_warmup(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dm_history_sweep_applies_per_chat_delay_and_cycle_jitter(monkeypatch):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    repo.bindings = [
+        SimpleNamespace(max_chat_id="200056208", tg_topic_id=1, title="Людмила", mode="active"),
+        SimpleNamespace(max_chat_id="208748958", tg_topic_id=2, title="Елена", mode="active"),
+    ]
+    sleeps = []
+
+    async def stop_after_cycle(delay):
+        sleeps.append(delay)
+        if delay >= 100:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr("src.bridge.background.asyncio.sleep", stop_after_cycle)
+    with pytest.raises(asyncio.CancelledError):
+        await bridge_background.run_dm_history_sweep(
+            repo=repo,
+            max_adapter=max_adapter,
+            warmup_seconds=600,
+            warmup_interval_seconds=120,
+            steady_interval_seconds=900,
+            cycle_jitter_seconds=30,
+            per_chat_delay_seconds=0.5,
+            jitter_fn=lambda _start, _end: 7.0,
+        )
+
+    assert sleeps == [0.5, 0.5, 127.0]
+
+
+@pytest.mark.asyncio
 async def test_forward_to_telegram_sends_media_then_rendered_system_text(tmp_path):
     max_adapter = DummyMax()
     tg_adapter = DummyTelegram()

@@ -258,15 +258,20 @@ Telegram Update (reply в топике форум-группы)
 
 Runtime слой разделён на supervisor и health package:
 
-- `supervisor.py` — PID1-процесс, который запускает bridge worker, ловит его аварийный выход и перезапускает с backoff
+- `supervisor.py` — PID1-процесс, который запускает bridge worker, ловит его аварийный выход и перезапускает с exponential backoff + 50-150% jitter, cap 300s
+- `BridgeSupervisor.run(stop_event=...)` — graceful shutdown boundary: SIGTERM/SIGINT выставляют stop event, worker/task отменяются через `cancel_and_wait`, intentional shutdown не считается crash
+- `tasks.py` — канонический helper для detached workers: `create_logged_task(...)`/`attach_task_logger(...)` логируют traceback из fire-and-forget задач, `cancel_and_wait(...)` дренит cancellation без "Task exception was never retrieved"
+- `timeouts.py` — bounded external await helpers. `with_timeout(...)` превращает зависшие MAX/TG/CDN await в typed `BridgeExternalTimeout`, который остаётся transient error и попадает в существующие retry/failure paths
 - `health/state.py` — `HealthSnapshot / SubsystemState / HealthIssue / Severity`
 - `health/store.py` — публичный `RuntimeHealthStore`
 - `health/writer.py`, `health/events.py`, `health/outbox.py`, `health/heartbeat.py`, `health/rendering.py` — atomic writes, event log, alert outbox, heartbeat and operator message rendering
+- `health/metrics.py` — Prometheus textfile renderer/writer; default path `data/maxtg_bridge.prom`, production override возможен через config/env, если infra later provides node_exporter textfile collector
 - persisted артефакты:
   - `data/health_state.json`
   - `data/health_events.jsonl`
   - `data/alert_outbox.jsonl`
   - `data/health_heartbeat.json`
+  - `data/maxtg_bridge.prom`
 - `healthcheck.py` — Docker healthcheck по freshness heartbeat, а не по доступности MAX/TG API
 - `BridgeCore.run_weekly_recovery_snapshot()` и event-driven scheduler — meta-only snapshots для восстановления после нового телефона / нового MAX account
 
@@ -278,6 +283,8 @@ Runtime слой разделён на supervisor и health package:
 - `storage`
 - `scheduler`
 - `alerting`
+
+Экспортируемые textfile-метрики: `maxtg_bridge_worker_restarts_total`, `maxtg_bridge_last_healthy_timestamp_seconds`, `maxtg_bridge_subsystem_status`, `maxtg_bridge_pending_queue_messages`, `maxtg_bridge_pending_queue_oldest_timestamp_seconds`, `maxtg_bridge_alert_outbox_messages`, `maxtg_bridge_delivery_total`.
 
 ### Bridge Contracts (`src/bridge/contracts.py`)
 
@@ -333,7 +340,7 @@ src.adapters.max_adapter compatibility alias
 
 - `ports.py` — internal role-based `MaxClientPort` and DTO (`MaxClientMessage`, attachments, users, chats, dialogs, send/interceptor results). Operation services depend on these views instead of the concrete client object shape.
 - `backends/base.py` — internal `MaxBackend` protocol: create a typed MAX client port; legacy helper methods remain for compatibility only.
-- `backends/pymax/` — `PymaxBackend` + тонкий `PymaxClientAdapter`; единственное место с `pymax` imports. Внутри пакет разделён на `client_factory.py`, `login.py`, `session_store.py`, `transport.py`, `events.py`, `raw_gateway.py`, `models.py`, `media.py`: PyMax 2 `Client + ExtraConfig`, tolerant login validation for unknown attachment variants, v1-compatible DESKTOP login profile for existing sessions, one-time import legacy PyMax 1 `auth` session into PyMax 2 `sessions`, custom MAX egress transport, native `on_raw`, raw requests через isolated gateway, payload/file construction and conversion into our DTO.
+- `backends/pymax/` — `PymaxBackend` + тонкий `PymaxClientAdapter`; единственное место с `pymax` imports. Внутри пакет разделён на `client_factory.py`, `login.py`, `session_store.py`, `transport.py`, `events.py`, `raw_gateway.py`, `internals.py`, `models.py`, `media.py`: PyMax 2 `Client + ExtraConfig`, tolerant login validation for unknown attachment variants, v1-compatible DESKTOP login profile for existing sessions, one-time import legacy PyMax 1 `auth` session into PyMax 2 `sessions`, custom MAX egress transport, native `on_raw`, raw requests через isolated gateway, centralized private-attribute access with `PymaxInternalsContractError`, payload/file construction and conversion into our DTO.
 - `state.py` — явный mutable state по доменам: connection, outbound, raw history, empty recovery.
 - `deps.py` — explicit dependency objects for operation services; старый service registry / dynamic `__getattr__` и общий base service не используются.
 - `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Каждый сервис владеет собственным typed deps object, не наследуется от god base class, не импортирует `pymax`, не принимает полный `MaxAdapter` и не обращается к pymax-private/client-shape methods directly.
@@ -440,6 +447,14 @@ Routine recovery deltas from auto scans are quiet: новые registry rows, unm
 - Только простые запросы, никаких JOIN-монстров
 - Никакого контента доставленных сообщений; исключение — plaintext в `pending_inbound_messages.text` / `pending_outbound_messages.text` для недоставленных текстов до доставки/TTL
 - Все методы async (aiosqlite)
+- Grouped post-send writes идут через `Repository.transaction()` (`BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`); nested transactions запрещены явно.
+- SQLite transaction нельзя держать вокруг network await. Внешний send/download выполняется до transaction, затем атомарно сохраняются mapping/delivery/queue rows.
+
+### Async / external-call patterns
+
+- Detached worker запускается через `create_logged_task(..., name=...)`, если владелец задачи не await'ит её напрямую. Это касается recovery scan tasks, retry workers, alert outbox flush и runtime background loops.
+- Отмена фоновых задач проходит через `cancel_and_wait(...)`, чтобы intentional shutdown не выглядел как unhandled exception.
+- MAX outbound send, Telegram outbound send/download и MAX CDN reads проходят через `with_timeout(...)`. Timeout становится `BridgeExternalTimeout`: это typed transient boundary error, а не отдельная новая ветка бизнес-логики.
 
 ## Архитектура логирования
 
@@ -534,6 +549,14 @@ src/logging_utils.py
 - control chars удаляются
 - длинные цифровые последовательности маскируются
 - строка ограничивается `LOG_PREVIEW_CHARS`
+
+### Архитектурные regression guards
+
+- `tests/test_bridge_contracts.py` защищает transport-neutral core/contracts, pymax boundary, composition root и отсутствие god-base/service-registry в MAX services.
+- `tests/test_pymax_surface_pin.py` pin'ит фактический PyMax v2 import surface (`pymax.connection`, `pymax.connection.readers`, protocol/session/auth/message modules), чтобы upstream drift падал в CI.
+- `tests/integration/test_bridge_end_to_end.py` гоняет полный bridge против `tests/fakes/fake_max_backend.py`: fake MAX message -> Telegram topic/message -> Telegram reply -> fake MAX send capture.
+- `tests/test_runtime_timeouts.py` и MAX/TG adapter tests проверяют typed timeout path без реальных сетевых вызовов.
+- `tests/test_max_payload_properties.py` property-based генерирует msgpack-like payloads с mixed key types и защищает raw parser/safe diagnostics от повторения TCP/msgpack классов багов.
 
 ### Отношение к SQLite
 
@@ -716,3 +739,5 @@ deploy/hetzner.env.example
 ```
 
 Подробнее: `docs/runbooks/deployment.md`
+
+Last reviewed: 2026-05-25 against commit `PENDING-FOLLOWUP-COMMIT`.

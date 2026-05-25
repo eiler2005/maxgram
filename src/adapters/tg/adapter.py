@@ -28,6 +28,7 @@ from ...runtime.health import (
 from ...runtime.timeouts import (
     DEFAULT_OPERATION_TIMEOUT_SECONDS,
     MEDIA_TRANSFER_TIMEOUT_SECONDS,
+    with_timeout,
 )
 
 logger = logging.getLogger("src.adapters.tg_adapter")
@@ -242,7 +243,11 @@ class TelegramAdapter:
 
         for attempt in range(1, 4):
             try:
-                msg = await asyncio.wait_for(coro_fn(), timeout=timeout_seconds)
+                msg = await with_timeout(
+                    coro_fn(),
+                    timeout_seconds=timeout_seconds,
+                    operation=f"tg.{label}",
+                )
                 self._last_send_error = None
                 log_event(
                     logger,
@@ -259,7 +264,7 @@ class TelegramAdapter:
                     label=label,
                 )
                 return msg.message_id
-            except asyncio.TimeoutError as e:
+            except TimeoutError as e:
                 self._last_send_error = f"TimeoutError: {timeout_seconds}s"
                 log_event(
                     logger,
@@ -524,9 +529,10 @@ class TelegramAdapter:
         try:
             self._tmp_dir.mkdir(parents=True, exist_ok=True)
             local_path = self._tmp_dir / filename
-            await asyncio.wait_for(
+            await with_timeout(
                 self._bot.download(file_id, destination=str(local_path)),
-                timeout=MEDIA_TRANSFER_TIMEOUT_SECONDS,
+                timeout_seconds=MEDIA_TRANSFER_TIMEOUT_SECONDS,
+                operation="tg.download_media",
             )
             size = local_path.stat().st_size if local_path.exists() else None
             log_event(

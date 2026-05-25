@@ -21,6 +21,8 @@ SUBSYSTEM_ORDER = (
     "alerting",
 )
 
+HEALTH_SNAPSHOT_SCHEMA_VERSION = 1
+
 SUBSYSTEM_LABELS = {
     "runtime": "Runtime",
     "max_link": "MAX link",
@@ -150,6 +152,7 @@ class HealthSnapshot:
     last_healthy_at: Optional[int]
     worker_restart_count: int
     subsystems: dict[str, SubsystemState]
+    schema_version: int = HEALTH_SNAPSHOT_SCHEMA_VERSION
 
     def active_issues(self) -> list[tuple[str, SubsystemState, HealthIssue]]:
         issues: list[tuple[str, SubsystemState, HealthIssue]] = []
@@ -162,6 +165,7 @@ class HealthSnapshot:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
             "overall_status": self.overall_status,
             "updated_at": self.updated_at,
             "supervisor_started_at": self.supervisor_started_at,
@@ -175,6 +179,9 @@ class HealthSnapshot:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "HealthSnapshot":
+        schema_version = int(raw.get("schema_version", HEALTH_SNAPSHOT_SCHEMA_VERSION))
+        if schema_version != HEALTH_SNAPSHOT_SCHEMA_VERSION:
+            raise ValueError(f"Unsupported health snapshot schema_version={schema_version}")
         subsystems_raw = raw.get("subsystems") or {}
         subsystems: dict[str, SubsystemState] = {}
         for name in SUBSYSTEM_ORDER:
@@ -191,6 +198,7 @@ class HealthSnapshot:
             ),
             worker_restart_count=int(raw.get("worker_restart_count", 0)),
             subsystems=subsystems,
+            schema_version=schema_version,
         )
 
 
