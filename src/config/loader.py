@@ -76,6 +76,8 @@ class HealthConfig:
     reminder_interval_hours: int = 4
     heartbeat_interval_seconds: int = 30
     worker_restart_backoff_seconds: int = 5
+    metrics_textfile_path: Optional[Path] = None
+    metrics_interval_seconds: int = 30
     max_egress_probe_interval_seconds: int = 30
     max_self_heal_grace_seconds: int = 180
     max_self_heal_restart_cooldown_seconds: int = 1800
@@ -180,6 +182,15 @@ def _resolve_bool(value, default: bool) -> bool:
     if rendered in {"0", "false", "no", "off"}:
         return False
     return bool(value)
+
+
+def _resolve_optional_path(value, *, default: Path | None = None) -> Path | None:
+    if value is None:
+        return default
+    rendered = _resolve_env(str(value)).strip()
+    if rendered.lower() in {"", "0", "false", "off", "none", "disabled"}:
+        return None
+    return Path(rendered)
 
 
 def _load_dm_history_sweep(raw: dict) -> DmHistorySweepConfig:
@@ -294,6 +305,14 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         reminder_interval_hours=int(health_raw.get("reminder_interval_hours", 4)),
         heartbeat_interval_seconds=int(health_raw.get("heartbeat_interval_seconds", 30)),
         worker_restart_backoff_seconds=int(health_raw.get("worker_restart_backoff_seconds", 5)),
+        metrics_textfile_path=_resolve_optional_path(
+            os.environ.get(
+                "METRICS_TEXTFILE_PATH",
+                health_raw.get("metrics_textfile_path"),
+            ),
+            default=data_dir / "maxtg_bridge.prom",
+        ),
+        metrics_interval_seconds=int(health_raw.get("metrics_interval_seconds", 30)),
         max_egress_probe_interval_seconds=int(
             health_raw.get("max_egress_probe_interval_seconds", 30)
         ),

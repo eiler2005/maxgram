@@ -14,6 +14,11 @@ from .contracts import MaxBridgePort, TelegramBridgePort
 from ..config.loader import AppConfig
 from ..db.repository import Repository
 from ..logging_utils import build_tg_flow_id, log_event, sanitize_path
+from ..runtime.timeouts import (
+    DEFAULT_OPERATION_TIMEOUT_SECONDS,
+    MEDIA_TRANSFER_TIMEOUT_SECONDS,
+    with_timeout_or_none,
+)
 
 logger = logging.getLogger("src.bridge.core")
 
@@ -209,13 +214,26 @@ async def handle_tg_reply(
 
     outbound_text = compose_tg_outbound_text(text, sender_name)
     had_media = bool(media_path)
-    sent_id = await max_adapter.send_message(
-        chat_id=binding.max_chat_id,
-        text=outbound_text,
-        reply_to_msg_id=reply_to_max_id,
-        media_path=media_path,
-        media_type=media_type,
+    send_timeout = MEDIA_TRANSFER_TIMEOUT_SECONDS if media_path else DEFAULT_OPERATION_TIMEOUT_SECONDS
+    sent_id = await with_timeout_or_none(
+        max_adapter.send_message(
+            chat_id=binding.max_chat_id,
+            text=outbound_text,
+            reply_to_msg_id=reply_to_max_id,
+            media_path=media_path,
+            media_type=media_type,
+            flow_id=flow_id,
+        ),
+        timeout_seconds=send_timeout,
+        logger=logger,
+        event="bridge.external_await_timeout",
+        operation="max.send_message",
         flow_id=flow_id,
+        direction="outbound",
+        tg_topic_id=topic_id,
+        tg_msg_id=tg_msg_id,
+        max_chat_id=binding.max_chat_id,
+        media_type=media_type,
     )
 
     if media_path:
@@ -224,36 +242,49 @@ async def handle_tg_reply(
 
     if sent_id is None:
         max_error = max_adapter.get_last_outbound_error()
+        if max_error is None:
+            max_error = "MAX send timeout"
         attempts = max_adapter.get_last_outbound_attempts()
         delivery_error = max_error or "max_send_failed"
         if attempts > 1:
             delivery_error = f"{delivery_error} (attempts={attempts})"
-        await bridge_delivery.log_outbound_failure(
-            repo,
-            topic_id=topic_id,
-            tg_msg_id=tg_msg_id,
-            max_chat_id=binding.max_chat_id,
-            error=delivery_error,
-            attempts=attempts or 1,
-        )
-        queued = False
-        if (
+        retry_candidate = (
             not had_media
             and tg_msg_id is not None
             and outbound_text.strip()
             and bridge_outbound_retry.is_definite_unsent_outbound_error(max_error)
-        ):
-            await bridge_outbound_retry.enqueue_text_outbound_retry(
-                repo=repo,
+        )
+        queued = False
+        if retry_candidate:
+            async with bridge_mapping.repo_transaction(repo):
+                await bridge_delivery.log_outbound_failure(
+                    repo,
+                    topic_id=topic_id,
+                    tg_msg_id=tg_msg_id,
+                    max_chat_id=binding.max_chat_id,
+                    error=delivery_error,
+                    attempts=attempts or 1,
+                )
+                await bridge_outbound_retry.enqueue_text_outbound_retry(
+                    repo=repo,
+                    topic_id=topic_id,
+                    tg_msg_id=tg_msg_id,
+                    max_chat_id=binding.max_chat_id,
+                    reply_to_max_id=reply_to_max_id,
+                    text=outbound_text,
+                    error=delivery_error,
+                    attempts=attempts or 1,
+                )
+            queued = True
+        else:
+            await bridge_delivery.log_outbound_failure(
+                repo,
                 topic_id=topic_id,
                 tg_msg_id=tg_msg_id,
                 max_chat_id=binding.max_chat_id,
-                reply_to_max_id=reply_to_max_id,
-                text=outbound_text,
                 error=delivery_error,
                 attempts=attempts or 1,
             )
-            queued = True
 
         if had_media:
             notice = bridge_outbound_retry.media_not_queued_notice()
@@ -284,13 +315,14 @@ async def handle_tg_reply(
         )
         return
 
-    await bridge_mapping.save_outbound_mapping(
-        repo,
-        max_msg_id=sent_id,
-        max_chat_id=binding.max_chat_id,
-        tg_topic_id=topic_id,
-    )
-    await repo.log_delivery(sent_id, binding.max_chat_id, "outbound", "delivered")
+    async with bridge_mapping.repo_transaction(repo):
+        await bridge_mapping.save_outbound_mapping(
+            repo,
+            max_msg_id=sent_id,
+            max_chat_id=binding.max_chat_id,
+            tg_topic_id=topic_id,
+        )
+        await repo.log_delivery(sent_id, binding.max_chat_id, "outbound", "delivered")
     if media_path:
         stats["outbound_media"] += 1
     else:

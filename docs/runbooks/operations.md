@@ -151,6 +151,39 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 - видео из MAX уходит как `send_video`; signed CDN URL должен открываться с `User-Agent`, соответствующим `srcAg` (`CHROME`, `CHROME_ANDROID`, `CHROME_IPHONE`, Safari/iPhone fallback)
 - если видео/медиа не скачалось полностью, bridge делает до 7 попыток и пробует докачку через `Range`; после окончательного провала в Telegram должен прийти текст `⚠️ Не удалось скачать вложение MAX...`, а в `delivery_log.status` будет `partial`
 
+### Machine-readable diagnostics
+
+Для диагностики автоматикой включай structured JSON logs:
+
+```bash
+LOG_FORMAT=json
+```
+
+`LOG_FORMAT=mixed` удобнее глазами, но `json` стабильнее для `jq`, log shipping и
+поиска по `event`, `flow_id`, `direction`, `stage`, `outcome`, `reason`.
+Инвариант приватности тот же: не логировать текст сообщений, media, invite links,
+телефоны, токены или raw MAX payloads.
+
+Prometheus textfile metrics пишутся атомарно в `data/maxtg_bridge.prom` по
+умолчанию. Если позже появится node_exporter textfile collector, укажи абсолютный
+путь через config/env:
+
+```yaml
+health:
+  metrics_textfile_path: "/var/lib/node_exporter/textfile_collector/maxtg_bridge.prom"
+  metrics_interval_seconds: 30
+```
+
+или:
+
+```bash
+METRICS_TEXTFILE_PATH=/var/lib/node_exporter/textfile_collector/maxtg_bridge.prom
+```
+
+Значение `off`/`disabled` отключает writer. Сейчас в Ansible нет отдельной роли
+`monitoring`/`node_exporter`, поэтому production path должен быть явным, если
+инфраструктура добавит collector.
+
 Куда идут служебные сообщения:
 
 - основной канал: личный чат владельца с ботом (`TG_OWNER_ID`)

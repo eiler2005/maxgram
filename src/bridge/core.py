@@ -33,6 +33,7 @@ from .recovery.scheduler import RecoveryScheduler
 from ..config.loader import AppConfig
 from ..db.repository import Repository
 from ..runtime.health import RuntimeHealthStore, build_operator_alert
+from ..runtime.health.metrics import run_runtime_metrics_textfile
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +348,15 @@ class BridgeCore:
             build_status_message=self._status.build_status_message,
             send_ops_notification=self._send_ops_notification,
             interval_hours=interval_hours,
+        )
+
+    async def run_metrics_textfile(self):
+        health_cfg = getattr(self._cfg, "health", None)
+        await run_runtime_metrics_textfile(
+            path=getattr(health_cfg, "metrics_textfile_path", None),
+            health=self._health,
+            repo=self._repo,
+            interval_seconds=getattr(health_cfg, "metrics_interval_seconds", 30),
         )
 
     async def fix_fallback_titles(self):

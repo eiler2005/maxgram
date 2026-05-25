@@ -344,3 +344,14 @@ class MaxLifecycleService:
         if callable(is_connected):
             is_connected = is_connected()
         return bool(is_connected)
+
+    async def close(self):
+        self._started = False
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        try:
+            await client.close()
+        except Exception:
+            logger.exception("Failed to close MAX client during shutdown")

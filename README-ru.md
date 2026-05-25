@@ -46,8 +46,10 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Gap-уведомление после reconnect** — после восстановления бот предупреждает о возможном пропуске сообщений за время простоя
 - **Supervisor runtime** — контейнер остаётся `Up`, даже если MAX/TG интеграция деградировала; supervisor перезапускает worker и хранит health-state
 - **Persisted health-state** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, `health_heartbeat.json`
-- **Явная adapter/backend boundary** — `BridgeCore` зависит от transport-neutral contracts; MAX operation services зависят от typed client ports/DTO, а `pymax` imports и форма pymax-клиента изолированы в `src/adapters/max/backends/pymax/`; это защищено regression-тестами
+- **PyMax v2 compatibility shim** — bridge сейчас работает через `maxapi-python` 2.x и typed backend adapter; история с PyMax v1 reconnect/OOM оставлена как historical note, а не текущая архитектура
+- **Явная adapter/backend boundary** — `BridgeCore` зависит от transport-neutral contracts; MAX operation services зависят от typed client ports/DTO, а `pymax` imports и форма pymax-клиента изолированы в `src/adapters/max/backends/pymax/`; это защищено surface-pin и fake-backend integration тестами
 - **MAX-only egress profiles** — MAX API/CDN может идти через authenticated HTTP CONNECT внутри reverse Channel M (`home_ru_proxy`: исходящий SSH remote-forward с домашнего РФ роутера на VPS), при этом Telegram остаётся прямым; Hetzner direct сохранён только как ручной аварийный профиль
+- **Prometheus textfile metrics** — health, durable retry queues, delivery totals, worker restarts и alert outbox depth пишутся в `data/maxtg_bridge.prom` по умолчанию
 - **Retry Telegram API** — 3 попытки с экспоненциальным backoff, поддержка `Retry-After`
 - **Retry TG→MAX на временных ошибках транспорта** — bridge повторяет отправку в MAX при `Socket is not connected`, `Must be ONLINE session`, timeout и похожих временных сбоях
 - **Durable text outbox в обе стороны** — если TG→MAX текст точно не был отправлен из-за потери MAX transport или MAX→TG текст не прошёл через временный сбой Telegram, bridge временно хранит plaintext в SQLite и досылает после восстановления; текст очищается после доставки/TTL

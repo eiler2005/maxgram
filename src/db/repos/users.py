@@ -18,7 +18,7 @@ class UsersRepo(BaseRepo):
                  updated_at   = excluded.updated_at""",
             (user_id, display_name, now),
         )
-        await self._db.commit()
+        await self._commit()
 
     async def find_user_by_name(self, display_name: str) -> Optional[str]:
         """Найти user_id по имени (регистронезависимо, включая кириллицу)."""

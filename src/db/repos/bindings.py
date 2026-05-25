@@ -36,21 +36,21 @@ class BindingsRepo(BaseRepo):
             (binding.max_chat_id, binding.tg_topic_id, binding.title,
              binding.mode, binding.created_at),
         )
-        await self._db.commit()
+        await self._commit()
 
     async def update_mode(self, max_chat_id: str, mode: str):
         await self._db.execute(
             "UPDATE chat_bindings SET mode = ? WHERE max_chat_id = ?",
             (mode, max_chat_id),
         )
-        await self._db.commit()
+        await self._commit()
 
     async def update_title(self, max_chat_id: str, title: str):
         await self._db.execute(
             "UPDATE chat_bindings SET title = ? WHERE max_chat_id = ?",
             (title, max_chat_id),
         )
-        await self._db.commit()
+        await self._commit()
 
     async def remap_binding_by_topic(self, tg_topic_id: int, new_max_chat_id: str) -> Optional[ChatBinding]:
         binding = await self.get_binding_by_topic(tg_topic_id)
@@ -67,7 +67,7 @@ class BindingsRepo(BaseRepo):
             "UPDATE chat_bindings SET max_chat_id = ? WHERE tg_topic_id = ?",
             (new_max_chat_id, tg_topic_id),
         )
-        await self._db.commit()
+        await self._commit()
         return ChatBinding(
             max_chat_id=new_max_chat_id,
             tg_topic_id=binding.tg_topic_id,

@@ -450,12 +450,6 @@ async def handle_max_message(
     )
 
     if tg_msg_id:
-        await mapping.save_inbound_delivery_mapping(
-            repo,
-            msg,
-            tg_msg_id=tg_msg_id,
-            tg_topic_id=topic_id,
-        )
         if msg.attachment_failures:
             delivery_status = "partial"
             delivery_error = f"attachment_download_failed:{len(msg.attachment_failures)}"
@@ -465,13 +459,20 @@ async def handle_max_message(
             delivery_error = None
             log_level = logging.INFO
 
-        await repo.log_delivery(
-            msg.msg_id,
-            msg.chat_id,
-            "inbound",
-            delivery_status,
-            delivery_error,
-        )
+        async with mapping.repo_transaction(repo):
+            await mapping.save_inbound_delivery_mapping(
+                repo,
+                msg,
+                tg_msg_id=tg_msg_id,
+                tg_topic_id=topic_id,
+            )
+            await repo.log_delivery(
+                msg.msg_id,
+                msg.chat_id,
+                "inbound",
+                delivery_status,
+                delivery_error,
+            )
         if msg.attachments or msg.attachment_failures:
             stats["inbound_media"] += 1
         else:
@@ -498,20 +499,21 @@ async def handle_max_message(
             inbound_retry.is_text_only_inbound_retry_candidate(msg)
             and inbound_retry.is_retryable_tg_delivery_error(tg_error)
         ):
-            pending_id = await inbound_retry.enqueue_text_inbound_retry(
-                repo=repo,
-                msg=msg,
-                topic_id=topic_id,
-                error=tg_error,
-                attempts=1,
-            )
-            await repo.log_delivery(
-                msg.msg_id,
-                msg.chat_id,
-                "inbound",
-                "pending",
-                "tg_send_queued",
-            )
+            async with mapping.repo_transaction(repo):
+                pending_id = await inbound_retry.enqueue_text_inbound_retry(
+                    repo=repo,
+                    msg=msg,
+                    topic_id=topic_id,
+                    error=tg_error,
+                    attempts=1,
+                )
+                await repo.log_delivery(
+                    msg.msg_id,
+                    msg.chat_id,
+                    "inbound",
+                    "pending",
+                    "tg_send_queued",
+                )
             log_event(
                 logger,
                 logging.WARNING,

@@ -61,6 +61,8 @@ chats:
     assert cfg.health.reminder_interval_hours == 4
     assert cfg.health.heartbeat_interval_seconds == 30
     assert cfg.health.worker_restart_backoff_seconds == 5
+    assert cfg.health.metrics_textfile_path == tmp_path / "data" / "maxtg_bridge.prom"
+    assert cfg.health.metrics_interval_seconds == 30
     assert cfg.health.dm_history_sweep.enabled is True
     assert cfg.health.dm_history_sweep.warmup_seconds == 600
     assert cfg.health.dm_history_sweep.warmup_interval_seconds == 120
@@ -126,6 +128,50 @@ chats: []
     assert sweep.backfill_seconds == 3600
     assert sweep.cycle_jitter_seconds == 5
     assert sweep.per_chat_delay_seconds == 0.25
+
+
+def test_load_config_allows_metrics_textfile_override(tmp_path, monkeypatch):
+    base_path = tmp_path / "config.yaml"
+    base_path.write_text(
+        """
+telegram:
+  bot_token: "${TG_BOT_TOKEN}"
+  owner_id: "${TG_OWNER_ID}"
+  forum_group_id: "${TG_FORUM_GROUP_ID}"
+
+max:
+  phone: "${MAX_PHONE}"
+
+storage: {}
+
+health:
+  metrics_textfile_path: "/var/lib/node_exporter/textfile_collector/maxtg_bridge.prom"
+  metrics_interval_seconds: 15
+
+bridge: {}
+content: {}
+chats: []
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TG_BOT_TOKEN", "123456:token")
+    monkeypatch.setenv("TG_OWNER_ID", "123")
+    monkeypatch.setenv("TG_FORUM_GROUP_ID", "-1001234567890")
+    monkeypatch.setenv("MAX_PHONE", "+79990000000")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("CONFIG_LOCAL_PATH", raising=False)
+    monkeypatch.delenv("METRICS_TEXTFILE_PATH", raising=False)
+
+    cfg = load_config(str(base_path))
+
+    assert cfg.health.metrics_textfile_path == Path(
+        "/var/lib/node_exporter/textfile_collector/maxtg_bridge.prom"
+    )
+    assert cfg.health.metrics_interval_seconds == 15
+
+    monkeypatch.setenv("METRICS_TEXTFILE_PATH", "off")
+    cfg = load_config(str(base_path))
+    assert cfg.health.metrics_textfile_path is None
 
 
 def test_load_config_reads_secrets_from_dotenv_secrets(tmp_path, monkeypatch):

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from src.config.loader import AppConfig
 from src.db.repository import Repository
 from src.logging_utils import log_event
 from src.runtime.health import RuntimeHealthStore, Severity, build_operator_alert
+from src.runtime.tasks import create_logged_task
 
 
 @dataclass
@@ -75,10 +77,11 @@ async def setup_ops_notifier(
             summary="Telegram ops notifier инициализирован",
             notify=False,
         )
-        outbox_task = asyncio.create_task(
+        outbox_task = create_logged_task(
             ops_notifier.run_notification_outbox(
                 poll_interval_seconds=max(5, cfg.health.heartbeat_interval_seconds)
             ),
+            logger=logger,
             name="ops_notification_outbox",
         )
     except Exception as e:
@@ -106,6 +109,8 @@ async def close_ops_notifier(runtime: OpsNotifierRuntime):
         except asyncio.CancelledError:
             pass
     if runtime.notifier is not None:
+        with suppress(Exception):
+            await runtime.notifier.flush_notification_outbox()
         await runtime.notifier.close()
 
 
@@ -119,6 +124,7 @@ async def run_bridge_worker(
     startup_notification_builder: Callable[..., Awaitable[str]],
 ):
     repo: Repository | None = None
+    max_adapter: MaxAdapter | None = None
     tg_adapter: TelegramAdapter | None = None
     stage = "storage_connect"
 
@@ -268,6 +274,8 @@ async def run_bridge_worker(
                 bridge.run_weekly_recovery_snapshot(),
                 name="weekly_recovery_snapshot",
             )
+            if cfg.health.metrics_textfile_path is not None:
+                tg.create_task(bridge.run_metrics_textfile(), name="metrics_textfile")
     except Exception as e:
         if stage == "storage_connect":
             await health_store.report_issue(
@@ -295,6 +303,8 @@ async def run_bridge_worker(
             )
         raise
     finally:
+        if max_adapter is not None:
+            await max_adapter.close()
         if tg_adapter is not None:
             await tg_adapter.close()
         if repo is not None:

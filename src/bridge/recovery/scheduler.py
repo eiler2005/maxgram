@@ -9,6 +9,7 @@ from ...config.loader import AppConfig
 from ...db.repository import Repository
 from ...logging_utils import log_event
 from ...runtime.health import RuntimeHealthStore
+from ...runtime.tasks import create_logged_task
 from ..contracts import MaxBridgePort, MaxMessage, TelegramBridgePort
 
 logger = logging.getLogger("src.bridge.core")
@@ -58,8 +59,9 @@ class RecoveryScheduler:
     async def schedule_scan_after_connect(self):
         if self._scan_task is not None and not self._scan_task.done():
             return
-        self._scan_task = asyncio.create_task(
+        self._scan_task = create_logged_task(
             self._run_scan_after_connect(),
+            logger=logger,
             name="recovery_snapshot_after_connect",
         )
 

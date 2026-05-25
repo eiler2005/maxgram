@@ -11,8 +11,8 @@ LogRecoveryEvent = Callable[..., Awaitable[None]]
 
 
 class GenerationsRepo(BaseRepo):
-    def __init__(self, get_db, log_recovery_event: LogRecoveryEvent):
-        super().__init__(get_db)
+    def __init__(self, get_db, log_recovery_event: LogRecoveryEvent, should_autocommit=None):
+        super().__init__(get_db, should_autocommit)
         self._log_recovery_event = log_recovery_event
 
     async def upsert_max_account_generation(
@@ -57,7 +57,7 @@ class GenerationsRepo(BaseRepo):
             },
             commit=False,
         )
-        await self._db.commit()
+        await self._commit()
         return {
             "migration_required": migration_required,
             "previous_max_user_id": previous_max_user_id,

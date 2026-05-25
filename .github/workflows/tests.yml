@@ -50,7 +50,7 @@ jobs:
             src/bridge/media_retry.py \
             src/bridge/recovery/scheduler.py \
             src/bridge/commands/dispatcher.py
-          pytest -q
+          pytest --cov=src --cov-report=term-missing --cov-fail-under=75
 
   ansible:
     runs-on: ubuntu-latest

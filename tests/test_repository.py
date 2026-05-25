@@ -15,6 +15,13 @@ from src.db.repository import (
 from src.db.migrations import apply_migrations
 
 
+async def _count_rows(repo: Repository, table: str) -> int:
+    assert repo._db is not None
+    async with repo._db.execute(f"SELECT COUNT(*) AS count FROM {table}") as cur:
+        row = await cur.fetchone()
+    return int(row["count"])
+
+
 @pytest.mark.asyncio
 async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
     db = await aiosqlite.connect(str(tmp_path / "bridge.db"))
@@ -129,6 +136,55 @@ async def test_save_message_upserts_tg_fields(tmp_path):
         assert row["tg_msg_id"] == 777
         assert row["tg_topic_id"] == 12
         assert row["direction"] == "inbound"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_transaction_rolls_back_grouped_writes(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            async with repo.transaction():
+                await repo.save_message(
+                    MessageRecord(
+                        max_msg_id="m-rollback",
+                        max_chat_id="chat-rollback",
+                        tg_msg_id=1001,
+                        tg_topic_id=12,
+                        direction="inbound",
+                        created_at=1,
+                    )
+                )
+                await repo.log_delivery(
+                    "m-rollback",
+                    "chat-rollback",
+                    "inbound",
+                    "delivered",
+                )
+                raise RuntimeError("boom")
+
+        assert await _count_rows(repo, "message_map") == 0
+        assert await _count_rows(repo, "tg_reply_map") == 0
+        assert await _count_rows(repo, "delivery_log") == 0
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_transaction_rejects_nested_transactions(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        with pytest.raises(RuntimeError, match="Nested repository transactions"):
+            async with repo.transaction():
+                async with repo.transaction():
+                    pass
+
+        assert await _count_rows(repo, "message_map") == 0
     finally:
         await repo.close()
 

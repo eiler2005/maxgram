@@ -15,6 +15,7 @@ from pymax.transport.tcp import TCPTransport
 
 from ...network import DirectSocketConnector
 from ...network.egress import MaxSocketConnector
+from .internals import pymax_client_connection, pymax_connection_protocol
 
 
 class BridgeConnectionManager(ConnectionManager):
@@ -115,9 +116,9 @@ def install_bridge_msgpack_codec(protocol) -> None:
 
 
 def install_bridge_protocol_guards(client):
-    connection = getattr(client, "_connection", None)
+    connection = pymax_client_connection(client)
     install_bridge_sequence_guard(connection)
-    protocol = getattr(connection, "protocol", None)
+    protocol = pymax_connection_protocol(connection)
     if protocol is not None:
         install_bridge_msgpack_codec(protocol)
         client._maxtg_msgpack_guard_installed = True

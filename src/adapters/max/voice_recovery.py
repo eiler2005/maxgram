@@ -11,6 +11,7 @@ from typing import Optional
 
 from . import constants as max_constants
 from .deps import VoiceRecoveryDeps
+from ...runtime.tasks import cancel_and_wait, create_logged_task
 from ...bridge.contracts import (
     MAX_DM_SWEEP_BACKFILL_SECONDS,
     MaxAttachment,
@@ -629,8 +630,10 @@ class MaxVoiceRecoveryService:
         task = self._pending_empty_recovery_worker
         if task is not None and not task.done():
             return
-        self._pending_empty_recovery_worker = asyncio.create_task(
-            self._run_pending_empty_recoveries()
+        self._pending_empty_recovery_worker = create_logged_task(
+            self._run_pending_empty_recoveries(),
+            logger=logger,
+            name="max_pending_empty_recovery_worker",
         )
         log_event(
             logger,
@@ -756,14 +759,16 @@ class MaxVoiceRecoveryService:
             message_type=message_type,
             flow_id=flow_id,
         )
-        task = asyncio.create_task(
+        task = create_logged_task(
             self._recover_empty_message_from_raw_history_cache_later(
                 chat_id=str(chat_id),
                 raw_msg_id=str(raw_msg_id),
                 msg_id=str(msg_id),
                 message_type=message_type,
                 flow_id=flow_id,
-            )
+            ),
+            logger=logger,
+            name="max_empty_recovery_cache_wait",
         )
         self._pending_empty_recovery_tasks[key] = task
         log_event(
@@ -869,3 +874,11 @@ class MaxVoiceRecoveryService:
         finally:
             if self._pending_empty_recovery_tasks.get(key) is asyncio.current_task():
                 self._pending_empty_recovery_tasks.pop(key, None)
+
+    async def close(self):
+        await cancel_and_wait(self._pending_empty_recovery_worker)
+        self._pending_empty_recovery_worker = None
+        tasks = list(self._pending_empty_recovery_tasks.values())
+        self._pending_empty_recovery_tasks.clear()
+        for task in tasks:
+            await cancel_and_wait(task)

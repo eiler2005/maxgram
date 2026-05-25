@@ -17,6 +17,7 @@ from .retry_policy import (
 )
 from ..db.repository import PendingOutboundMessage, Repository
 from ..logging_utils import build_tg_flow_id, log_event
+from ..runtime.timeouts import DEFAULT_OPERATION_TIMEOUT_SECONDS, with_timeout_or_none
 
 logger = logging.getLogger("src.bridge.core")
 OpsSender = Callable[[str], Awaitable[None]]
@@ -163,27 +164,40 @@ async def process_pending_outbound_message(
         pending_outbound_id=job.id,
         attempts=int(job.attempts or 0) + 1,
     )
-    sent_id = await max_adapter.send_message(
-        chat_id=job.max_chat_id,
-        text=job.text,
-        reply_to_msg_id=job.reply_to_max_id,
+    sent_id = await with_timeout_or_none(
+        max_adapter.send_message(
+            chat_id=job.max_chat_id,
+            text=job.text,
+            reply_to_msg_id=job.reply_to_max_id,
+            flow_id=flow_id,
+        ),
+        timeout_seconds=DEFAULT_OPERATION_TIMEOUT_SECONDS,
+        logger=logger,
+        event="bridge.external_await_timeout",
+        operation="max.send_message",
         flow_id=flow_id,
+        direction="outbound",
+        tg_topic_id=job.tg_topic_id,
+        tg_msg_id=job.tg_msg_id,
+        max_chat_id=job.max_chat_id,
+        pending_outbound_id=job.id,
     )
     if sent_id:
-        await bridge_mapping.save_outbound_mapping(
-            repo,
-            max_msg_id=sent_id,
-            max_chat_id=job.max_chat_id,
-            tg_topic_id=job.tg_topic_id,
-        )
-        await repo.log_delivery(
-            sent_id,
-            job.max_chat_id,
-            "outbound",
-            "delivered",
-            attempts=int(job.attempts or 0) + 1,
-        )
-        await repo.mark_pending_outbound_delivered(job.id, max_msg_id=sent_id)
+        async with bridge_mapping.repo_transaction(repo):
+            await bridge_mapping.save_outbound_mapping(
+                repo,
+                max_msg_id=sent_id,
+                max_chat_id=job.max_chat_id,
+                tg_topic_id=job.tg_topic_id,
+            )
+            await repo.log_delivery(
+                sent_id,
+                job.max_chat_id,
+                "outbound",
+                "delivered",
+                attempts=int(job.attempts or 0) + 1,
+            )
+            await repo.mark_pending_outbound_delivered(job.id, max_msg_id=sent_id)
         stats["outbound_text"] += 1
         await tg.send_text(
             job.tg_topic_id,

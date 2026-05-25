@@ -7,8 +7,10 @@ MAX → Telegram Bridge — точка входа.
 """
 
 import asyncio
+import contextlib
 import logging
 import os
+import signal
 import socket
 import sys
 from dataclasses import dataclass
@@ -114,6 +116,27 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _install_signal_handlers(stop_event: asyncio.Event, logger: logging.Logger) -> None:
+    loop = asyncio.get_running_loop()
+
+    def _request_shutdown(sig_name: str) -> None:
+        if stop_event.is_set():
+            return
+        log_event(
+            logger,
+            logging.INFO,
+            "app.shutdown.requested",
+            stage="shutdown",
+            outcome="requested",
+            signal=sig_name,
+        )
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+            loop.add_signal_handler(sig, _request_shutdown, sig.name)
 
 
 def _extract_pytest_summary(output: str) -> str:
@@ -239,6 +262,8 @@ def build_max_issue_notification(issue: MaxIssue) -> str:
 async def main():
     setup_logging()
     logger = logging.getLogger("bridge.main")
+    stop_event = asyncio.Event()
+    _install_signal_handlers(stop_event, logger)
 
     config_path = os.environ.get("CONFIG_PATH", "config.yaml")
     log_event(
@@ -286,7 +311,7 @@ async def main():
     )
 
     try:
-        await supervisor.run()
+        await supervisor.run(stop_event=stop_event)
     finally:
         await close_ops_notifier(ops_runtime)
 

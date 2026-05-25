@@ -5,6 +5,8 @@ Subdomain SQL lives in src.db.repos.*; this module keeps compatibility for
 existing imports and public method names.
 """
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import aiosqlite
@@ -36,16 +38,26 @@ class Repository:
     def __init__(self, db_path: str):
         self._db_path = db_path
         self._db: Optional[aiosqlite.Connection] = None
+        self._transaction_depth = 0
         get_db = lambda: self._db
-        self._bindings = BindingsRepo(get_db)
-        self._messages = MessagesRepo(get_db)
-        self._recovery = RecoveryRepo(get_db, self._bindings.remap_binding_by_topic)
-        self._generations = GenerationsRepo(get_db, self._recovery._log_recovery_event)
-        self._pending_media = PendingMediaRepo(get_db)
-        self._pending_inbound = PendingInboundRepo(get_db)
-        self._pending_outbound = PendingOutboundRepo(get_db)
-        self._delivery = DeliveryRepo(get_db)
-        self._users = UsersRepo(get_db)
+        should_autocommit = lambda: self._transaction_depth == 0
+        self._bindings = BindingsRepo(get_db, should_autocommit)
+        self._messages = MessagesRepo(get_db, should_autocommit)
+        self._recovery = RecoveryRepo(
+            get_db,
+            self._bindings.remap_binding_by_topic,
+            should_autocommit,
+        )
+        self._generations = GenerationsRepo(
+            get_db,
+            self._recovery._log_recovery_event,
+            should_autocommit,
+        )
+        self._pending_media = PendingMediaRepo(get_db, should_autocommit)
+        self._pending_inbound = PendingInboundRepo(get_db, should_autocommit)
+        self._pending_outbound = PendingOutboundRepo(get_db, should_autocommit)
+        self._delivery = DeliveryRepo(get_db, should_autocommit)
+        self._users = UsersRepo(get_db, should_autocommit)
 
     async def connect(self):
         self._db = await aiosqlite.connect(self._db_path)
@@ -55,6 +67,26 @@ class Repository:
     async def close(self):
         if self._db:
             await self._db.close()
+            self._db = None
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator["Repository"]:
+        if self._db is None:
+            raise RuntimeError("Repository is not connected")
+        if self._transaction_depth:
+            raise RuntimeError("Nested repository transactions are not supported")
+
+        await self._db.execute("BEGIN IMMEDIATE")
+        self._transaction_depth = 1
+        try:
+            yield self
+        except Exception:
+            await self._db.rollback()
+            raise
+        else:
+            await self._db.commit()
+        finally:
+            self._transaction_depth = 0
 
     # ── ChatBinding ────────────────────────────────────────────────────────
 

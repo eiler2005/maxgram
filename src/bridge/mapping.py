@@ -1,10 +1,22 @@
 """Bridge message mapping helpers."""
 
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from .contracts import MaxMessage
 from ..db.repository import MessageRecord, Repository
+
+
+@asynccontextmanager
+async def repo_transaction(repo: Repository) -> AsyncIterator[None]:
+    transaction = getattr(repo, "transaction", None)
+    if callable(transaction):
+        async with transaction():
+            yield
+    else:
+        yield
 
 
 async def save_inbound_idempotency_key(repo: Repository, msg: MaxMessage):

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -9,6 +10,7 @@ from src.runtime.health import (
     heartbeat_is_fresh,
 )
 from src.runtime.supervisor import BridgeSupervisor, SupervisorConfig
+from src.runtime.tasks import create_logged_task
 
 
 @pytest.mark.asyncio
@@ -100,3 +102,76 @@ async def test_supervisor_restarts_worker_and_writes_heartbeat(tmp_path):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_supervisor_stops_worker_without_crash_alert(tmp_path):
+    health = RuntimeHealthStore(tmp_path, heartbeat_interval_seconds=1)
+    worker_cancelled = asyncio.Event()
+    stop_event = asyncio.Event()
+    notifications = []
+
+    async def worker():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            worker_cancelled.set()
+
+    async def notify(text: str) -> bool:
+        notifications.append(text)
+        return True
+
+    supervisor = BridgeSupervisor(
+        health_store=health,
+        worker_factory=worker,
+        notify=notify,
+        config=SupervisorConfig(
+            heartbeat_interval_seconds=1,
+            worker_restart_backoff_seconds=1,
+        ),
+    )
+
+    task = asyncio.create_task(supervisor.run(stop_event=stop_event))
+    await asyncio.sleep(0)
+    stop_event.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert worker_cancelled.is_set()
+    assert notifications == []
+    assert heartbeat_is_fresh(health.heartbeat_path, 5)
+
+
+def test_supervisor_restart_delay_is_capped(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.runtime.supervisor.random.uniform", lambda _a, _b: 1.0)
+    supervisor = BridgeSupervisor(
+        health_store=RuntimeHealthStore(tmp_path),
+        worker_factory=lambda: asyncio.sleep(0),
+        config=SupervisorConfig(
+            worker_restart_backoff_seconds=5,
+            worker_restart_max_backoff_seconds=30,
+        ),
+    )
+
+    assert supervisor._restart_delay(1) == 5
+    assert supervisor._restart_delay(2) == 10
+    assert supervisor._restart_delay(3) == 20
+    assert supervisor._restart_delay(10) == 30
+
+
+@pytest.mark.asyncio
+async def test_logged_detached_task_reports_exception(caplog):
+    async def boom():
+        raise RuntimeError("task boom")
+
+    with caplog.at_level("ERROR", logger="tests.detached"):
+        task = create_logged_task(
+            boom(),
+            logger=logging.getLogger("tests.detached"),
+            name="boom_task",
+        )
+        with pytest.raises(RuntimeError):
+            await task
+        await asyncio.sleep(0)
+
+    assert "Detached task failed: boom_task" in caplog.text
+    assert "task boom" in caplog.text

@@ -18,8 +18,8 @@ RemapBinding = Callable[[int, str], Awaitable[Optional[ChatBinding]]]
 
 
 class RecoveryRepo(BaseRepo):
-    def __init__(self, get_db, remap_binding_by_topic: RemapBinding):
-        super().__init__(get_db)
+    def __init__(self, get_db, remap_binding_by_topic: RemapBinding, should_autocommit=None):
+        super().__init__(get_db, should_autocommit)
         self._remap_binding_by_topic = remap_binding_by_topic
 
     async def upsert_max_account_generation(
@@ -64,7 +64,7 @@ class RecoveryRepo(BaseRepo):
             },
             commit=False,
         )
-        await self._db.commit()
+        await self._commit()
         return {
             "migration_required": migration_required,
             "previous_max_user_id": previous_max_user_id,
@@ -99,7 +99,7 @@ class RecoveryRepo(BaseRepo):
             ),
         )
         if commit:
-            await self._db.commit()
+            await self._commit()
 
     async def upsert_recovery_snapshot(
         self,
@@ -213,7 +213,7 @@ class RecoveryRepo(BaseRepo):
             )
             scanned += 1
 
-        await self._db.commit()
+        await self._commit()
         return {
             "scanned": scanned,
             "inserted": inserted,
@@ -314,7 +314,7 @@ class RecoveryRepo(BaseRepo):
             )
             scanned += 1
 
-        await self._db.commit()
+        await self._commit()
         return {
             "scanned": scanned,
             "inserted": inserted,
@@ -367,7 +367,7 @@ class RecoveryRepo(BaseRepo):
             details={"fields": sorted(updates.keys())},
             commit=False,
         )
-        await self._db.commit()
+        await self._commit()
         return await self.get_recovery_entry_by_topic(tg_topic_id)
 
     async def remap_recovery_topic(self, tg_topic_id: int, new_max_chat_id: str) -> Optional[ChatBinding]:
@@ -410,7 +410,7 @@ class RecoveryRepo(BaseRepo):
             },
             commit=False,
         )
-        await self._db.commit()
+        await self._commit()
         return binding
 
     async def get_recovery_report(self) -> dict[str, object]:

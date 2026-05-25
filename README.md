@@ -38,8 +38,8 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 
 ## Engineering Highlights
 
-- **Unofficial WebSocket API** — reverse-engineered `pymax` userbot with a custom reconnect loop that fixes an OOM bug in the upstream library (`reconnect=False` + outer `while True`)
-- **Explicit adapter/backend boundary** — `BridgeCore` depends on transport-neutral contracts; MAX operation services depend on typed client ports/DTO, and `pymax` imports plus pymax client shape are isolated to `src/adapters/max/backends/pymax/`, with regression tests guarding the boundary
+- **PyMax v2 compatibility shim** — the bridge now targets `maxapi-python` 2.x through a typed backend adapter; old PyMax v1 reconnect/OOM behavior is historical context, not the active architecture
+- **Explicit adapter/backend boundary** — `BridgeCore` depends on transport-neutral contracts; MAX operation services depend on typed client ports/DTO, and `pymax` imports plus pymax client shape are isolated to `src/adapters/max/backends/pymax/`, with surface-pin and fake-backend integration tests guarding the boundary
 - **MAX-only egress profiles** — MAX API/CDN traffic can use authenticated HTTP CONNECT through reverse Channel M (`home_ru_proxy`: router-originated SSH remote-forward to the VPS) while Telegram stays direct; Hetzner direct is retained only as a manual emergency profile
 - **Idempotent message deduplication** — `max_msg_id` is written to SQLite *before* forwarding to Telegram, making the system safe to restart at any point without duplicates
 - **Privacy-first design** — successful message text/media is not stored; SQLite normally holds routing metadata, with one exception: failed text-only MAX→TG/TG→MAX messages can be queued temporarily in plaintext until delivered or expired
@@ -48,6 +48,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Supervisor runtime shell** — PID1 is now a supervisor that keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
 - **Resilient delivery** — Telegram API calls retry with exponential backoff; definite unsent TG→MAX text failures and retryable MAX→TG text delivery failures are queued with lease/backoff/TTL; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; retryable MAX video/voice downloads are persisted by reference until delivered; `/status` gives live health snapshot on demand
 - **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
+- **Prometheus textfile metrics** — health, durable retry queues, delivery totals, worker restarts, and alert outbox depth are exported to `data/maxtg_bridge.prom` by default
 - **Account migration recovery registry** — hybrid MAX account snapshots preserve Telegram topic routing, invite/admin metadata, DM partner ids, DM contact snapshots from real dialogs only, and snapshot freshness for guided recovery after a phone/account loss
 
 ---

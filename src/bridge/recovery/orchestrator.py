@@ -9,6 +9,7 @@ from typing import Optional
 
 from ...db.repository import ChatBinding, Repository
 from ...logging_utils import log_event
+from ...runtime.tasks import create_logged_task
 from ..contracts import MaxBridgePort, MaxMessage
 from . import reporter
 
@@ -84,8 +85,9 @@ def schedule_event_scan(
             return current_task, current_scan_at
         current_task.cancel()
 
-    task = asyncio.create_task(
+    task = create_logged_task(
         run_scheduled_scan(delay),
+        logger=logger,
         name="recovery_snapshot_event",
     )
     log_event(

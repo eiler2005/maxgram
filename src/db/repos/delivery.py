@@ -17,7 +17,7 @@ class DeliveryRepo(BaseRepo):
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (max_msg_id, max_chat_id, direction, status, error, attempts, now, now),
         )
-        await self._db.commit()
+        await self._commit()
 
     async def get_failed_messages(self, limit: int = 50) -> list[dict]:
         async with self._db.execute(
@@ -102,11 +102,11 @@ class DeliveryRepo(BaseRepo):
         await self._db.execute(
             "DELETE FROM message_map WHERE created_at < ?", (cutoff,)
         )
-        await self._db.commit()
+        await self._commit()
 
     async def cleanup_old_logs(self, older_than_days: int):
         cutoff = int(time.time()) - older_than_days * 86400
         await self._db.execute(
             "DELETE FROM delivery_log WHERE created_at < ?", (cutoff,)
         )
-        await self._db.commit()
+        await self._commit()

@@ -222,6 +222,10 @@ class MaxAdapter:
     async def start(self):
         return await self._lifecycle.start()
 
+    async def close(self):
+        await self._voice_recovery.close()
+        await self._lifecycle.close()
+
     def is_ready(self) -> bool:
         return self._lifecycle.is_ready()
 

@@ -10,6 +10,7 @@ from src.bridge import media_retry as bridge_media_retry
 from src.bridge import background as bridge_background
 from src.bridge import inbound_retry as bridge_inbound_retry
 from src.bridge import outbound_retry as bridge_outbound_retry
+from src.bridge import replies as bridge_replies
 from src.bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
@@ -2417,6 +2418,43 @@ async def test_on_tg_reply_queues_definite_unsent_text_after_max_error():
     assert args[3] == "failed"
     assert args[4] == "Socket is not connected (attempts=3)"
     assert kwargs["attempts"] == 3
+
+
+@pytest.mark.asyncio
+async def test_on_tg_reply_max_send_timeout_marks_failure(monkeypatch):
+    class HangingMax(DummyMax):
+        async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None,
+                               media_path=None, media_type=None, flow_id=None):
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(bridge_replies, "DEFAULT_OPERATION_TIMEOUT_SECONDS", 0.01)
+    repo = DummyRepo()
+    max_adapter = HangingMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    await bridge._on_tg_reply(
+        topic_id=99,
+        tg_msg_id=889,
+        text="Проверка timeout",
+        reply_to_tg_msg_id=None,
+        sender_name="Мария Иванова",
+    )
+
+    assert len(repo.pending_outbound) == 0
+    args, kwargs = repo.delivery_logs[-1]
+    assert args[:4] == (
+        "out_fail:99:889",
+        "-70000000000003",
+        "outbound",
+        "failed",
+    )
+    assert args[4] == "MAX send timeout"
+    assert kwargs["attempts"] == 1
+    assert tg_adapter.calls[-1] == (
+        "text",
+        bridge_replies.compose_tg_outbound_failure_notice("MAX send timeout"),
+    )
 
 
 @pytest.mark.asyncio

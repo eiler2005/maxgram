@@ -6,6 +6,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
+from . import mapping as bridge_mapping
 from .contracts import MaxMessage, TelegramBridgePort
 from .retry_policy import (
     TEXT_RETRY_LEASE_SECONDS,
@@ -175,24 +176,25 @@ async def process_pending_inbound_message(
     )
     tg_msg_id = await tg.send_text(job.tg_topic_id, job.text, flow_id=flow_id)
     if tg_msg_id:
-        await repo.save_message(
-            MessageRecord(
-                max_msg_id=job.max_msg_id,
-                max_chat_id=job.max_chat_id,
-                tg_msg_id=tg_msg_id,
-                tg_topic_id=job.tg_topic_id,
-                direction="inbound",
-                created_at=int(time.time()),
+        async with bridge_mapping.repo_transaction(repo):
+            await repo.save_message(
+                MessageRecord(
+                    max_msg_id=job.max_msg_id,
+                    max_chat_id=job.max_chat_id,
+                    tg_msg_id=tg_msg_id,
+                    tg_topic_id=job.tg_topic_id,
+                    direction="inbound",
+                    created_at=int(time.time()),
+                )
             )
-        )
-        await repo.log_delivery(
-            job.max_msg_id,
-            job.max_chat_id,
-            "inbound",
-            "delivered",
-            attempts=int(job.attempts or 0) + 1,
-        )
-        await repo.mark_pending_inbound_delivered(job.id, tg_msg_id=tg_msg_id)
+            await repo.log_delivery(
+                job.max_msg_id,
+                job.max_chat_id,
+                "inbound",
+                "delivered",
+                attempts=int(job.attempts or 0) + 1,
+            )
+            await repo.mark_pending_inbound_delivered(job.id, tg_msg_id=tg_msg_id)
         stats["inbound_text"] += 1
         log_event(
             logger,

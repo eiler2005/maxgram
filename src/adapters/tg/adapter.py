@@ -25,6 +25,10 @@ from ...runtime.health import (
     AlertOutboxStore,
     RuntimeHealthStore,
 )
+from ...runtime.timeouts import (
+    DEFAULT_OPERATION_TIMEOUT_SECONDS,
+    MEDIA_TRANSFER_TIMEOUT_SECONDS,
+)
 
 logger = logging.getLogger("src.adapters.tg_adapter")
 
@@ -230,10 +234,15 @@ class TelegramAdapter:
             label=label,
         )
         self._last_send_error = None
+        timeout_seconds = (
+            MEDIA_TRANSFER_TIMEOUT_SECONDS
+            if media_type in {"photo", "document", "video", "audio", "voice"}
+            else DEFAULT_OPERATION_TIMEOUT_SECONDS
+        )
 
         for attempt in range(1, 4):
             try:
-                msg = await coro_fn()
+                msg = await asyncio.wait_for(coro_fn(), timeout=timeout_seconds)
                 self._last_send_error = None
                 log_event(
                     logger,
@@ -250,6 +259,27 @@ class TelegramAdapter:
                     label=label,
                 )
                 return msg.message_id
+            except asyncio.TimeoutError as e:
+                self._last_send_error = f"TimeoutError: {timeout_seconds}s"
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "tg.outbound.retry",
+                    flow_id=flow_id,
+                    direction=direction,
+                    stage="transport",
+                    outcome="retry",
+                    reason="timeout",
+                    tg_topic_id=tg_topic_id,
+                    tg_msg_id=tg_msg_id,
+                    media_type=media_type,
+                    attempts=attempt,
+                    timeout_seconds=timeout_seconds,
+                    label=label,
+                )
+                last_exc = e
+                if attempt < 3:
+                    await asyncio.sleep(delays[attempt - 1])
             except TelegramRetryAfter as e:
                 wait = max(int(e.retry_after), 1) + 1
                 self._last_send_error = (
@@ -494,7 +524,10 @@ class TelegramAdapter:
         try:
             self._tmp_dir.mkdir(parents=True, exist_ok=True)
             local_path = self._tmp_dir / filename
-            await self._bot.download(file_id, destination=str(local_path))
+            await asyncio.wait_for(
+                self._bot.download(file_id, destination=str(local_path)),
+                timeout=MEDIA_TRANSFER_TIMEOUT_SECONDS,
+            )
             size = local_path.stat().st_size if local_path.exists() else None
             log_event(
                 logger,

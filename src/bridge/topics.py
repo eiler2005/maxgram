@@ -9,6 +9,7 @@ from .contracts import MaxBridgePort, MaxMessage, TelegramBridgePort
 from ..config.loader import AppConfig
 from ..db.repository import ChatBinding, Repository
 from ..logging_utils import log_event
+from ..runtime.timeouts import DEFAULT_OPERATION_TIMEOUT_SECONDS, with_timeout_or_none
 
 logger = logging.getLogger("src.bridge.core")
 
@@ -64,7 +65,17 @@ async def get_or_create_topic(
     title = await resolve_chat_title(cfg=cfg, max_adapter=max_adapter, msg=msg)
 
     try:
-        topic_id = await tg.create_topic(title, flow_id=flow_id)
+        topic_id = await with_timeout_or_none(
+            tg.create_topic(title, flow_id=flow_id),
+            timeout_seconds=DEFAULT_OPERATION_TIMEOUT_SECONDS,
+            logger=logger,
+            event="bridge.external_await_timeout",
+            operation="tg.create_topic",
+            flow_id=flow_id,
+            direction="inbound",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+        )
     except Exception as e:
         log_event(
             logger,
@@ -80,6 +91,8 @@ async def get_or_create_topic(
             title=title,
             error=str(e),
         )
+        return None
+    if topic_id is None:
         return None
 
     mode = cfg.get_chat_mode(msg.chat_id)
@@ -123,7 +136,16 @@ async def resolve_chat_title(
         return msg.chat_title
 
     if not msg.is_dm:
-        title = await max_adapter.resolve_chat_title(msg.chat_id)
+        title = await with_timeout_or_none(
+            max_adapter.resolve_chat_title(msg.chat_id),
+            timeout_seconds=DEFAULT_OPERATION_TIMEOUT_SECONDS,
+            logger=logger,
+            event="bridge.external_await_timeout",
+            operation="max.resolve_chat_title",
+            direction="inbound",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+        )
         if title:
             return title
 
@@ -150,7 +172,16 @@ async def resolve_chat_title(
             if not uid or uid in seen:
                 continue
             seen.add(uid)
-            name = await max_adapter.resolve_user_name(uid)
+            name = await with_timeout_or_none(
+                max_adapter.resolve_user_name(uid),
+                timeout_seconds=DEFAULT_OPERATION_TIMEOUT_SECONDS,
+                logger=logger,
+                event="bridge.external_await_timeout",
+                operation="max.resolve_user_name",
+                direction="inbound",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+            )
             if name:
                 return name
 

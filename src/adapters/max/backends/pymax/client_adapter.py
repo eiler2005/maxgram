@@ -14,6 +14,12 @@ from ...ports import (
     RuntimeErrorHandler,
 )
 from .events import PymaxEventRouter
+from .internals import (
+    pymax_client_connection,
+    pymax_connection_is_open,
+    pymax_connection_lost,
+    pymax_connection_transport_connected,
+)
 from .media import PymaxMediaGateway
 from .models import (
     channels_snapshot,
@@ -45,33 +51,14 @@ class PymaxClientAdapter:
 
     @property
     def is_connected(self) -> bool:
-        connection = getattr(self._client, "_connection", None)
-        if connection is None:
-            connection = getattr(self._client, "_conn", None)
-        if connection is None:
-            app = getattr(self._client, "_app", None)
-            connection = getattr(app, "connection", None)
-            if connection is None:
-                connection = getattr(app, "conn", None)
+        connection = pymax_client_connection(self._client)
         if connection is None:
             return False
-        if bool(getattr(connection, "_conn_lost", False)):
+        if pymax_connection_lost(connection):
             return False
-
-        is_open = getattr(connection, "is_open", False)
-        if callable(is_open):
-            is_open = is_open()
-        if not bool(is_open):
+        if not pymax_connection_is_open(connection):
             return False
-
-        transport = getattr(connection, "transport", None)
-        if transport is not None:
-            transport_connected = getattr(transport, "connected", None)
-            if callable(transport_connected):
-                transport_connected = transport_connected()
-            if transport_connected is not None and not bool(transport_connected):
-                return False
-        return True
+        return pymax_connection_transport_connected(connection)
 
     def prepare_startup(self, error_handler: RuntimeErrorHandler) -> None:
         original = getattr(self._client, "start", None)

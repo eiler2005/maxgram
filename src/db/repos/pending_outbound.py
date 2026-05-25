@@ -48,7 +48,7 @@ class PendingOutboundRepo(BaseRepo):
                 updated_at,
             ),
         )
-        await self._db.commit()
+        await self._commit()
         if cursor.lastrowid:
             return int(cursor.lastrowid)
         async with self._db.execute(
@@ -96,7 +96,7 @@ class PendingOutboundRepo(BaseRepo):
                  AND (lease_until IS NULL OR lease_until < ?)""",
             (lease_until, now, job_id, now),
         )
-        await self._db.commit()
+        await self._commit()
         return cursor.rowcount > 0
 
     async def mark_pending_outbound_retry(
@@ -120,7 +120,7 @@ class PendingOutboundRepo(BaseRepo):
                WHERE id = ?""",
             (now, now, next_attempt_at, error, job_id),
         )
-        await self._db.commit()
+        await self._commit()
 
     async def mark_pending_outbound_delivered(
         self,
@@ -144,7 +144,7 @@ class PendingOutboundRepo(BaseRepo):
                WHERE id = ?""",
             (now, now, max_msg_id, now, job_id),
         )
-        await self._db.commit()
+        await self._commit()
 
     async def mark_pending_outbound_failed(
         self,
@@ -166,7 +166,7 @@ class PendingOutboundRepo(BaseRepo):
                WHERE id = ?""",
             (now, now, error, job_id),
         )
-        await self._db.commit()
+        await self._commit()
 
     async def expire_pending_outbound(
         self,
@@ -187,7 +187,7 @@ class PendingOutboundRepo(BaseRepo):
                  AND created_at < ?""",
             (now, cutoff),
         )
-        await self._db.commit()
+        await self._commit()
         return cursor.rowcount
 
     async def count_pending_outbound(self) -> dict[str, Optional[int]]:

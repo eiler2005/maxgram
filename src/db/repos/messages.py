@@ -36,7 +36,7 @@ class MessagesRepo(BaseRepo):
                 source="message_map",
                 commit=False,
             )
-        await self._db.commit()
+        await self._commit()
 
     async def get_max_msg_id_by_tg(self, tg_msg_id: int) -> Optional[str]:
         """Найти max_msg_id по tg_msg_id — для reply routing."""
@@ -92,4 +92,4 @@ class MessagesRepo(BaseRepo):
             (tg_msg_id, max_chat_id, max_msg_id, tg_topic_id, source, now),
         )
         if commit:
-            await self._db.commit()
+            await self._commit()
