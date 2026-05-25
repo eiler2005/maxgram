@@ -2309,6 +2309,66 @@ async def test_max_watchdog_reports_egress_down_without_restart(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_max_watchdog_suppresses_owner_alert_while_self_heal_is_pending(tmp_path):
+    class OfflineHomeProxyMax(DummyMax):
+        def __init__(self):
+            super().__init__()
+            self.egress_status = {"max_egress_active": "home_ru_proxy"}
+            self.probe_calls = 0
+
+        def is_ready(self):
+            return False
+
+        async def probe_egress(self):
+            self.probe_calls += 1
+            self.last_egress_probe = {
+                "ok": True,
+                "stage": "target_tls",
+                "latency_ms": 10,
+            }
+            return self.last_egress_probe
+
+    max_adapter = OfflineHomeProxyMax()
+    health = RuntimeHealthStore(tmp_path)
+    alerts = []
+    notifications = []
+
+    task = asyncio.create_task(
+        bridge_background.run_max_watchdog(
+            max_adapter=max_adapter,
+            health=health,
+            send_ops_notification=lambda text: notifications.append(text) or asyncio.sleep(0),
+            emit_health_alert=lambda change: alerts.append(change) or asyncio.sleep(0),
+            alert_after_seconds=0,
+            check_interval=0,
+            egress_probe_interval=0,
+            self_heal_grace_seconds=60,
+            self_heal_state_path=tmp_path / "self-heal.json",
+            restart_process=lambda _reason: None,
+        )
+    )
+    try:
+        for _ in range(50):
+            snapshot = await health.get_snapshot()
+            issue = snapshot.subsystems["max_link"].issue
+            if issue is not None:
+                break
+            await asyncio.sleep(0)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    snapshot = await health.get_snapshot()
+    issue = snapshot.subsystems["max_link"].issue
+    assert issue is not None
+    assert issue.code == "link_offline_self_heal_pending"
+    assert alerts == []
+    assert notifications == []
+    assert max_adapter.probe_calls > 0
+
+
+@pytest.mark.asyncio
 async def test_max_watchdog_restarts_once_when_proxy_ok_but_max_stays_offline(tmp_path):
     class OfflineHomeProxyMax(DummyMax):
         def __init__(self):

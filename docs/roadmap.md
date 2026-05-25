@@ -43,7 +43,7 @@
 ### Phase 2: Stabilization ✅
 - [x] **Telegram retry/backoff** — 3 попытки, задержки 1s/2s, `TelegramRetryAfter` respected
 - [x] **`/status` команда** — uptime, сообщения за 4ч (текст/медиа), ошибки, топ-10 активных чатов
-- [x] **Уведомление при потере MAX** — watchdog: alert если MAX недоступен > 60 секунд
+- [x] **Уведомление при потере MAX** — watchdog: health/status degraded если MAX недоступен > 60 секунд; owner DM не шлётся, пока `home_ru_proxy` healthy и self-heal restart ещё ожидается
 - [x] **Периодический статус-отчёт** — автоматически каждые 4 часа без команды
 - [x] **Расширенный startup** — runtime, hostname, datacenter location, masked IP, кол-во чатов
 - [x] **Startup self-check в production** — после `MAX connected` запускается `pytest`, а итог добавляется в startup-уведомление бота

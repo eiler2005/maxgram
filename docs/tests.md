@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **277 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **278 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -333,6 +333,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_recovery_auto_changes_are_summarized_in_status_not_notified` | Обычные recovery auto-scan дельты не отправляют отдельный alert, но `/status` показывает агрегаты без invite/title/phone/raw payload. |
 | `test_watchdog_sends_gap_notice_after_reconnect` | После offline-окна watchdog отправляет и alert про downtime, и уведомление о возможном `missed messages gap` после восстановления. |
 | `test_max_watchdog_reports_egress_down_without_restart` | При упавшем `home_ru_proxy` watchdog пишет `max_egress_unavailable`, но не рестартит процесс. |
+| `test_max_watchdog_suppresses_owner_alert_while_self_heal_is_pending` | При healthy `home_ru_proxy` и ещё не истёкшем self-heal grace watchdog обновляет health/status без owner DM-шума. |
 | `test_max_watchdog_restarts_once_when_proxy_ok_but_max_stays_offline` | При healthy proxy/TLS и зависшем MAX watchdog пишет cooldown-файл и запускает rate-limited self-exit. |
 | `test_dm_history_sweep_skips_until_max_is_ready` | DM history sweep не стреляет `CHAT_HISTORY` raw requests до `MAX connected`, чтобы не шуметь `Not connected`/pending futures на старте. |
 | `test_dm_history_sweep_uses_warmup_interval` | После ready sweep работает в warmup-фазе с коротким интервалом. |

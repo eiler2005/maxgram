@@ -140,6 +140,7 @@ async def run_max_watchdog(
 ):
     disconnected_since: Optional[float] = None
     alert_sent = False
+    self_heal_pending_reported = False
     last_egress_probe_at = 0.0
     restart = restart_process or _default_restart_process
 
@@ -166,6 +167,7 @@ async def run_max_watchdog(
                 )
             disconnected_since = None
             alert_sent = False
+            self_heal_pending_reported = False
             last_egress_probe_at = 0.0
         else:
             if disconnected_since is None:
@@ -293,6 +295,57 @@ async def run_max_watchdog(
                         )
 
             if not alert_sent and elapsed >= alert_after_seconds:
+                probe_for_alert = latest_probe or max_adapter.get_last_egress_probe()
+                self_heal_pending = (
+                    home_proxy_active
+                    and probe_for_alert is not None
+                    and bool(probe_for_alert.get("ok"))
+                    and elapsed < self_heal_grace_seconds
+                    and _self_heal_restart_allowed(
+                        self_heal_state_path,
+                        cooldown_seconds=self_heal_restart_cooldown_seconds,
+                    )
+                )
+                if self_heal_pending:
+                    if not self_heal_pending_reported:
+                        log_event(
+                            logger,
+                            logging.INFO,
+                            "bridge.watchdog.max_alert_suppressed",
+                            stage="watchdog",
+                            outcome="suppressed",
+                            reason="self_heal_pending",
+                            downtime_seconds=int(elapsed),
+                            self_heal_grace_seconds=self_heal_grace_seconds,
+                            probe_stage=probe_for_alert.get("stage"),
+                        )
+                        if health is not None:
+                            await health.report_issue(
+                                "max_link",
+                                code="link_offline_self_heal_pending",
+                                summary=(
+                                    f"MAX недоступен уже {int(elapsed)}с — "
+                                    "ожидаю автоматический self-heal restart"
+                                ),
+                                raw_cause="MAX client is offline while home_ru_proxy probe is healthy",
+                                severity=Severity.ERROR,
+                                impact=(
+                                    "Новые MAX сообщения временно не приходят; если reconnect не "
+                                    "восстановится сам, watchdog перезапустит bridge процесс."
+                                ),
+                                operator_hint=(
+                                    "Ручное действие пока не требуется. Если после self-heal "
+                                    "MAX не восстановится, следующий alert попросит проверить /status."
+                                ),
+                                auto_recovery=(
+                                    "Watchdog дождётся self-heal grace и перезапустит процесс, "
+                                    "если MAX останется offline."
+                                ),
+                                notify=False,
+                            )
+                        self_heal_pending_reported = True
+                    continue
+
                 log_event(
                     logger,
                     logging.ERROR,
