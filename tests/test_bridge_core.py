@@ -2794,6 +2794,60 @@ async def test_cmd_recovery_scan_report_set_remap_and_export(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
+async def test_recovery_report_hides_archived_phantoms_and_sensitive_details(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    await repo.save_binding(
+        ChatBinding(
+            "1779274610031001",
+            1564,
+            "[deleted phantom] Чат 1779274610031001",
+            "disabled",
+            1,
+        )
+    )
+    await repo.save_binding(
+        ChatBinding("-missing-active", 77, "Secret Client Room", "active", 1)
+    )
+    snapshot = MaxRecoverySnapshot(
+        max_user_id="100",
+        masked_phone="+7******1234",
+        session_fingerprint_hash="hash",
+        chats=[
+            MaxRecoveryChatSnapshot(
+                max_chat_id="177501866830",
+                title="Private DM Partner",
+                chat_kind="dm",
+            ),
+        ],
+    )
+    bridge = make_bridge(
+        repo=repo,
+        max_adapter=DummyRecoveryMax(snapshot),
+        tg_adapter=DummyTelegram(),
+    )
+
+    try:
+        await bridge._recovery.handle_command("scan")
+        report = await bridge._recovery.handle_command("report")
+        entry = await repo.get_recovery_entry_by_topic(1564)
+
+        assert entry.recovery_status == "disabled"
+        assert "нужен invite: 1" in report
+        assert "unmapped MAX: 1" in report
+        assert "Архив/disabled: 1" in report
+        assert "#77 · нужен invite" in report
+        assert "детали: /recovery export" in report
+        assert "[deleted phantom]" not in report
+        assert "Secret Client Room" not in report
+        assert "Private DM Partner" not in report
+        assert "1779274610031001" not in report
+        assert "177501866830" not in report
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
 async def test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding(tmp_path):
     repo = Repository(str(tmp_path / "bridge.db"))
     await repo.connect()

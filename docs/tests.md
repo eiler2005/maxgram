@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **278 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **279 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -362,6 +362,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | Тест | Что проверяет |
 |------|--------------|
 | `test_cmd_recovery_scan_report_set_remap_and_export` | Owner-only recovery flow: scan, report со свежестью snapshot, отсутствие invite link в report/logs, ручной `set`, `remap`, owner-DM export и обновление binding. |
+| `test_recovery_report_hides_archived_phantoms_and_sensitive_details` | `/recovery report` не показывает archived phantom topics, названия, MAX ids или DM details; ручные подробности остаются в `/recovery export`. |
 | `test_new_binding_recovery_scan_is_async_and_does_not_delay_forwarding` | Новый `ChatBinding` ставит recovery scan в background task; Telegram topic/message создаются сразу и не ждут snapshot, а auto scan обновляет DM contact registry асинхронно. |
 | `test_control_events_debounce_into_one_recovery_scan` | Повторные MAX `CONTROL` события схлопываются в один recovery scan. |
 | `test_recovery_account_migration_notification_is_redacted_and_deduped` | Срочный recovery alert остаётся только для MAX account migration-required, не раскрывает phone/session hash и дедупится в памяти. |

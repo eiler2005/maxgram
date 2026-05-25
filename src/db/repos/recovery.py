@@ -17,6 +17,16 @@ from ..types import (
 RemapBinding = Callable[[int, str], Awaitable[Optional[ChatBinding]]]
 
 
+def _is_disabled_recovery_entry(entry: ChatRecoveryEntry) -> bool:
+    title = entry.title or ""
+    return (
+        entry.mode == "disabled"
+        or entry.recovery_status == "disabled"
+        or title.startswith("[deleted phantom]")
+        or title.startswith("[D phantom]")
+    )
+
+
 class RecoveryRepo(BaseRepo):
     def __init__(self, get_db, remap_binding_by_topic: RemapBinding, should_autocommit=None):
         super().__init__(get_db, should_autocommit)
@@ -429,6 +439,7 @@ class RecoveryRepo(BaseRepo):
             "joinable_by_link": 0,
             "manual_admin_required": 0,
             "unmapped": 0,
+            "disabled": 0,
             "last_scan_at": max(
                 timestamp or 0
                 for timestamp in (chat_last_scan_at, dm_contacts_last_scan_at)
@@ -450,6 +461,9 @@ class RecoveryRepo(BaseRepo):
             "dm_contacts_last_scan_at": dm_contacts_last_scan_at,
         }
         for entry in entries:
+            if _is_disabled_recovery_entry(entry):
+                stats["disabled"] += 1
+                continue
             status = entry.recovery_status
             admins = _json_loads(entry.admin_contacts_json, [])
             if entry.tg_topic_id is None and status != "remapped":

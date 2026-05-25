@@ -140,6 +140,10 @@ def _status_for_missing_recovery_chat(existing, *, migration_required: bool) -> 
     return "needs_invite"
 
 
+def _status_for_binding(binding: ChatBinding, *, default: str = "visible") -> str:
+    return "disabled" if binding.mode == "disabled" else default
+
+
 def _snapshot_entry_from_chat(
     chat,
     *,
@@ -268,7 +272,7 @@ async def safe_scan(
                         registry_key=f"tg_topic:{binding.tg_topic_id}",
                         tg_topic_id=binding.tg_topic_id,
                         binding=binding,
-                        status="visible",
+                        status=_status_for_binding(binding),
                     )
                 )
                 continue
@@ -282,9 +286,12 @@ async def safe_scan(
                     "current_max_chat_id": binding.max_chat_id,
                     "chat_kind": getattr(existing, "chat_kind", "unknown") if existing else "unknown",
                     "mode": binding.mode,
-                    "recovery_status": _status_for_missing_recovery_chat(
-                        existing,
-                        migration_required=migration_required,
+                    "recovery_status": _status_for_binding(
+                        binding,
+                        default=_status_for_missing_recovery_chat(
+                            existing,
+                            migration_required=migration_required,
+                        ),
                     ),
                 }
             )

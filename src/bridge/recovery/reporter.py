@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
@@ -41,6 +42,7 @@ def format_freshness(
 
 def status_label(status: str) -> str:
     labels = {
+        "disabled": "отключён",
         "visible": "виден",
         "remapped": "remap готов",
         "joinable_by_link": "есть invite link",
@@ -53,6 +55,25 @@ def status_label(status: str) -> str:
         "lost": "потерян",
     }
     return labels.get(status, status)
+
+
+def _is_archived_entry(entry) -> bool:
+    title = str(getattr(entry, "title", "") or "")
+    return (
+        str(getattr(entry, "mode", "") or "").lower() == "disabled"
+        or str(getattr(entry, "recovery_status", "") or "").lower() == "disabled"
+        or title.startswith("[deleted phantom]")
+        or title.startswith("[D phantom]")
+    )
+
+
+def _is_actionable_entry(entry) -> bool:
+    if _is_archived_entry(entry) or entry.recovery_status == "remapped":
+        return False
+    return (
+        entry.tg_topic_id is None
+        or entry.recovery_status not in {"visible", "tracked"}
+    )
 
 
 async def build_report_message(
@@ -77,24 +98,31 @@ async def build_report_message(
             f"свежесть: {format_freshness_fn(stats.get('dm_contacts_last_scan_at'))}"
         ),
     ]
+    disabled_count = int(
+        stats.get("disabled")
+        or sum(1 for entry in entries if _is_archived_entry(entry))
+    )
+    if disabled_count:
+        lines.append(f"Архив/disabled: {disabled_count} · не требует recovery действий")
 
-    attention = [
-        entry for entry in entries
-        if entry.recovery_status != "remapped"
-        and (
-            entry.tg_topic_id is None
-            or entry.recovery_status not in {"visible", "tracked"}
-        )
-    ]
+    attention = [entry for entry in entries if _is_actionable_entry(entry)]
     if attention:
         lines.append("")
         lines.append("Что требует внимания:")
-        for entry in attention[:20]:
-            topic = f"#{entry.tg_topic_id}" if entry.tg_topic_id is not None else "unmapped"
-            title = (entry.title or entry.registry_key)[:44]
-            lines.append(f"  {topic} · {status_label(entry.recovery_status)} · {title}")
-        if len(attention) > 20:
-            lines.append(f"  ... и ещё {len(attention) - 20}")
+        counts = Counter(status_label(entry.recovery_status) for entry in attention)
+        for label, count in sorted(counts.items()):
+            lines.append(f"  {label}: {count}")
+
+        topic_attention = [entry for entry in attention if entry.tg_topic_id is not None]
+        for entry in topic_attention[:10]:
+            lines.append(f"  #{entry.tg_topic_id} · {status_label(entry.recovery_status)}")
+        if len(topic_attention) > 10:
+            lines.append(f"  ... и ещё topic rows: {len(topic_attention) - 10}")
+
+        unmapped_count = sum(1 for entry in attention if entry.tg_topic_id is None)
+        if unmapped_count:
+            lines.append(f"  unmapped MAX: {unmapped_count} · детали: /recovery export")
+        lines.append("  Названия, MAX ids, invite/admin/DM детали: /recovery export")
     return "\n".join(lines)
 
 
@@ -155,6 +183,7 @@ def parse_set_fields(entry, tokens: list[str]) -> dict[str, object]:
             updates["priority"] = int(value)
         elif key in {"status", "recovery_status"}:
             allowed_statuses = {
+                "disabled",
                 "visible",
                 "remapped",
                 "joinable_by_link",

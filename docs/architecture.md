@@ -413,7 +413,7 @@ Leaf modules:
 
 **`/recovery` — миграция MAX аккаунта / нового телефона:**
 - `/recovery scan` обновляет registry из текущего MAX аккаунта
-- `/recovery report` показывает totals, DM contact aggregates и свежесть snapshot
+- `/recovery report` показывает totals, DM contact aggregates, свежесть snapshot и безопасную сводку без названий/MAX ids/DM details
 - `/recovery export` отправляет owner DM JSON с invite/admin/manual metadata и DM contact recovery list
 - `/recovery set <topic_id> key=value ...` сохраняет ручные notes/link/admin/status
 - `/recovery remap <topic_id> <new_max_chat_id>` сохраняет Telegram topic и меняет routing на новый MAX chat
