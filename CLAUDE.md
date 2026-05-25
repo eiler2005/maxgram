@@ -49,6 +49,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `tg_reply_map` — дополнительные TG message ids для reply routing поздно досланных медиа
 - `delivery_log` — статусы доставки (meta only)
 - `pending_media_downloads` — durable retry meta для MAX media
+- `pending_inbound_messages` / `pending_outbound_messages` — durable retry для MAX→TG и TG→MAX текстов; хранит plaintext только для недоставленных текстов до доставки/TTL, медиа не сохраняет
 - `known_users` — справочник имён MAX для `/dm`
 - `max_account_generations` — поколения MAX account; новый телефон = новый account
 - `chat_recovery_registry` — recovery metadata для переноса Telegram topics на новый MAX account (`last_scan_at`, invite/admin/DM metadata, manual notes)
@@ -97,13 +98,14 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - MAX egress выбирается только внутри `src/adapters/max/`: `home_ru_proxy` использует authenticated HTTP CONNECT к VPS-local reverse Channel M listener, который держится исходящим SSH remote-forward с домашнего РФ роутера; `hetzner_direct` оставляет старый direct egress с VPS. Автоматического fallback нет: при падении proxy MAX деградирует с issue `max_egress_unavailable`, но сам не переключается на Hetzner direct.
 - Reconnect реализован вручную: `while True: client = make_client(); await client.start()`
 - `MaxAdapter.is_ready()` должен учитывать реальный `client.is_connected`, а не только `_started`: после роутерного flap PyMax 2 может закрыть TCP transport, но не вернуть управление из `start()`.
+- `PymaxClientAdapter.is_connected` должен проверять `ConnectionManager.is_open()` как callable и фактический `transport.connected`; иначе stale TCP socket выглядит healthy, а TG→MAX падает `Not connected to the server` без watchdog reconnect.
 - `send_message` ждёт до 15 сек если `_started=False` (reconnect window)
 - DM history sweep должен ждать `max_adapter.is_ready()`: запуск `CHAT_HISTORY` до `MAX connected` даёт пачку `Not connected`/pending future шумов и может мешать диагностике reauth/reconnect.
 - DM history sweep должен быть бережным к MAX API: balanced config живёт в `health.dm_history_sweep` (`120s` warmup после старта/reconnect, затем `900s` steady, jitter и per-chat delay). `replay_recent_history` получает pre-dedup callback через существующий `message_map`, чтобы не нормализовать/качать повторно уже доставленные history messages; pending empty recovery не пропускать.
 
 ## Принципы (не нарушать)
 
-1. **Privacy first** — текст сообщений и медиа не логируются, не хранятся в DB
+1. **Privacy first** — текст сообщений и медиа не логируются, не хранятся в DB; исключение: durable text retry queues временно держат plaintext недоставленных текстов до доставки/TTL
 2. **Whitelist by default** — `forward_all: true` в конфиге; режим per-chat переопределяет
 3. **Idempotency** — `max_msg_id` сохраняется до отправки в TG (idempotency key)
 4. **No third parties** — всё self-hosted, никаких GREEN-API и подобных

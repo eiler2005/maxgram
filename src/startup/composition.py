@@ -248,6 +248,14 @@ async def run_bridge_worker(
                 name="pending_media_downloads",
             )
             tg.create_task(
+                bridge.run_pending_inbound_messages(),
+                name="pending_inbound_messages",
+            )
+            tg.create_task(
+                bridge.run_pending_outbound_messages(),
+                name="pending_outbound_messages",
+            )
+            tg.create_task(
                 bridge.run_dm_history_sweep(),
                 name="dm_history_sweep",
             )

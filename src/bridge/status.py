@@ -120,6 +120,28 @@ class BridgeStatusReporter:
                 )
         lines.append(media_retry_line)
 
+        inbound_retry_stats = await self._repo.count_pending_inbound()
+        pending_inbound = int(inbound_retry_stats.get("pending_count") or 0)
+        inbound_retry_line = f"  ⏳ Text retry MAX→TG: {pending_inbound}"
+        oldest_inbound = inbound_retry_stats.get("oldest_created_at")
+        if pending_inbound and oldest_inbound:
+            inbound_retry_line += (
+                f", старейшее "
+                f"{bridge_forwarding.format_duration_compact(int(time.time()) - int(oldest_inbound))}"
+            )
+        lines.append(inbound_retry_line)
+
+        outbound_retry_stats = await self._repo.count_pending_outbound()
+        pending_outbound = int(outbound_retry_stats.get("pending_count") or 0)
+        outbound_retry_line = f"  ⏳ Text retry TG→MAX: {pending_outbound}"
+        oldest_outbound = outbound_retry_stats.get("oldest_created_at")
+        if pending_outbound and oldest_outbound:
+            outbound_retry_line += (
+                f", старейшее "
+                f"{bridge_forwarding.format_duration_compact(int(time.time()) - int(oldest_outbound))}"
+            )
+        lines.append(outbound_retry_line)
+
         empty_stats = self._max.get_pending_empty_recovery_stats()
         pending_empty = int(empty_stats.get("pending_count") or 0)
         empty_line = f"  ⏳ Empty/voice recovery: {pending_empty}"

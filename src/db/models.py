@@ -83,6 +83,49 @@ CREATE TABLE IF NOT EXISTS pending_media_downloads (
     UNIQUE(max_chat_id, max_msg_id, attachment_index, kind)
 );
 
+-- Durable retry для Telegram -> MAX текстов.
+-- Хранит plaintext только для сообщений, которые не удалось отправить сразу.
+CREATE TABLE IF NOT EXISTS pending_outbound_messages (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_topic_id          INTEGER NOT NULL,
+    tg_msg_id            INTEGER NOT NULL,
+    max_chat_id          TEXT NOT NULL,
+    reply_to_max_id      TEXT,
+    text                 TEXT,
+    status               TEXT NOT NULL DEFAULT 'pending',
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at      INTEGER NOT NULL,
+    last_error           TEXT,
+    created_at           INTEGER NOT NULL,
+    updated_at           INTEGER NOT NULL,
+    last_attempt_at      INTEGER,
+    lease_until          INTEGER,
+    delivered_max_msg_id TEXT,
+    delivered_at         INTEGER,
+    UNIQUE(tg_topic_id, tg_msg_id)
+);
+
+-- Durable retry для MAX -> Telegram текстов.
+-- Хранит plaintext только для сообщений, которые не удалось отправить сразу.
+CREATE TABLE IF NOT EXISTS pending_inbound_messages (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    max_chat_id          TEXT NOT NULL,
+    max_msg_id           TEXT NOT NULL,
+    tg_topic_id          INTEGER NOT NULL,
+    text                 TEXT,
+    status               TEXT NOT NULL DEFAULT 'pending',
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at      INTEGER NOT NULL,
+    last_error           TEXT,
+    created_at           INTEGER NOT NULL,
+    updated_at           INTEGER NOT NULL,
+    last_attempt_at      INTEGER,
+    lease_until          INTEGER,
+    delivered_tg_msg_id  INTEGER,
+    delivered_at         INTEGER,
+    UNIQUE(max_chat_id, max_msg_id)
+);
+
 -- Известные пользователи MAX (name ↔ user_id, для /dm поиска)
 CREATE TABLE IF NOT EXISTS known_users (
     max_user_id  TEXT PRIMARY KEY,
@@ -163,6 +206,14 @@ CREATE INDEX IF NOT EXISTS idx_pending_media_status_due
   ON pending_media_downloads(status, next_attempt_at, lease_until);
 CREATE INDEX IF NOT EXISTS idx_pending_media_source
   ON pending_media_downloads(max_chat_id, max_msg_id);
+CREATE INDEX IF NOT EXISTS idx_pending_outbound_status_due
+  ON pending_outbound_messages(status, next_attempt_at, lease_until);
+CREATE INDEX IF NOT EXISTS idx_pending_outbound_created
+  ON pending_outbound_messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_pending_inbound_status_due
+  ON pending_inbound_messages(status, next_attempt_at, lease_until);
+CREATE INDEX IF NOT EXISTS idx_pending_inbound_created
+  ON pending_inbound_messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_recovery_status ON chat_recovery_registry(recovery_status);
 CREATE INDEX IF NOT EXISTS idx_chat_recovery_current ON chat_recovery_registry(current_max_chat_id);
 CREATE INDEX IF NOT EXISTS idx_chat_recovery_events_topic ON chat_recovery_events(tg_topic_id, created_at);

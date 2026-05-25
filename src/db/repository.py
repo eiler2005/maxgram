@@ -13,8 +13,10 @@ from .migrations import apply_migrations
 from .repos.bindings import BindingsRepo
 from .repos.delivery import DeliveryRepo
 from .repos.generations import GenerationsRepo
+from .repos.pending_inbound import PendingInboundRepo
 from .repos.messages import MessagesRepo
 from .repos.pending_media import PendingMediaRepo
+from .repos.pending_outbound import PendingOutboundRepo
 from .repos.recovery import RecoveryRepo
 from .repos.users import UsersRepo
 from .types import (
@@ -23,7 +25,9 @@ from .types import (
     DmContactRecoveryEntry,
     KnownUser,
     MessageRecord,
+    PendingInboundMessage,
     PendingMediaDownload,
+    PendingOutboundMessage,
     TgReplyMapping,
 )
 
@@ -38,6 +42,8 @@ class Repository:
         self._recovery = RecoveryRepo(get_db, self._bindings.remap_binding_by_topic)
         self._generations = GenerationsRepo(get_db, self._recovery._log_recovery_event)
         self._pending_media = PendingMediaRepo(get_db)
+        self._pending_inbound = PendingInboundRepo(get_db)
+        self._pending_outbound = PendingOutboundRepo(get_db)
         self._delivery = DeliveryRepo(get_db)
         self._users = UsersRepo(get_db)
 
@@ -263,6 +269,160 @@ class Repository:
 
     async def count_pending_media(self) -> dict[str, Optional[int]]:
         return await self._pending_media.count_pending_media()
+
+    # ── PendingInboundMessages ────────────────────────────────────────────
+
+    async def enqueue_pending_inbound(self, job: PendingInboundMessage) -> int:
+        return await self._pending_inbound.enqueue_pending_inbound(job)
+
+    async def get_due_pending_inbound(
+        self,
+        *,
+        now: Optional[int] = None,
+        limit: int = 5,
+    ) -> list[PendingInboundMessage]:
+        return await self._pending_inbound.get_due_pending_inbound(now=now, limit=limit)
+
+    async def lease_pending_inbound(
+        self,
+        job_id: int,
+        *,
+        lease_until: int,
+        now: Optional[int] = None,
+    ) -> bool:
+        return await self._pending_inbound.lease_pending_inbound(
+            job_id,
+            lease_until=lease_until,
+            now=now,
+        )
+
+    async def mark_pending_inbound_retry(
+        self,
+        job_id: int,
+        *,
+        error: str,
+        next_attempt_at: int,
+        now: Optional[int] = None,
+    ):
+        await self._pending_inbound.mark_pending_inbound_retry(
+            job_id,
+            error=error,
+            next_attempt_at=next_attempt_at,
+            now=now,
+        )
+
+    async def mark_pending_inbound_delivered(
+        self,
+        job_id: int,
+        *,
+        tg_msg_id: int,
+        now: Optional[int] = None,
+    ):
+        await self._pending_inbound.mark_pending_inbound_delivered(
+            job_id,
+            tg_msg_id=tg_msg_id,
+            now=now,
+        )
+
+    async def mark_pending_inbound_failed(
+        self,
+        job_id: int,
+        *,
+        error: str,
+        now: Optional[int] = None,
+    ):
+        await self._pending_inbound.mark_pending_inbound_failed(job_id, error=error, now=now)
+
+    async def expire_pending_inbound(
+        self,
+        *,
+        older_than_seconds: int,
+        now: Optional[int] = None,
+    ) -> int:
+        return await self._pending_inbound.expire_pending_inbound(
+            older_than_seconds=older_than_seconds,
+            now=now,
+        )
+
+    async def count_pending_inbound(self) -> dict[str, Optional[int]]:
+        return await self._pending_inbound.count_pending_inbound()
+
+    # ── PendingOutboundMessages ───────────────────────────────────────────
+
+    async def enqueue_pending_outbound(self, job: PendingOutboundMessage) -> int:
+        return await self._pending_outbound.enqueue_pending_outbound(job)
+
+    async def get_due_pending_outbound(
+        self,
+        *,
+        now: Optional[int] = None,
+        limit: int = 5,
+    ) -> list[PendingOutboundMessage]:
+        return await self._pending_outbound.get_due_pending_outbound(now=now, limit=limit)
+
+    async def lease_pending_outbound(
+        self,
+        job_id: int,
+        *,
+        lease_until: int,
+        now: Optional[int] = None,
+    ) -> bool:
+        return await self._pending_outbound.lease_pending_outbound(
+            job_id,
+            lease_until=lease_until,
+            now=now,
+        )
+
+    async def mark_pending_outbound_retry(
+        self,
+        job_id: int,
+        *,
+        error: str,
+        next_attempt_at: int,
+        now: Optional[int] = None,
+    ):
+        await self._pending_outbound.mark_pending_outbound_retry(
+            job_id,
+            error=error,
+            next_attempt_at=next_attempt_at,
+            now=now,
+        )
+
+    async def mark_pending_outbound_delivered(
+        self,
+        job_id: int,
+        *,
+        max_msg_id: str,
+        now: Optional[int] = None,
+    ):
+        await self._pending_outbound.mark_pending_outbound_delivered(
+            job_id,
+            max_msg_id=max_msg_id,
+            now=now,
+        )
+
+    async def mark_pending_outbound_failed(
+        self,
+        job_id: int,
+        *,
+        error: str,
+        now: Optional[int] = None,
+    ):
+        await self._pending_outbound.mark_pending_outbound_failed(job_id, error=error, now=now)
+
+    async def expire_pending_outbound(
+        self,
+        *,
+        older_than_seconds: int,
+        now: Optional[int] = None,
+    ) -> int:
+        return await self._pending_outbound.expire_pending_outbound(
+            older_than_seconds=older_than_seconds,
+            now=now,
+        )
+
+    async def count_pending_outbound(self) -> dict[str, Optional[int]]:
+        return await self._pending_outbound.count_pending_outbound()
 
     # ── DeliveryLog / Stats / Retention ────────────────────────────────────
 

@@ -47,9 +47,31 @@ class PymaxClientAdapter:
     def is_connected(self) -> bool:
         connection = getattr(self._client, "_connection", None)
         if connection is None:
+            connection = getattr(self._client, "_conn", None)
+        if connection is None:
             app = getattr(self._client, "_app", None)
             connection = getattr(app, "connection", None)
-        return bool(getattr(connection, "is_open", False))
+            if connection is None:
+                connection = getattr(app, "conn", None)
+        if connection is None:
+            return False
+        if bool(getattr(connection, "_conn_lost", False)):
+            return False
+
+        is_open = getattr(connection, "is_open", False)
+        if callable(is_open):
+            is_open = is_open()
+        if not bool(is_open):
+            return False
+
+        transport = getattr(connection, "transport", None)
+        if transport is not None:
+            transport_connected = getattr(transport, "connected", None)
+            if callable(transport_connected):
+                transport_connected = transport_connected()
+            if transport_connected is not None and not bool(transport_connected):
+                return False
+        return True
 
     def prepare_startup(self, error_handler: RuntimeErrorHandler) -> None:
         original = getattr(self._client, "start", None)

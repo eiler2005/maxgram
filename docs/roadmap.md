@@ -48,6 +48,8 @@
 - [x] **Расширенный startup** — runtime, hostname, datacenter location, masked IP, кол-во чатов
 - [x] **Startup self-check в production** — после `MAX connected` запускается `pytest`, а итог добавляется в startup-уведомление бота
 - [x] **Media forwarding TG→MAX** — фото, видео, аудио, голосовые, документы через pymax attachment API
+- [x] **Durable text retry в обе стороны** — text-only MAX→TG/TG→MAX очереди с lease/backoff/TTL; plaintext очищается после доставки/48ч
+- [x] **Раздельная политика text/media** — текст можно временно поставить в durable queue, а медиа retry хранит только stable MAX references без файлов/URL/token в SQLite
 - [x] **sender_name из live API** — `get_cached_user` + live `get_users()` fallback; имена в группах работают
 - [x] **Own-message echo dedup** — реальный `max_msg_id` сохраняется перед отправкой; эхо подавляется
 - [x] **`/status` в личном чате** — команды принимаются от владельца и в форум-группе, и в DM с ботом

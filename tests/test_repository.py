@@ -3,7 +3,15 @@ import json
 import aiosqlite
 import pytest
 
-from src.db.repository import ChatBinding, MessageRecord, PendingMediaDownload, Repository, KnownUser
+from src.db.repository import (
+    ChatBinding,
+    KnownUser,
+    MessageRecord,
+    PendingInboundMessage,
+    PendingMediaDownload,
+    PendingOutboundMessage,
+    Repository,
+)
 from src.db.migrations import apply_migrations
 
 
@@ -20,7 +28,9 @@ async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
         ) as cur:
             rows = await cur.fetchall()
         assert [(row["version"], row["name"]) for row in rows] == [
-            (1, "baseline_schema")
+            (1, "baseline_schema"),
+            (2, "pending_outbound_messages"),
+            (3, "pending_inbound_messages"),
         ]
 
         async with db.execute(
@@ -28,6 +38,18 @@ async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
         ) as cur:
             row = await cur.fetchone()
         assert row["name"] == "message_map"
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'pending_outbound_messages'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["name"] == "pending_outbound_messages"
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'pending_inbound_messages'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["name"] == "pending_inbound_messages"
     finally:
         await db.close()
 
@@ -107,6 +129,79 @@ async def test_save_message_upserts_tg_fields(tmp_path):
         assert row["tg_msg_id"] == 777
         assert row["tg_topic_id"] == 12
         assert row["direction"] == "inbound"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_outbound_lifecycle_clears_text_after_delivery(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    try:
+        job_id = await repo.enqueue_pending_outbound(
+            PendingOutboundMessage(
+                tg_topic_id=99,
+                tg_msg_id=777,
+                max_chat_id="123",
+                reply_to_max_id="mx-reply",
+                text="temporary plaintext",
+                attempts=3,
+                next_attempt_at=1,
+                last_error="Not connected to the server",
+            )
+        )
+        due = await repo.get_due_pending_outbound(now=2)
+        assert [job.id for job in due] == [job_id]
+        assert due[0].text == "temporary plaintext"
+
+        assert await repo.lease_pending_outbound(job_id, lease_until=100, now=2) is True
+        await repo.mark_pending_outbound_delivered(job_id, max_msg_id="mx-out", now=3)
+
+        async with repo._db.execute(
+            "SELECT status, text, delivered_max_msg_id FROM pending_outbound_messages "
+            "WHERE id = ?",
+            (job_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["status"] == "delivered"
+        assert row["text"] is None
+        assert row["delivered_max_msg_id"] == "mx-out"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_inbound_lifecycle_clears_text_after_delivery(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    try:
+        job_id = await repo.enqueue_pending_inbound(
+            PendingInboundMessage(
+                max_chat_id="123",
+                max_msg_id="mx-in",
+                tg_topic_id=99,
+                text="temporary plaintext",
+                attempts=1,
+                next_attempt_at=1,
+                last_error="TelegramNetworkError: connection reset",
+            )
+        )
+        due = await repo.get_due_pending_inbound(now=2)
+        assert [job.id for job in due] == [job_id]
+        assert due[0].text == "temporary plaintext"
+
+        assert await repo.lease_pending_inbound(job_id, lease_until=100, now=2) is True
+        await repo.mark_pending_inbound_delivered(job_id, tg_msg_id=777, now=3)
+
+        async with repo._db.execute(
+            "SELECT status, text, delivered_tg_msg_id FROM pending_inbound_messages "
+            "WHERE id = ?",
+            (job_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["status"] == "delivered"
+        assert row["text"] is None
+        assert row["delivered_tg_msg_id"] == 777
     finally:
         await repo.close()
 

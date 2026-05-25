@@ -11,6 +11,7 @@ from typing import Optional
 from . import forwarding as bridge_forwarding
 from . import mapping as bridge_mapping
 from .contracts import MaxAttachment, MaxAttachmentFailure, MaxBridgePort, TelegramBridgePort
+from .retry_policy import exponential_backoff_seconds
 from ..config.loader import AppConfig
 from ..db.repository import PendingMediaDownload, Repository
 from ..logging_utils import build_max_flow_id, log_event
@@ -37,8 +38,12 @@ def is_retryable_media_failure(failure: MaxAttachmentFailure) -> bool:
 
 def pending_media_retry_delay(attempts_after_failure: int) -> int:
     # Бесконечный retry с cap: 1m, 2m, 4m ... до 6h.
-    exponent = max(0, min(attempts_after_failure - 1, 8))
-    return min(6 * 3600, 60 * (2 ** exponent))
+    return exponential_backoff_seconds(
+        attempts_after_failure,
+        base_seconds=60,
+        cap_seconds=6 * 3600,
+        max_exponent=8,
+    )
 
 
 async def enqueue_retryable_media_failures(

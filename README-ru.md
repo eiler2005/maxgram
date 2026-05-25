@@ -50,6 +50,8 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **MAX-only egress profiles** — MAX API/CDN может идти через authenticated HTTP CONNECT внутри reverse Channel M (`home_ru_proxy`: исходящий SSH remote-forward с домашнего РФ роутера на VPS), при этом Telegram остаётся прямым; Hetzner direct сохранён только как ручной аварийный профиль
 - **Retry Telegram API** — 3 попытки с экспоненциальным backoff, поддержка `Retry-After`
 - **Retry TG→MAX на временных ошибках транспорта** — bridge повторяет отправку в MAX при `Socket is not connected`, `Must be ONLINE session`, timeout и похожих временных сбоях
+- **Durable text outbox в обе стороны** — если TG→MAX текст точно не был отправлен из-за потери MAX transport или MAX→TG текст не прошёл через временный сбой Telegram, bridge временно хранит plaintext в SQLite и досылает после восстановления; текст очищается после доставки/TTL
+- **Отдельная политика для медиа** — тяжёлые файлы не складываются в SQLite; MAX video/voice retry хранит только стабильные media references, а TG→MAX outbound-медиа нужно переотправить вручную после сбоя
 - **Аудит неотправленных TG→MAX сообщений** — все неуспешные outbound-доставки пишутся в `delivery_log` с причиной ошибки и числом попыток
 - **Startup self-check** — после старта в production бот пишет результат встроенного `pytest`-прогона
 - **Устойчивое скачивание MAX-видео** — bridge предпочитает реальные `MP4_*` потоки вместо `EXTERNAL` HTML-плеера и подбирает `User-Agent` по `srcAg`

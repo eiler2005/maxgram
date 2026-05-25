@@ -102,6 +102,8 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_recovery_snapshot_reports_status_change_deltas` | `upsert_recovery_snapshot()` возвращает deltas `inserted/status_changed/needs_invite` и пишет scan reason без чувствительных полей. |
 | `test_find_phantom_topic_bindings_requires_duplicate_real_delivery` | Cleanup phantom topics срабатывает только при подтверждённом duplicate real delivery, не на одном совпадении metadata. |
 | `test_pending_media_queue_lifecycle_is_idempotent` | Очередь durable media retry идемпотентно создаёт, reschedule-ит и завершает jobs. |
+| `test_pending_outbound_lifecycle_clears_text_after_delivery` | Durable TG→MAX text outbox хранит plaintext только до успешной доставки и очищает `text`. |
+| `test_pending_inbound_lifecycle_clears_text_after_delivery` | Durable MAX→TG text outbox хранит plaintext только до успешной доставки и очищает `text`. |
 
 ---
 
@@ -256,7 +258,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_bridge_core.py — роутинг MAX→TG и TG→MAX (57 тестов)
+## test_bridge_core.py — роутинг MAX→TG и TG→MAX
 
 Используют stub-классы `DummyMax`, `DummyTelegram`, `DummyRepo`, `DummyConfig`. Нет I/O, нет сети.
 
@@ -267,12 +269,16 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_forward_to_telegram_sends_media_then_rendered_system_text` | Сообщение с видео-вложением и `rendered_texts`: сначала отправляется видео (`send_video` с caption `[Имя]`), затем текст системного события (`send_text`). Возвращает `message_id` медиа. |
 | `test_forward_to_telegram_sends_voice_note_for_voice_source` | Вложение с `source_type=VOICE` отправляется как нативный `send_voice` (voice bubble), а не как обычное аудио. |
 | `test_forward_to_telegram_uses_rendered_text_without_media` | Сообщение типа `CONTROL` без вложений: отправляется только текст из `rendered_texts`. Файловые методы не вызываются. |
+| `test_on_max_message_queues_text_when_tg_send_fails` | Retryable MAX→TG text delivery failure попадает в durable inbound outbox без увеличения failed-счётчика. |
+| `test_pending_inbound_worker_delivers_and_clears_text` | Inbound text worker досылает текст в Telegram, сохраняет mapping/delivery и очищает plaintext. |
 | `test_on_tg_reply_prefixes_sender_name_for_max` | Reply из Telegram: текст отправляется в MAX с префиксом `[Мария Иванова]\nПроверка связи`; `reply_to_msg_id` разрешается через `get_max_msg_id_by_tg`. |
 | `test_on_tg_reply_rejects_too_large_media` | TG→MAX: если файл превышает лимит `max_file_size_mb`, bridge не отправляет его в MAX и отдаёт явное сообщение в топик. |
 | `test_on_tg_reply_logs_forward_completion` | После успешной доставки TG→MAX в логах присутствует событие `bridge.outbound.forward_finished` с `outcome=delivered`. |
-| `test_on_tg_reply_logs_failed_delivery_with_max_error` | Если TG→MAX отправка окончательно не удалась, bridge пишет `failed` в `delivery_log` с последней ошибкой MAX и числом попыток. |
-| `test_on_tg_reply_reports_safe_pymax_sequence_overflow_error` | TG failure notice показывает безопасную причину `pymax_tcp_sequence_overflow`, а `delivery_log` не содержит текст сообщения. |
+| `test_on_tg_reply_queues_definite_unsent_text_after_max_error` | Definite unsent TG→MAX text failure попадает в durable outbox и получает queued notice в Telegram. |
+| `test_on_tg_reply_does_not_queue_ambiguous_ack_timeout` | Ambiguous ack timeout не ставится на автоповтор, чтобы не продублировать сообщение в MAX. |
+| `test_pending_outbound_worker_delivers_and_clears_text` | Outbox worker досылает текст после восстановления MAX, сохраняет mapping/delivery и очищает plaintext. |
 | `test_on_tg_reply_logs_too_large_outbound_failure` | Явно отклонённый oversized TG→MAX файл тоже фиксируется в `delivery_log`, а не только показывается в Telegram topic. |
+| `test_on_tg_reply_does_not_persist_failed_media_for_retry` | TG→MAX media failure не сохраняет файл/текст в outbox и просит переотправить вручную. |
 | `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает queued-placeholder и создаёт `pending_media_downloads` job. |
 | `test_existing_pending_audio_failure_does_not_duplicate_placeholder` | Повторный replay того же voice по `media_msg_id/reference_id` переиспользует активный pending job и не отправляет второй queued-placeholder. |
 | `test_pending_media_worker_delivers_video_and_maps_reply` | Retry worker скачивает отложенное видео, отправляет `send_video`, закрывает job и сохраняет reply mapping на исходный MAX message. |

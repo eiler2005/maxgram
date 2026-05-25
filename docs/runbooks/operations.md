@@ -360,6 +360,8 @@ Auto notifications/status:
 | Битый SQLite header у `data/session.db` | перед стартом MAX-клиента runtime пробует пересобрать clean `session.db` из текущего token; при успехе сохраняет битый файл в `data/session_backups/` и продолжает старт | logs, `data/session_backups/`, затем recovered health event | Обычно нет |
 | `Invalid token` / нечитаемая MAX session без валидного snapshot / нужен `reauth` | runtime не падает, проблема классифицируется как issue MAX-сессии, оператор получает подсказку про SMS reauth | owner DM, `/status`, `health_state.json`, `health_events.jsonl` | Да, нужен `/reauth` и SMS-код |
 | Telegram Bot API временно недоступен | `TelegramAdapter` делает retry, неотправленные системные alert-сообщения кладутся в `alert_outbox.jsonl`, после восстановления Telegram идёт automatic flush | owner DM после восстановления, `alert_outbox.jsonl`, `health_state.json` | Обычно нет |
+| MAX→TG текст не доставился из-за временного сбоя Telegram | текстовое сообщение кладётся в `pending_inbound_messages`, worker досылает его с backoff и очищает plaintext после доставки/TTL | `/status`, `pending_inbound_messages`, `delivery_log` | Нет, если Telegram восстановился до TTL |
+| TG→MAX текст точно не ушёл из-за MAX transport | текстовое сообщение кладётся в `pending_outbound_messages`, worker ждёт healthy MAX и досылает его; plaintext очищается после доставки/TTL | Telegram topic notice, `/status`, `pending_outbound_messages`, `delivery_log` | Нет, если MAX восстановился до TTL |
 | Падает сам bridge worker | supervisor перезапускает worker с backoff, контейнер остаётся `Up`, restart counter и причина попадают в health-state | owner DM, `health_state.json`, `health_events.jsonl` | Обычно нет, если crash разовый |
 | Падает или зависает сам supervisor | Docker healthcheck перестаёт видеть heartbeat, контейнер получает `unhealthy`, дальше помогает `restart: always` и ручная проверка compose/logs | `docker ps`, `docker inspect`, `health_heartbeat.json` | Да, это уже runtime-level авария |
 | Telegram-уведомление не удалось отправить сразу | сообщение не теряется, а сохраняется в outbox и досылается позже | `alert_outbox.jsonl` | Нет, если Telegram восстановился |
@@ -446,15 +448,33 @@ sqlite3 -header -column data/bridge.db \
    FROM delivery_log \
    WHERE direction='outbound' AND status='failed' \
    ORDER BY created_at DESC LIMIT 20"
+
+# pending TG -> MAX тексты, которые будут досланы после восстановления MAX
+sqlite3 -header -column data/bridge.db \
+  "SELECT id, tg_topic_id, tg_msg_id, max_chat_id, status, attempts, \
+          datetime(next_attempt_at, 'unixepoch', 'localtime') AS next_local, last_error \
+   FROM pending_outbound_messages \
+   WHERE status IN ('pending', 'retry', 'leased') \
+   ORDER BY next_attempt_at ASC LIMIT 20"
+
+# pending MAX -> TG тексты, которые будут досланы после восстановления Telegram
+sqlite3 -header -column data/bridge.db \
+  "SELECT id, max_chat_id, max_msg_id, tg_topic_id, status, attempts, \
+          datetime(next_attempt_at, 'unixepoch', 'localtime') AS next_local, last_error \
+   FROM pending_inbound_messages \
+   WHERE status IN ('pending', 'retry', 'leased') \
+   ORDER BY next_attempt_at ASC LIMIT 20"
 ```
 
 Полезные `event`-группы:
 
 - `max.inbound.*` — что пришло из MAX и как нормализовали
 - `bridge.inbound.*` — routing/dedup/topic resolution для MAX -> TG
+- `bridge.inbound_retry.*` — durable retry MAX -> TG текстов
 - `tg.outbound.*` — отправка в Telegram, retry и fail
 - `tg.inbound.*` — что пришло из Telegram и скачивание медиа
 - `bridge.outbound.*` — routing/reply resolution и доставка TG -> MAX
+- `bridge.outbound_retry.*` — durable retry TG -> MAX текстов
 
 ## Reason codes
 
@@ -659,7 +679,8 @@ asyncio.run(main())
 
 Если после retry сообщение всё равно не ушло:
 
-- в Telegram появится `❌ Не удалось отправить сообщение в MAX`
+- для definite unsent text transport failure в Telegram появится queued notice, а plaintext временно попадёт в `pending_outbound_messages.text` до доставки/TTL 48ч
+- для ambiguous ack timeout или TG→MAX media failure в Telegram появится явная ошибка; медиа не сохраняется для автоповтора
 - в `delivery_log` появится запись `direction='outbound'`, `status='failed'`
 - в `error` будет последняя причина, а в `attempts` — число попыток
 

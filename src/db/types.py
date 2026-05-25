@@ -120,3 +120,42 @@ class PendingMediaDownload:
     delivered_tg_msg_id: Optional[int] = None
     delivered_at: Optional[int] = None
     id: Optional[int] = None
+
+
+@dataclass
+class PendingOutboundMessage:
+    tg_topic_id: int
+    tg_msg_id: int
+    max_chat_id: str
+    text: Optional[str]
+    reply_to_max_id: Optional[str] = None
+    status: str = "pending"
+    attempts: int = 0
+    next_attempt_at: int = 0
+    last_error: Optional[str] = None
+    created_at: int = 0
+    updated_at: int = 0
+    last_attempt_at: Optional[int] = None
+    lease_until: Optional[int] = None
+    delivered_max_msg_id: Optional[str] = None
+    delivered_at: Optional[int] = None
+    id: Optional[int] = None
+
+
+@dataclass
+class PendingInboundMessage:
+    max_chat_id: str
+    max_msg_id: str
+    tg_topic_id: int
+    text: Optional[str]
+    status: str = "pending"
+    attempts: int = 0
+    next_attempt_at: int = 0
+    last_error: Optional[str] = None
+    created_at: int = 0
+    updated_at: int = 0
+    last_attempt_at: Optional[int] = None
+    lease_until: Optional[int] = None
+    delivered_tg_msg_id: Optional[int] = None
+    delivered_at: Optional[int] = None
+    id: Optional[int] = None

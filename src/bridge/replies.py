@@ -9,6 +9,7 @@ from typing import Optional
 from . import delivery as bridge_delivery
 from . import forwarding as bridge_forwarding
 from . import mapping as bridge_mapping
+from . import outbound_retry as bridge_outbound_retry
 from .contracts import MaxBridgePort, TelegramBridgePort
 from ..config.loader import AppConfig
 from ..db.repository import Repository
@@ -207,6 +208,7 @@ async def handle_tg_reply(
     )
 
     outbound_text = compose_tg_outbound_text(text, sender_name)
+    had_media = bool(media_path)
     sent_id = await max_adapter.send_message(
         chat_id=binding.max_chat_id,
         text=outbound_text,
@@ -234,21 +236,46 @@ async def handle_tg_reply(
             error=delivery_error,
             attempts=attempts or 1,
         )
+        queued = False
+        if (
+            not had_media
+            and tg_msg_id is not None
+            and outbound_text.strip()
+            and bridge_outbound_retry.is_definite_unsent_outbound_error(max_error)
+        ):
+            await bridge_outbound_retry.enqueue_text_outbound_retry(
+                repo=repo,
+                topic_id=topic_id,
+                tg_msg_id=tg_msg_id,
+                max_chat_id=binding.max_chat_id,
+                reply_to_max_id=reply_to_max_id,
+                text=outbound_text,
+                error=delivery_error,
+                attempts=attempts or 1,
+            )
+            queued = True
+
+        if had_media:
+            notice = bridge_outbound_retry.media_not_queued_notice()
+        elif queued:
+            notice = bridge_outbound_retry.queued_notice()
+        else:
+            notice = compose_tg_outbound_failure_notice(max_error)
         await tg.send_text(
             topic_id,
-            compose_tg_outbound_failure_notice(max_error),
+            notice,
             flow_id=flow_id,
         )
         stats["failed_outbound"] += 1
         log_event(
             logger,
-            logging.ERROR,
+            logging.INFO if queued else logging.ERROR,
             "bridge.outbound.forward_finished",
             flow_id=flow_id,
             direction="outbound",
             stage="forward",
-            outcome="failed",
-            reason="max_send_failed",
+            outcome="queued" if queued else "failed",
+            reason="queued_for_retry" if queued else "max_send_failed",
             tg_topic_id=topic_id,
             tg_msg_id=tg_msg_id,
             max_chat_id=binding.max_chat_id,

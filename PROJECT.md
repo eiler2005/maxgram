@@ -90,7 +90,7 @@ MAX→Telegram Bridge решает конкретную задачу: польз
 На 2 апреля 2026 репозиторий `PyMax` на GitHub помечен как archived/read-only, поэтому проект использует pinned dependency в `requirements.txt` и не рассчитывает на быстрые upstream-фиксы.
 
 **Bridge Core** (`src/bridge/contracts.py`, `src/bridge/core.py`, `src/bridge/*`)
-Вся бизнес-логика без зависимости от транспорта. `BridgeCore` зависит от transport-neutral contracts, а не от concrete adapters. Сам `core.py` — runtime coordinator: wiring callbacks, stats, service references и background entrypoints. Leaf modules (`forwarding.py`, `replies.py`, `topics.py`, `status.py`, `media_retry.py`, `commands/`, `recovery/`, `background.py`) держат routing, topic, status, command, recovery and background behavior с явными зависимостями.
+Вся бизнес-логика без зависимости от транспорта. `BridgeCore` зависит от transport-neutral contracts, а не от concrete adapters. Сам `core.py` — runtime coordinator: wiring callbacks, stats, service references и background entrypoints. Leaf modules (`forwarding.py`, `replies.py`, `topics.py`, `status.py`, `media_retry.py`, `inbound_retry.py`, `outbound_retry.py`, `retry_policy.py`, `commands/`, `recovery/`, `background.py`) держат routing, topic, status, command, durable retry, recovery and background behavior с явными зависимостями.
 
 **Telegram Adapter** (`src/adapters/tg/`, compatibility `src/adapters/tg_adapter.py`)
 Обёртка над `aiogram`. `tg/adapter.py` управляет Forum Supergroup Topics, send/receive и command dispatch. `tg/notifier.py` отвечает за owner DM, ops topic fanout and alert outbox flush. Старый import path `src.adapters.tg_adapter` сохранён.
@@ -131,8 +131,10 @@ MAX WebSocket event
                     ├─ [voice]    → tg.send_voice(topic_id, path, caption)
                     ├─ [document] → tg.send_document(topic_id, path, caption)
                     ├─ [text]     → tg.send_text(topic_id, "[Name] text")
-                    └─ [unknown]  → tg.send_text(topic_id, placeholder)
-                    └─ unlink(tmp_file)
+                     └─ [unknown]  → tg.send_text(topic_id, placeholder)
+                     └─ unlink(tmp_file)
+              └─ [text-only TG failure] → pending_inbound_messages
+                    └─ worker досылает текст в TG, затем очищает plaintext
 ```
 
 ### Telegram → MAX (исходящее)
@@ -157,6 +159,8 @@ Telegram Update (message в форум-группе)
               └─► MaxAdapter.send_message(chat_id, text, reply_to=max_id)
                     ├─ [not _started] → wait 3×5s for reconnect
                     └─ client.send_message(chat_id=int, text=str, reply_to=int)
+              └─ [definite unsent MAX transport failure] → pending_outbound_messages
+                    └─ worker ждёт healthy MAX, досылает текст, затем очищает plaintext
 ```
 
 ### Name Resolution (DM топики)
@@ -291,6 +295,12 @@ for _ in range(3):
     await asyncio.sleep(5)
 ```
 
+### Durable retry queues
+
+- Text-only retry queues (`pending_inbound_messages`, `pending_outbound_messages`) временно хранят plaintext только для недоставленных сообщений и очищают его после успешной доставки или TTL 48ч.
+- Media retry (`pending_media_downloads`) хранит только metadata/stable MAX media references; тяжёлые файлы, signed URLs, token и raw payload не пишутся в SQLite.
+- `retry_policy.py` задаёт общие lease/backoff/TTL правила, а inbound/outbound/media workers применяют разные политики хранения для текста и медиа.
+
 ### Тесты
 
 В проекте есть regression-набор на `pytest` (**229 тестов**):
@@ -382,7 +392,21 @@ created_at      INTEGER
 last_attempt_at INTEGER
 ```
 
-**Принцип:** только metadata. Текст сообщений и медиа в DB не хранятся.
+### `pending_inbound_messages` / `pending_outbound_messages` — durable text retry
+
+```sql
+-- MAX→TG
+max_chat_id, max_msg_id, tg_topic_id,
+text, status, attempts, next_attempt_at, last_error,
+lease_until, delivered_tg_msg_id
+
+-- TG→MAX
+tg_topic_id, tg_msg_id, max_chat_id, reply_to_max_id,
+text, status, attempts, next_attempt_at, last_error,
+lease_until, delivered_max_msg_id
+```
+
+**Принцип:** доставленный контент не хранится. Исключение — plaintext только в durable text retry queues для недоставленных text-only сообщений до доставки или TTL. Медиа в эти очереди не сохраняются.
 
 ### `max_account_generations` — поколения MAX аккаунта
 
@@ -507,6 +531,7 @@ MAX_PHONE=+79...
 | Тип данных | Где хранится | TTL |
 |------------|-------------|-----|
 | Текст сообщений | ❌ Нигде | — |
+| Недоставленный MAX→TG/TG→MAX текст | SQLite text retry queue | До доставки или 48 часов |
 | Медиафайлы | `data/tmp/` | 1 час |
 | `message_map` | SQLite | 30 дней |
 | `delivery_log` | SQLite | 7 дней |

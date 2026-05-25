@@ -568,6 +568,30 @@ async def test_pymax2_send_uses_attachments_list(tmp_path):
     assert len(client.kwargs["attachments"]) == 1
 
 
+def test_pymax2_is_connected_checks_transport_connected():
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+
+    class FakeTransport:
+        connected = True
+
+    class FakeConnection:
+        _conn_lost = False
+        transport = FakeTransport()
+
+        def is_open(self):
+            return True
+
+    client = SimpleNamespace(logger=None, _connection=FakeConnection())
+    adapter = PymaxClientAdapter(client)
+
+    assert adapter.is_connected is True
+    client._connection.transport.connected = False
+    assert adapter.is_connected is False
+    client._connection.transport.connected = True
+    client._connection._conn_lost = True
+    assert adapter.is_connected is False
+
+
 def test_pymax2_snapshots_use_profile_users_and_chat_types():
     from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
 

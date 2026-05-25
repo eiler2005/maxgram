@@ -57,6 +57,9 @@ src/
 │   ├── forwarding.py         MAX -> TG text/media delivery
 │   ├── replies.py            TG replies -> MAX outbound messages
 │   ├── media_retry.py        durable MAX media retry enqueue/process/worker
+│   ├── inbound_retry.py      durable MAX→TG text retry queue/worker
+│   ├── outbound_retry.py     durable TG→MAX text retry queue/worker
+│   ├── retry_policy.py       shared lease/backoff/TTL policy
 │   ├── delivery.py           delivery_log status helpers
 │   ├── background.py         status, MAX watchdog/self-heal, sweeps, cleanup
 │   ├── commands/
@@ -77,6 +80,8 @@ src/
 │       ├── messages.py       message_map, tg_reply_map
 │       ├── delivery.py       delivery_log and activity counters
 │       ├── pending_media.py  durable media retry queue
+│       ├── pending_inbound.py durable MAX→TG text retry queue
+│       ├── pending_outbound.py durable TG→MAX text retry queue
 │       ├── users.py          known_users for /dm
 │       ├── generations.py    max_account_generations
 │       └── recovery.py       chat/dm recovery registry + audit events
@@ -421,13 +426,15 @@ Routine recovery deltas from auto scans are quiet: новые registry rows, unm
 - `messages.py` — `message_map`, `tg_reply_map`
 - `delivery.py` — delivery log and activity counters
 - `pending_media.py` — durable media retry queue
+- `pending_inbound.py` — durable MAX→TG text retry queue
+- `pending_outbound.py` — durable TG→MAX text retry queue
 - `users.py` — `known_users`
 - `generations.py` — MAX account generations
 - `recovery.py` — recovery registry/events and DM contact registry
 
 Все subrepo используют одно `aiosqlite.Connection`, чтобы commit/transaction behavior оставался прежним. Принципы:
 - Только простые запросы, никаких JOIN-монстров
-- Никакого контента сообщений
+- Никакого контента доставленных сообщений; исключение — plaintext в `pending_inbound_messages.text` / `pending_outbound_messages.text` для недоставленных текстов до доставки/TTL
 - Все методы async (aiosqlite)
 
 ## Архитектура логирования
@@ -531,6 +538,8 @@ SQLite остаётся источником состояния и delivery meta
 - `message_map` — дедупликация и reply routing
 - `tg_reply_map` — дополнительные TG message ids для reply routing поздно досланных медиа
 - `delivery_log` — high-level статус доставки
+- `pending_inbound_messages` — durable retry для MAX→TG текстов
+- `pending_outbound_messages` — durable retry для TG→MAX текстов; медиа не сохраняются
 - `chat_recovery_registry` — meta-only registry для восстановления topic routing после нового MAX account
 - `chat_recovery_events` — append-only audit только по recovery lifecycle, без message text/raw payload
 
@@ -569,6 +578,18 @@ delivery_log (
     attempts        INTEGER,
     created_at      INTEGER,
     last_attempt_at INTEGER
+)
+
+pending_outbound_messages (
+    tg_topic_id, tg_msg_id, max_chat_id, reply_to_max_id,
+    text, status, attempts, next_attempt_at, last_error,
+    lease_until, delivered_max_msg_id
+)
+
+pending_inbound_messages (
+    max_chat_id, max_msg_id, tg_topic_id,
+    text, status, attempts, next_attempt_at, last_error,
+    lease_until, delivered_tg_msg_id
 )
 
 -- Справочник пользователей MAX (для /dm поиска по имени)
@@ -661,6 +682,8 @@ config.local.yaml           ← НЕ в git (локальные chat bindings / 
 | Данные | Хранится | TTL |
 |--------|----------|-----|
 | Текст сообщений | Нет | — |
+| Недоставленный TG→MAX текст | Да, plaintext только в text outbox | до доставки или TTL 48ч |
+| Недоставленный MAX→TG текст | Да, plaintext только в text outbox | до доставки или TTL 48ч |
 | Медиафайлы (tmp) | Временно | 1 час |
 | message_map | Да | 30 дней |
 | delivery_log | Да | 7 дней |

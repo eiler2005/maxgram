@@ -13,7 +13,9 @@ from typing import Optional
 from . import background as bridge_background
 from . import delivery as bridge_delivery
 from . import forwarding as bridge_forwarding
+from . import inbound_retry as bridge_inbound_retry
 from . import media_retry as bridge_media_retry
+from . import outbound_retry as bridge_outbound_retry
 from . import replies as bridge_replies
 from . import status as bridge_status
 from . import topics as bridge_topics
@@ -115,6 +117,7 @@ class BridgeCore:
             schedule_recovery_event_scan=self._recovery.schedule_event_scan,
             enqueue_retryable_media_failures=self._enqueue_media_retries,
             forward_to_telegram_fn=self._forward_to_telegram,
+            get_last_tg_send_error=self._get_last_tg_send_error,
         )
 
     async def _enqueue_media_retries(
@@ -262,6 +265,45 @@ class BridgeCore:
             tg=self._tg,
             poll_interval=poll_interval,
             lease_seconds=lease_seconds,
+        )
+
+    def _get_last_tg_send_error(self) -> Optional[str]:
+        getter = getattr(self._tg, "get_last_send_error", None)
+        if callable(getter):
+            return getter()
+        return None
+
+    async def run_pending_inbound_messages(
+        self,
+        poll_interval: int = bridge_inbound_retry.TEXT_RETRY_POLL_SECONDS,
+        lease_seconds: int = bridge_inbound_retry.TEXT_RETRY_LEASE_SECONDS,
+        ttl_seconds: int = bridge_inbound_retry.TEXT_RETRY_TTL_SECONDS,
+    ):
+        await bridge_inbound_retry.run_pending_inbound_messages(
+            repo=self._repo,
+            tg=self._tg,
+            stats=self._stats,
+            send_ops_notification=self._send_ops_notification,
+            poll_interval=poll_interval,
+            lease_seconds=lease_seconds,
+            ttl_seconds=ttl_seconds,
+        )
+
+    async def run_pending_outbound_messages(
+        self,
+        poll_interval: int = bridge_outbound_retry.PENDING_OUTBOUND_POLL_SECONDS,
+        lease_seconds: int = bridge_outbound_retry.PENDING_OUTBOUND_LEASE_SECONDS,
+        ttl_seconds: int = bridge_outbound_retry.PENDING_OUTBOUND_TTL_SECONDS,
+    ):
+        await bridge_outbound_retry.run_pending_outbound_messages(
+            repo=self._repo,
+            max_adapter=self._max,
+            tg=self._tg,
+            stats=self._stats,
+            send_ops_notification=self._send_ops_notification,
+            poll_interval=poll_interval,
+            lease_seconds=lease_seconds,
+            ttl_seconds=ttl_seconds,
         )
 
     async def run_dm_history_sweep(

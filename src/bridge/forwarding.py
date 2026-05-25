@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import mapping
+from . import inbound_retry
 from . import media_retry
 from .contracts import (
     MaxAttachment,
@@ -269,6 +270,7 @@ async def handle_max_message(
     schedule_recovery_event_scan: Callable[[str], None],
     enqueue_retryable_media_failures: Callable[..., Awaitable[tuple[int, list[MaxAttachmentFailure]]]],
     forward_to_telegram_fn: Callable[..., Awaitable[Optional[int]]],
+    get_last_tg_send_error: Callable[[], Optional[str]],
 ):
     """Route one inbound MAX message into Telegram."""
     flow_id = build_max_flow_id(msg.chat_id, msg.msg_id)
@@ -491,12 +493,48 @@ async def handle_max_message(
             enqueued_media_count=enqueued_media,
         )
     else:
+        tg_error = get_last_tg_send_error() or "tg_send_failed"
+        if (
+            inbound_retry.is_text_only_inbound_retry_candidate(msg)
+            and inbound_retry.is_retryable_tg_delivery_error(tg_error)
+        ):
+            pending_id = await inbound_retry.enqueue_text_inbound_retry(
+                repo=repo,
+                msg=msg,
+                topic_id=topic_id,
+                error=tg_error,
+                attempts=1,
+            )
+            await repo.log_delivery(
+                msg.msg_id,
+                msg.chat_id,
+                "inbound",
+                "pending",
+                "tg_send_queued",
+            )
+            log_event(
+                logger,
+                logging.WARNING,
+                "bridge.inbound.forward_finished",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="forward",
+                outcome="queued",
+                reason="tg_send_queued",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+                pending_inbound_id=pending_id,
+                error=tg_error,
+            )
+            return
+
         await repo.log_delivery(
             msg.msg_id,
             msg.chat_id,
             "inbound",
             "failed",
-            "tg_send_failed",
+            tg_error,
         )
         stats["failed_inbound"] += 1
         log_event(
@@ -511,4 +549,5 @@ async def handle_max_message(
             max_chat_id=msg.chat_id,
             max_msg_id=msg.msg_id,
             tg_topic_id=topic_id,
+            error=tg_error,
         )

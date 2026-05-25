@@ -68,6 +68,10 @@ class TelegramAdapter:
         self._command_handlers: dict[str, Callable] = {}
         self._arg_command_handlers: dict[str, Callable] = {}
         self._public_group_arg_commands: set[str] = set()
+        self._last_send_error: Optional[str] = None
+
+    def get_last_send_error(self) -> Optional[str]:
+        return self._last_send_error
 
     def on_command(self, cmd: str, handler: Callable):
         """Зарегистрировать внешний обработчик команды без аргументов."""
@@ -225,10 +229,12 @@ class TelegramAdapter:
             media_type=media_type,
             label=label,
         )
+        self._last_send_error = None
 
         for attempt in range(1, 4):
             try:
                 msg = await coro_fn()
+                self._last_send_error = None
                 log_event(
                     logger,
                     logging.INFO,
@@ -246,6 +252,9 @@ class TelegramAdapter:
                 return msg.message_id
             except TelegramRetryAfter as e:
                 wait = max(int(e.retry_after), 1) + 1
+                self._last_send_error = (
+                    f"{e.__class__.__name__}: retry_after={getattr(e, 'retry_after', None)} {e}"
+                )
                 log_event(
                     logger,
                     logging.WARNING,
@@ -266,6 +275,7 @@ class TelegramAdapter:
                 if attempt < 3:
                     await asyncio.sleep(wait)
             except TelegramAPIError as e:
+                self._last_send_error = f"{e.__class__.__name__}: {e}"
                 log_event(
                     logger,
                     logging.WARNING,

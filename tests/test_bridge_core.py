@@ -8,6 +8,8 @@ import pytest
 
 from src.bridge import media_retry as bridge_media_retry
 from src.bridge import background as bridge_background
+from src.bridge import inbound_retry as bridge_inbound_retry
+from src.bridge import outbound_retry as bridge_outbound_retry
 from src.bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
@@ -17,7 +19,13 @@ from src.bridge.contracts import (
     MaxRecoverySnapshot,
 )
 from src.bridge.core import BridgeCore
-from src.db.repository import ChatBinding, PendingMediaDownload, Repository
+from src.db.repository import (
+    ChatBinding,
+    PendingInboundMessage,
+    PendingMediaDownload,
+    PendingOutboundMessage,
+    Repository,
+)
 from src.runtime.health import RuntimeHealthStore, Severity
 
 
@@ -30,6 +38,8 @@ class DummyRepo:
         self._find_user_result: str | None = None
         self.delivery_logs = []
         self.pending_media = []
+        self.pending_inbound = []
+        self.pending_outbound = []
         self.reply_mappings = {}
         self.pending_stats = {"pending_count": 0, "oldest_created_at": None}
         self.duplicates: set[tuple[str, str]] = set()
@@ -173,6 +183,147 @@ class DummyRepo:
 
     async def count_pending_media(self):
         return self.pending_stats
+
+    async def enqueue_pending_inbound(self, job):
+        for existing in self.pending_inbound:
+            if existing.max_chat_id == job.max_chat_id and existing.max_msg_id == job.max_msg_id:
+                if existing.status != "delivered":
+                    existing.tg_topic_id = job.tg_topic_id
+                    existing.text = job.text
+                    existing.status = job.status
+                    existing.attempts = max(existing.attempts, job.attempts)
+                    existing.next_attempt_at = min(existing.next_attempt_at, job.next_attempt_at)
+                    existing.last_error = job.last_error
+                return existing.id
+        job.id = len(self.pending_inbound) + 1
+        self.pending_inbound.append(job)
+        return job.id
+
+    async def get_due_pending_inbound(self, *, now=None, limit=5):
+        return [
+            job for job in self.pending_inbound
+            if job.status in {"pending", "retry", "leased"} and job.text
+        ][:limit]
+
+    async def lease_pending_inbound(self, job_id: int, *, lease_until: int, now=None):
+        for job in self.pending_inbound:
+            if job.id == job_id:
+                job.status = "leased"
+                job.lease_until = lease_until
+                return True
+        return False
+
+    async def mark_pending_inbound_retry(self, job_id: int, *, error: str,
+                                         next_attempt_at: int, now=None):
+        for job in self.pending_inbound:
+            if job.id == job_id:
+                job.status = "retry"
+                job.attempts += 1
+                job.last_error = error
+                job.next_attempt_at = next_attempt_at
+                job.lease_until = None
+
+    async def mark_pending_inbound_delivered(self, job_id: int, *, tg_msg_id: int, now=None):
+        for job in self.pending_inbound:
+            if job.id == job_id:
+                job.status = "delivered"
+                job.attempts += 1
+                job.text = None
+                job.delivered_tg_msg_id = tg_msg_id
+                job.lease_until = None
+
+    async def mark_pending_inbound_failed(self, job_id: int, *, error: str, now=None):
+        for job in self.pending_inbound:
+            if job.id == job_id:
+                job.status = "failed"
+                job.attempts += 1
+                job.text = None
+                job.last_error = error
+                job.lease_until = None
+
+    async def expire_pending_inbound(self, *, older_than_seconds: int, now=None):
+        return 0
+
+    async def count_pending_inbound(self):
+        active = [
+            job for job in self.pending_inbound
+            if job.status in {"pending", "retry", "leased"}
+        ]
+        return {
+            "pending_count": len(active),
+            "oldest_created_at": min((job.created_at for job in active), default=None),
+        }
+
+    async def enqueue_pending_outbound(self, job):
+        for existing in self.pending_outbound:
+            if existing.tg_topic_id == job.tg_topic_id and existing.tg_msg_id == job.tg_msg_id:
+                if existing.status != "delivered":
+                    existing.max_chat_id = job.max_chat_id
+                    existing.reply_to_max_id = job.reply_to_max_id
+                    existing.text = job.text
+                    existing.status = job.status
+                    existing.attempts = max(existing.attempts, job.attempts)
+                    existing.next_attempt_at = min(existing.next_attempt_at, job.next_attempt_at)
+                    existing.last_error = job.last_error
+                return existing.id
+        job.id = len(self.pending_outbound) + 1
+        self.pending_outbound.append(job)
+        return job.id
+
+    async def get_due_pending_outbound(self, *, now=None, limit=5):
+        return [
+            job for job in self.pending_outbound
+            if job.status in {"pending", "retry", "leased"} and job.text
+        ][:limit]
+
+    async def lease_pending_outbound(self, job_id: int, *, lease_until: int, now=None):
+        for job in self.pending_outbound:
+            if job.id == job_id:
+                job.status = "leased"
+                job.lease_until = lease_until
+                return True
+        return False
+
+    async def mark_pending_outbound_retry(self, job_id: int, *, error: str,
+                                          next_attempt_at: int, now=None):
+        for job in self.pending_outbound:
+            if job.id == job_id:
+                job.status = "retry"
+                job.attempts += 1
+                job.last_error = error
+                job.next_attempt_at = next_attempt_at
+                job.lease_until = None
+
+    async def mark_pending_outbound_delivered(self, job_id: int, *, max_msg_id: str, now=None):
+        for job in self.pending_outbound:
+            if job.id == job_id:
+                job.status = "delivered"
+                job.attempts += 1
+                job.text = None
+                job.delivered_max_msg_id = max_msg_id
+                job.lease_until = None
+
+    async def mark_pending_outbound_failed(self, job_id: int, *, error: str, now=None):
+        for job in self.pending_outbound:
+            if job.id == job_id:
+                job.status = "failed"
+                job.attempts += 1
+                job.text = None
+                job.last_error = error
+                job.lease_until = None
+
+    async def expire_pending_outbound(self, *, older_than_seconds: int, now=None):
+        return 0
+
+    async def count_pending_outbound(self):
+        active = [
+            job for job in self.pending_outbound
+            if job.status in {"pending", "retry", "leased"}
+        ]
+        return {
+            "pending_count": len(active),
+            "oldest_created_at": min((job.created_at for job in active), default=None),
+        }
 
     async def list_bindings(self):
         return self.bindings
@@ -318,6 +469,8 @@ class DummyTelegram:
         self.arg_commands = {}
         self.arg_command_options = {}
         self.fail_voice = False
+        self.fail_text = False
+        self.last_send_error = None
         self.delete_topic_result = True
         self.close_topic_result = True
 
@@ -355,7 +508,14 @@ class DummyTelegram:
 
     async def send_text(self, topic_id, text, reply_to_msg_id=None, flow_id=None):
         self.calls.append(("text", text))
+        if self.fail_text:
+            self.last_send_error = "TelegramNetworkError: connection reset"
+            return None
+        self.last_send_error = None
         return 5
+
+    def get_last_send_error(self):
+        return self.last_send_error
 
     async def send_notification(self, text):
         self.calls.append(("notification", text))
@@ -415,6 +575,25 @@ async def process_pending_media_for_bridge(bridge: BridgeCore, job: PendingMedia
         repo=bridge._repo,
         max_adapter=bridge._max,
         tg=bridge._tg,
+        job=job,
+    )
+
+
+async def process_pending_inbound_for_bridge(bridge: BridgeCore, job: PendingInboundMessage):
+    await bridge_inbound_retry.process_pending_inbound_message(
+        repo=bridge._repo,
+        tg=bridge._tg,
+        stats=bridge._stats,
+        job=job,
+    )
+
+
+async def process_pending_outbound_for_bridge(bridge: BridgeCore, job: PendingOutboundMessage):
+    await bridge_outbound_retry.process_pending_outbound_message(
+        repo=bridge._repo,
+        max_adapter=bridge._max,
+        tg=bridge._tg,
+        stats=bridge._stats,
         job=job,
     )
 
@@ -883,6 +1062,84 @@ async def test_forward_to_telegram_uses_rendered_text_without_media(tmp_path):
     assert tg_adapter.calls == [
         ("text", "Тестовый Пользователь вышел(а) из чата"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_on_max_message_queues_text_when_tg_send_fails():
+    repo = DummyRepo()
+    repo.binding_by_chat["-70000000000003"] = SimpleNamespace(
+        max_chat_id="-70000000000003",
+        tg_topic_id=99,
+        title="Тестовая группа",
+        mode="active",
+    )
+    tg_adapter = DummyTelegram()
+    tg_adapter.fail_text = True
+    bridge = make_bridge(repo=repo, tg_adapter=tg_adapter)
+
+    msg = MaxMessage(
+        msg_id="mx-text-queued",
+        chat_id="-70000000000003",
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text="связь шалит",
+        attachments=[],
+        attachment_types=[],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert len(repo.pending_inbound) == 1
+    queued = repo.pending_inbound[0]
+    assert queued.max_chat_id == "-70000000000003"
+    assert queued.max_msg_id == "mx-text-queued"
+    assert queued.tg_topic_id == 99
+    assert queued.text == "[Тестовый Пользователь] связь шалит"
+    assert repo.delivery_logs[-1][0][3] == "pending"
+    assert repo.delivery_logs[-1][0][4] == "tg_send_queued"
+    assert bridge._stats["failed_inbound"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_inbound_worker_delivers_and_clears_text():
+    repo = DummyRepo()
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, tg_adapter=tg_adapter)
+    job = PendingInboundMessage(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-text-queued",
+        tg_topic_id=99,
+        text="[Тестовый Пользователь] связь восстановилась",
+        status="leased",
+        attempts=1,
+        created_at=int(time.time()),
+    )
+    repo.pending_inbound.append(job)
+
+    await process_pending_inbound_for_bridge(bridge, job)
+
+    assert tg_adapter.calls == [
+        ("text", "[Тестовый Пользователь] связь восстановилась"),
+    ]
+    assert job.status == "delivered"
+    assert job.text is None
+    assert job.delivered_tg_msg_id == 5
+    assert repo.saved_record.max_msg_id == "mx-text-queued"
+    assert repo.saved_record.tg_msg_id == 5
+    assert repo.delivery_logs[-1][0][:4] == (
+        "mx-text-queued",
+        "-70000000000003",
+        "inbound",
+        "delivered",
+    )
 
 
 @pytest.mark.asyncio
@@ -2123,7 +2380,7 @@ async def test_on_tg_reply_logs_forward_completion(caplog):
 
 
 @pytest.mark.asyncio
-async def test_on_tg_reply_logs_failed_delivery_with_max_error():
+async def test_on_tg_reply_queues_definite_unsent_text_after_max_error():
     class FailingMax(DummyMax):
         async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None,
                                media_path=None, media_type=None, flow_id=None):
@@ -2145,7 +2402,14 @@ async def test_on_tg_reply_logs_failed_delivery_with_max_error():
         sender_name="Мария Иванова",
     )
 
-    assert tg_adapter.calls[-1] == ("text", "❌ Не удалось отправить сообщение в MAX")
+    assert tg_adapter.calls[-1] == ("text", bridge_outbound_retry.queued_notice())
+    assert len(repo.pending_outbound) == 1
+    queued = repo.pending_outbound[0]
+    assert queued.tg_topic_id == 99
+    assert queued.tg_msg_id == 888
+    assert queued.max_chat_id == "-70000000000003"
+    assert queued.text == "[Мария Иванова]\nПроверка ошибки"
+    assert queued.attempts == 3
     args, kwargs = repo.delivery_logs[-1]
     assert args[0] == "out_fail:99:888"
     assert args[1] == "-70000000000003"
@@ -2156,13 +2420,13 @@ async def test_on_tg_reply_logs_failed_delivery_with_max_error():
 
 
 @pytest.mark.asyncio
-async def test_on_tg_reply_reports_safe_pymax_sequence_overflow_error():
+async def test_on_tg_reply_does_not_queue_ambiguous_ack_timeout():
     class FailingMax(DummyMax):
         async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None,
                                media_path=None, media_type=None, flow_id=None):
             self.sent = (chat_id, text, reply_to_msg_id, flow_id)
-            self._last_outbound_error = "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
-            self._last_outbound_attempts = 1
+            self._last_outbound_error = "MAX outbound ack timeout"
+            self._last_outbound_attempts = 3
             return None
 
     repo = DummyRepo()
@@ -2178,16 +2442,48 @@ async def test_on_tg_reply_reports_safe_pymax_sequence_overflow_error():
         sender_name="Мария Иванова",
     )
 
-    assert tg_adapter.calls[-1] == (
-        "text",
-        "❌ Не удалось отправить сообщение в MAX (MAX transport: pymax_tcp_sequence_overflow)",
-    )
+    assert tg_adapter.calls[-1] == ("text", "❌ Не удалось отправить сообщение в MAX")
+    assert repo.pending_outbound == []
     args, kwargs = repo.delivery_logs[-1]
     assert args[0] == "out_fail:99:890"
     assert args[3] == "failed"
-    assert args[4] == "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
+    assert args[4] == "MAX outbound ack timeout (attempts=3)"
     assert "do not leak this text" not in str(repo.delivery_logs)
-    assert kwargs["attempts"] == 1
+    assert kwargs["attempts"] == 3
+
+
+@pytest.mark.asyncio
+async def test_pending_outbound_worker_delivers_and_clears_text():
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+    job = PendingOutboundMessage(
+        id=1,
+        tg_topic_id=99,
+        tg_msg_id=901,
+        max_chat_id="-70000000000003",
+        reply_to_max_id="mx-reply-1",
+        text="[Мария Иванова]\nОтложенный текст",
+        attempts=3,
+        created_at=int(time.time()),
+        next_attempt_at=0,
+    )
+    repo.pending_outbound.append(job)
+
+    await process_pending_outbound_for_bridge(bridge, job)
+
+    assert job.status == "delivered"
+    assert job.text is None
+    assert job.delivered_max_msg_id == "mx-out-1"
+    assert repo.saved_record.max_msg_id == "mx-out-1"
+    assert repo.delivery_logs[-1][0][:4] == (
+        "mx-out-1",
+        "-70000000000003",
+        "outbound",
+        "delivered",
+    )
+    assert tg_adapter.calls[-1] == ("text", "✅ Отложенное сообщение доставлено в MAX")
 
 
 @pytest.mark.asyncio
@@ -2218,6 +2514,38 @@ async def test_on_tg_reply_logs_too_large_outbound_failure(tmp_path):
     assert args[3] == "failed"
     assert args[4] == "too_large:huge.bin"
     assert kwargs["attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_on_tg_reply_does_not_persist_failed_media_for_retry(tmp_path):
+    class FailingMax(DummyMax):
+        async def send_message(self, chat_id: str, text: str, reply_to_msg_id=None,
+                               media_path=None, media_type=None, flow_id=None):
+            self.sent = (chat_id, text, reply_to_msg_id, media_path, media_type, flow_id)
+            self._last_outbound_error = "Not connected to the server"
+            self._last_outbound_attempts = 3
+            return None
+
+    repo = DummyRepo()
+    max_adapter = FailingMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+    media_path = Path(tmp_path) / "small.pdf"
+    media_path.write_bytes(b"pdf")
+
+    await bridge._on_tg_reply(
+        topic_id=99,
+        tg_msg_id=891,
+        text="",
+        reply_to_tg_msg_id=None,
+        sender_name="Мария Иванова",
+        media_path=str(media_path),
+        media_type="document",
+    )
+
+    assert repo.pending_outbound == []
+    assert tg_adapter.calls[-1] == ("text", bridge_outbound_retry.media_not_queued_notice())
+    assert not media_path.exists()
 
 
 # ---------------------------------------------------------------------------

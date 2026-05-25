@@ -42,11 +42,11 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Explicit adapter/backend boundary** — `BridgeCore` depends on transport-neutral contracts; MAX operation services depend on typed client ports/DTO, and `pymax` imports plus pymax client shape are isolated to `src/adapters/max/backends/pymax/`, with regression tests guarding the boundary
 - **MAX-only egress profiles** — MAX API/CDN traffic can use authenticated HTTP CONNECT through reverse Channel M (`home_ru_proxy`: router-originated SSH remote-forward to the VPS) while Telegram stays direct; Hetzner direct is retained only as a manual emergency profile
 - **Idempotent message deduplication** — `max_msg_id` is written to SQLite *before* forwarding to Telegram, making the system safe to restart at any point without duplicates
-- **Privacy-first design** — no message text or media is ever stored; SQLite only holds routing metadata (chat bindings, message ID map, delivery log)
+- **Privacy-first design** — successful message text/media is not stored; SQLite normally holds routing metadata, with one exception: failed text-only MAX→TG/TG→MAX messages can be queued temporarily in plaintext until delivered or expired
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
 - **Ansible-driven ops** — regular deploy, backup, recovery, fresh-VM bootstrap, and hardening are all codified as idempotent playbooks under `infra/ansible/`; the manual runbook is kept only as fallback
 - **Supervisor runtime shell** — PID1 is now a supervisor that keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
-- **Resilient delivery** — Telegram API calls retry with exponential backoff; temporary TG→MAX transport failures retry automatically; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; retryable MAX video downloads are persisted until delivered; `/status` gives live health snapshot on demand
+- **Resilient delivery** — Telegram API calls retry with exponential backoff; definite unsent TG→MAX text failures and retryable MAX→TG text delivery failures are queued with lease/backoff/TTL; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; retryable MAX video/voice downloads are persisted by reference until delivered; `/status` gives live health snapshot on demand
 - **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
 - **Account migration recovery registry** — hybrid MAX account snapshots preserve Telegram topic routing, invite/admin metadata, DM partner ids, DM contact snapshots from real dialogs only, and snapshot freshness for guided recovery after a phone/account loss
 
@@ -83,6 +83,8 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - Reconnect gap warning — after recovery, owner gets a reminder about possible missed messages during downtime
 - Telegram API retry with exponential backoff (3 attempts, respects `Retry-After`)
 - MAX outbound retry for temporary transport/session failures (3 attempts, short backoff)
+- Durable text-only MAX→TG and TG→MAX outboxes for retryable transport/delivery failures; text is cleared after delivery/TTL
+- Media retry uses stable MAX media references where available; heavy files are not stored in SQLite, and TG→MAX outbound media must be resent manually after a failure
 - Failed TG→MAX deliveries are persisted in `delivery_log` with error reason and attempt count
 - Startup self-check in production — after boot, the bot notification includes `pytest` result summary
 - System alerts survive temporary Telegram outages via persistent outbox + retry

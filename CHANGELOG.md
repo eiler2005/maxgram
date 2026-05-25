@@ -7,6 +7,8 @@ All notable changes to Maxgram are documented here.
 ## Unreleased
 
 ### Added
+- **Durable text outbox in both directions** — failed text-only TG→MAX and MAX→TG deliveries now use SQLite-backed queues with lease/backoff/TTL. Plaintext is kept only while pending and is cleared after delivery or expiration.
+- **Shared retry policy module** — bridge retry workers share one lease/backoff/TTL policy, while media remains reference-based and heavy files are not stored in SQLite.
 - **MAX account migration recovery registry** — new-phone/new-account recovery is now a first-class subsystem. SQLite stores MAX account generations, topic recovery registry rows, snapshot freshness (`last_scan_at`), and append-only recovery events without message text or raw MAX payloads.
 - **DM contact recovery snapshot** — recovery now stores personal contacts only from real MAX DM dialogs or already bound DM topics, with old/current DM chat ids, linked topic, status, and freshness; it does not copy the full MAX address book or `known_users`.
 - **Owner-only `/recovery` commands** — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, and `/recovery remap` support guided migration of existing Telegram topics to newly visible MAX chats.
@@ -23,12 +25,14 @@ All notable changes to Maxgram are documented here.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
 
 ### Fixed
+- **Stale MAX TCP readiness** — `PymaxClientAdapter.is_connected()` now checks `ConnectionManager.is_open()` and `transport.connected`, so a closed TCP socket no longer looks healthy and `Not connected to the server` send failures can trigger reconnect recovery.
 - **New DM topic names** — incoming DM topics now prefer the sender name / sender id over the chat id when resolving titles, so dialog ids are less likely to appear as `Чат <id>` for new users.
 - **MAX→TG voice delivery for pymax-empty DM events** — raw MAX notifications are now intercepted on the pymax message-notification path as well as `on_raw_receive`, so `AUDIO` voice payloads can be forwarded before upstream parsing drops them.
 - **Live empty-event recovery** — when pymax still emits a fresh empty `USER` event, the bridge tries a narrow recent-history lookup for that exact `msg_id` and forwards the recovered voice attachment if present. Diagnostic logs include only safe class/field names.
 - **Top-level MAX voice payloads** — raw notifications where `payload` itself is the message and media is stored under `attachments` are now normalized before pymax can drop the attachment list.
 
 ### Tests
+- Added coverage for durable inbound/outbound text queues, plaintext clearing after delivery, stale MAX transport readiness, non-queued ambiguous ack timeouts, and non-persisted TG→MAX media failures.
 - Added coverage for DM title resolution order, cached contact name lookup, raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
 - Added coverage for SQLite recovery migrations/idempotency/deltas, DM contact recovery upsert/export/privacy, recovery report/export/remap, MAX recovery snapshot collection, async event-driven recovery scans, quiet status-summary recovery alerts, account-migration notification privacy/deduplication, owner-only `/recovery`, command allowlist privacy, stale reply routing after remap, and privacy of recovery reports/logs.
 

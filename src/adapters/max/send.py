@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +29,45 @@ class MaxSendService:
     @property
     def _pending_outbound_acks(self):
         return self._deps.outbound.pending_outbound_acks
+
+    async def _force_reconnect_after_transport_error(
+        self,
+        *,
+        chat_id: str,
+        flow_id: Optional[str],
+        error: str,
+    ):
+        client = self._client
+        self._deps.connection.started = False
+        if client is None:
+            return
+        log_event(
+            logger,
+            logging.WARNING,
+            "max.outbound.force_reconnect",
+            flow_id=flow_id,
+            direction="outbound",
+            stage="transport",
+            outcome="started",
+            reason="terminal_retryable_send_error",
+            max_chat_id=chat_id,
+            error=error,
+        )
+        try:
+            await client.close()
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.outbound.force_reconnect_failed",
+                flow_id=flow_id,
+                direction="outbound",
+                stage="transport",
+                outcome="failed",
+                reason="client_close_failed",
+                max_chat_id=chat_id,
+                error=str(exc).strip() or exc.__class__.__name__,
+            )
 
     async def send_message(self, chat_id: str, text: str,
                            reply_to_msg_id: Optional[str] = None,
@@ -252,11 +292,22 @@ class MaxSendService:
                     attempts=attempt,
                     retryable=retryable,
                 )
+                if retryable:
+                    await self._force_reconnect_after_transport_error(
+                        chat_id=chat_id,
+                        flow_id=flow_id,
+                        error=error,
+                    )
                 return None
             finally:
                 if pending in self._pending_outbound_acks:
                     self._pending_outbound_acks.remove(pending)
-                if not pending.future.done():
+                if pending.future.cancelled():
+                    pass
+                elif pending.future.done():
+                    with suppress(Exception):
+                        pending.future.exception()
+                else:
                     pending.future.cancel()
 
         return None
