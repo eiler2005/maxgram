@@ -19,6 +19,45 @@ from ...logging_utils import build_max_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
+_CHANNEL_METADATA_MESSAGE_TYPES = {"CHANNEL", "FORWARD", "FORWARDED"}
+_CHANNEL_METADATA_ONLY_FIELDS = {
+    "attaches",
+    "attachments",
+    "chatId",
+    "chat_id",
+    "cid",
+    "elements",
+    "id",
+    "link",
+    "mark",
+    "messageId",
+    "message_id",
+    "options",
+    "prevMessageId",
+    "prev_message_id",
+    "reactionInfo",
+    "reaction_info",
+    "sender",
+    "stats",
+    "status",
+    "text",
+    "time",
+    "ttl",
+    "type",
+    "unread",
+}
+_CHANNEL_METADATA_MARKER_FIELDS = {
+    "cid",
+    "mark",
+    "options",
+    "prevMessageId",
+    "prev_message_id",
+    "reactionInfo",
+    "reaction_info",
+    "stats",
+    "unread",
+}
+
 
 class MaxEventsService:
     def __init__(self, deps: EventsDeps):
@@ -392,6 +431,19 @@ class MaxEventsService:
 
         return normalized_type in {"", "TEXT", "USER"}
 
+    def _is_channel_metadata_only_event(self, message_type: Optional[str], message, content_message) -> bool:
+        normalized_type = str(message_type or "").upper()
+        if normalized_type not in _CHANNEL_METADATA_MESSAGE_TYPES:
+            return False
+
+        fields = set(self._raw_payload._object_field_names(message))
+        fields.update(self._raw_payload._object_field_names(content_message))
+        if not fields:
+            return False
+        if fields - _CHANNEL_METADATA_ONLY_FIELDS:
+            return False
+        return bool(fields & _CHANNEL_METADATA_MARKER_FIELDS)
+
     async def _handle_raw_message(self, message):
         """Конвертируем raw MAX Message → MaxMessage и вызываем handlers.
 
@@ -744,6 +796,33 @@ class MaxEventsService:
                     max_msg_id=msg_id,
                     message_type=message_type,
                     has_reaction_info=bool(reaction_info),
+                )
+                return
+
+            if (
+                not text
+                and not attachments
+                and not rendered_texts
+                and not attachment_failures
+                and self._is_channel_metadata_only_event(message_type, message, content_message)
+            ):
+                fields = sorted(
+                    set(self._raw_payload._object_field_names(message))
+                    | set(self._raw_payload._object_field_names(content_message))
+                )
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.inbound.skipped",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="normalize",
+                    outcome="skipped",
+                    reason="channel_metadata_only_event",
+                    max_chat_id=chat_id,
+                    max_msg_id=msg_id,
+                    message_type=message_type,
+                    metadata_fields=fields,
                 )
                 return
 

@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **276 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **277 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -129,12 +129,12 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (83 теста)
+## tests/test_max_adapter/ — MAX adapter behavior split (84 теста)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
 - `conftest.py` — общий harness, fake clients/download adapters и shared imports.
-- `test_events.py` — raw/typed MAX events, CONTROL rendering, safe diagnostics.
+- `test_events.py` — raw/typed MAX events, CONTROL rendering, reaction/read-marker skips, safe diagnostics.
 - `test_recovery.py` — empty-message/raw-history/durable recovery paths.
 - `test_media.py` — audio/video/CDN download behavior and media retry.
 - `test_resolve.py` — user-name resolution and negative cache.

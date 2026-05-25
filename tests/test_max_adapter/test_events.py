@@ -714,6 +714,62 @@ async def test_handle_raw_receive_logs_unknown_message_payload_shape_safely(tmp_
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_skips_channel_metadata_reaction_marker(tmp_path, caplog):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")]
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=104,
+        chat_id=-70000000000003,
+        sender=7001,
+        text="",
+        type="CHANNEL",
+        status=None,
+        attaches=[],
+        link=None,
+        cid=1779268162669013,
+        elements=[],
+        mark=42,
+        options={},
+        prev_message_id=103,
+        reactionInfo=None,
+        reaction_info=None,
+        stats={},
+        ttl=None,
+        unread=0,
+    )
+
+    with caplog.at_level(logging.INFO, logger="src.adapters.max_adapter"):
+        await adapter._handle_raw_message(message)
+
+    assert received == []
+    events = [getattr(record, "event_fields", {}) for record in caplog.records]
+    skipped = next(
+        event
+        for event in events
+        if event.get("event") == "max.inbound.skipped"
+        and event.get("reason") == "channel_metadata_only_event"
+    )
+    assert skipped["message_type"] == "CHANNEL"
+    assert "reactionInfo" in skipped["metadata_fields"]
+    assert "mark" in skipped["metadata_fields"]
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_message_renders_unknown_message_details(tmp_path):
     adapter = AdapterHarness(
         phone="+7",
