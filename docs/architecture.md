@@ -50,6 +50,7 @@ src/
 │
 ├── bridge/                  business logic; no pymax/aiogram imports
 │   ├── contracts.py          transport-neutral dataclasses + Protocol ports
+│   ├── errors.py             typed bridge-domain exceptions
 │   ├── core.py               coordinator: wires callbacks, services, background jobs
 │   ├── status.py             /status, /chats and /help rendering
 │   ├── mapping.py            message_map / tg_reply_map idempotency helpers
@@ -108,10 +109,10 @@ src/
 │   │   │   └── ua.py         MAX CDN srcAg -> User-Agent mapping
 │   │   ├── backends/
 │   │   │   ├── base.py       internal MaxBackend protocol
-│   │   │   └── pymax/        PymaxBackend; only place with pymax imports
+│   │   │   └── pymax/        PymaxBackend; only place with pymax imports/private internals
 │   │   ├── payload.py        plain payload helpers
 │   │   ├── users.py          names and DM partner helpers
-│   │   ├── errors.py         outbound error classification
+│   │   ├── errors.py         typed MAX exceptions + outbound/runtime error classification
 │   │   ├── recovery.py       recovery snapshot collection helpers
 │   │   ├── resolve.py        chat/user title resolution helpers
 │   │   ├── runtime_state.py  last issue / readiness metadata
@@ -123,7 +124,9 @@ src/
 │   └── max_session_store.py  persistent MAX session blob storage
 │
 └── runtime/
-    ├── supervisor.py         worker restart loop and lifecycle boundaries
+    ├── supervisor.py         worker restart loop with exponential backoff/jitter
+    ├── tasks.py              logged detached task helpers
+    ├── timeouts.py           bounded external await helpers
     ├── healthcheck.py        Docker healthcheck endpoint
     └── health/
         ├── state.py          HealthSnapshot, HealthIssue, Severity
@@ -132,7 +135,8 @@ src/
         ├── events.py         health event log
         ├── outbox.py         durable alert outbox
         ├── heartbeat.py      heartbeat file writer
-        └── rendering.py      operator-facing health messages
+        ├── rendering.py      operator-facing health messages
+        └── metrics.py        Prometheus textfile renderer/writer
 ```
 
 ### Границы зависимостей
@@ -171,7 +175,7 @@ src/
    (personal account)                    (HTTPS long-polling)
 ```
 
-Supervisor never exits on MAX/TG integration failures. It restarts the worker, persists health transitions, and keeps Docker `HEALTHCHECK` green as long as the runtime loop itself is alive.
+Supervisor never exits on MAX/TG integration failures. It restarts the worker with exponential backoff + jitter (cap 300s), persists health transitions, and keeps Docker `HEALTHCHECK` green as long as the runtime loop itself is alive.
 
 ## Потоки данных
 

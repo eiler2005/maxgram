@@ -7,12 +7,28 @@ import logging
 from collections.abc import Awaitable
 from typing import TypeVar
 
+from ..bridge.errors import BridgeExternalTimeout
 from ..logging_utils import log_event
 
 T = TypeVar("T")
 
 DEFAULT_OPERATION_TIMEOUT_SECONDS = 30
 MEDIA_TRANSFER_TIMEOUT_SECONDS = 120
+
+
+async def with_timeout(
+    awaitable: Awaitable[T],
+    *,
+    timeout_seconds: int | float,
+    operation: str,
+) -> T:
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise BridgeExternalTimeout(
+            operation=operation,
+            timeout_seconds=timeout_seconds,
+        ) from exc
 
 
 async def with_timeout_or_none(
@@ -25,8 +41,12 @@ async def with_timeout_or_none(
     **fields,
 ) -> T | None:
     try:
-        return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
-    except asyncio.TimeoutError:
+        return await with_timeout(
+            awaitable,
+            timeout_seconds=timeout_seconds,
+            operation=operation,
+        )
+    except BridgeExternalTimeout:
         payload = {
             "stage": "external_await",
             "outcome": "timeout",

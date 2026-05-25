@@ -5,20 +5,21 @@
 ```bash
 pip install -r requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest -q
+PYTHONPATH=. .venv/bin/pytest --cov=src --cov-report=term-missing --cov-fail-under=75
 PYTHONPATH=. .venv/bin/pytest -q -m "not architecture"  # business/functional regression only
 PYTHONPATH=. .venv/bin/pytest -q -m architecture        # service-boundary/refactor guards
 PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/ruff check .
 .venv/bin/ruff check src/bridge --select E9,F63,F7,F82,F401,F841,B,C4,SIM,RET
-.venv/bin/mypy src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/ports.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
+.venv/bin/mypy src/bridge/errors.py src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/ports.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **229 тестов**, все асинхронные через `pytest-asyncio`. Внешних зависимостей нет — SQLite через `tmp_path`, MAX и Telegram заменены stub-классами.
+Всего: **273 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
-GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest -q`.
+GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-fail-under=75`.
 
-Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`). Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
+Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
 
 ```text
                          pytest -q
@@ -40,12 +41,13 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_bridge_contracts.py — архитектурная граница (11 тестов)
+## test_bridge_contracts.py — архитектурная граница (12 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_bridge_core_does_not_import_concrete_adapters` | `src.bridge.core` импортирует bridge contracts, но не concrete `src.adapters.max_adapter` / `src.adapters.tg_adapter`. |
 | `test_bridge_contracts_stay_transport_neutral` | `src.bridge.contracts` не импортирует `pymax`, `aiogram` или adapter-слой. |
+| `test_bridge_uses_max_bridge_port_methods_directly` | Bridge code работает через `MaxBridgePort` methods, а не через concrete MAX adapter internals. |
 | `test_main_keeps_runtime_wiring_in_composition_root` | `src.main` не импортирует concrete adapters или `BridgeCore`; runtime wiring живёт в `src.startup.composition`. |
 | `test_pymax_imports_stay_inside_max_adapter_boundary` | `pymax` imports разрешены только в `src/adapters/max/backends/pymax/*`; bridge/contracts/services остаются transport-neutral. |
 | `test_environment_inventory_documents_reverse_channel_m` | `docs/environment-inventory.md` описывает reverse Channel M, VPS docker bridge, router loopback inbound, env-переменные и отсутствие автоматического fallback; architecture doc ссылается на inventory. |
@@ -58,7 +60,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_config_loader.py — конфигурация (4 теста)
+## test_config_loader.py — конфигурация (5 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -66,6 +68,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_load_config_reads_dm_history_sweep_overrides` | `health.dm_history_sweep` читает balanced-настройки нагрузки: enabled, warmup/steady intervals, limit, backfill, jitter и per-chat delay. |
 | `test_load_config_reads_secrets_from_dotenv_secrets` | `load_config()` подхватывает секреты из `.env.secrets`, а не только из уже экспортированного окружения; заодно проверяет что `DATA_DIR` берётся из `.env`. |
 | `test_load_config_reads_max_egress_profiles` | `max.egress` читает active profile, direct backward-compatible default и `${MAX_EGRESS_PROXY_URL}` для `home_ru_proxy`. |
+| `test_load_config_reads_metrics_textfile_overrides` | `health.metrics_textfile_path` по умолчанию пишет в `data/maxtg_bridge.prom`, принимает explicit path и отключается через `off/disabled`. |
 
 ---
 
@@ -79,11 +82,11 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_http_connect_socket_connector_probe_failure_is_redacted` | Ошибки probe не содержат proxy credentials. |
 | `test_max_egress_profile_probe_includes_safe_profile_fields` | `MaxEgressProfile.probe()` добавляет только safe profile metadata: active/type/label/proxy host. |
 | `test_max_cdn_downloader_passes_proxy_options` | MAX CDN downloader передаёт `proxy`/`proxy_auth` в `aiohttp.ClientSession`, поэтому media downloads используют тот же egress profile. |
-| `test_max_egress_unavailable_is_classified_as_fail_closed_issue` | Proxy failure классифицируется как `max_egress_unavailable` для degraded health/status. |
+| `test_max_egress_unavailable_is_classified_as_fail_closed_issue` | Proxy failure классифицируется как `max_egress_unavailable`, является `MaxTransientError` и считается retryable. |
 
 ---
 
-## test_repository.py — работа с SQLite (15 тестов)
+## test_repository.py — работа с SQLite (19 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -107,7 +110,35 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_max_adapter.py — парсинг сырых сообщений MAX (79 тестов)
+## test_runtime_timeouts.py — typed timeout boundary (2 теста)
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_with_timeout_raises_typed_external_timeout` | Bounded external await превращается в typed `BridgeExternalTimeout`, который остаётся `BridgeTransientError`. |
+| `test_with_timeout_or_none_logs_and_returns_none` | Совместимый helper логирует metadata-only timeout event и возвращает `None` для существующих retry/failure paths. |
+
+---
+
+## test_max_payload_properties.py — property-based raw payload guards (3 теста)
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_payload_value_normalizes_case_and_underscore_aliases` | `payload_value()` одинаково читает MAX aliases вроде `chat_id/chatId`, `messageId/message_id`, `audio_id/audioId`. |
+| `test_safe_field_paths_never_emit_private_or_unsafe_fields` | Hypothesis генерирует nested msgpack-like payloads с mixed key types; diagnostics не выводят private/url/token/text/raw field paths. |
+| `test_raw_regular_message_round_trips_mixed_alias_payloads` | Raw parser строит `MaxClientMessage` из aliases/mixed payload shapes, сохраняя id/chat/sender/text/attachments и `_from_raw_unwrapped`. |
+
+---
+
+## tests/test_max_adapter/ — MAX adapter behavior split (82 теста)
+
+Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
+
+- `conftest.py` — общий harness, fake clients/download adapters и shared imports.
+- `test_events.py` — raw/typed MAX events, CONTROL rendering, safe diagnostics.
+- `test_recovery.py` — empty-message/raw-history/durable recovery paths.
+- `test_media.py` — audio/video/CDN download behavior and media retry.
+- `test_resolve.py` — user-name resolution and negative cache.
+- `test_send.py` — outbound send, echo ack, lifecycle and runtime issue classification.
 
 ### Системные события (CONTROL)
 
@@ -214,7 +245,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (24 теста)
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (27 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|

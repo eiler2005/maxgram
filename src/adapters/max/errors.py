@@ -4,7 +4,26 @@ import asyncio
 from typing import Optional
 
 from ...bridge.contracts import MaxIssue
-from .network import MaxEgressUnavailable
+
+
+class MaxError(Exception):
+    """Base class for MAX adapter/domain failures."""
+
+
+class MaxTransientError(MaxError):
+    """Failure that may succeed after reconnect/retry."""
+
+
+class MaxPermanentError(MaxError):
+    """Failure that requires code/config/operator intervention."""
+
+
+class MaxRuntimeContractError(MaxPermanentError):
+    """The active MAX backend no longer matches the expected runtime shape."""
+
+
+class MaxEgressUnavailable(MaxTransientError):
+    """Raised when the configured MAX egress path cannot open a tunnel."""
 
 
 PYMAX_TCP_SEQUENCE_OVERFLOW_KIND = "pymax_tcp_sequence_overflow"
@@ -93,6 +112,8 @@ def classify_runtime_error(error: BaseException) -> Optional[MaxIssue]:
 
 
 def is_retryable_send_error(error: BaseException) -> bool:
+    if isinstance(error, MaxTransientError):
+        return True
     if isinstance(
         error,
         (

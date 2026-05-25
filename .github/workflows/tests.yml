@@ -30,6 +30,7 @@ jobs:
           ruff check .
           ruff check src/bridge --select E9,F63,F7,F82,F401,F841,B,C4,SIM,RET
           mypy \
+            src/bridge/errors.py \
             src/bridge/contracts.py \
             src/db/migrations.py \
             src/adapters/max/backends/base.py \

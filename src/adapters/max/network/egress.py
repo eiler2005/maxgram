@@ -12,9 +12,7 @@ from urllib.parse import urlparse
 
 from aiohttp import BasicAuth
 
-
-class MaxEgressUnavailable(ConnectionError):
-    """Raised when the configured MAX egress path cannot open a tunnel."""
+from ..errors import MaxEgressUnavailable
 
 
 class MaxSocketConnector(Protocol):

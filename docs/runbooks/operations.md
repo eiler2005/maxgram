@@ -199,6 +199,7 @@ METRICS_TEXTFILE_PATH=/var/lib/node_exporter/textfile_collector/maxtg_bridge.pro
 - В production у контейнера `restart: always`, поэтому после обычного `reboot` VM bridge должен подняться сам.
 - Если сделать `docker compose down`, контейнер будет удалён; после reboot VM он уже не восстановится сам, пока не выполнить `docker compose ... up -d`.
 - Теперь PID1 внутри контейнера — supervisor. Даже если MAX/TG интеграция деградирует, контейнер должен оставаться `Up`, а проблема должна отражаться в `data/health_state.json` и в ops-алертах.
+- Worker restarts идут с exponential backoff + jitter и cap 300s; одинаковые health issue signatures не должны спамить owner DM, потому `RuntimeHealthStore` отправляет alert только при изменении причины, а reminder остаётся отдельным периодическим статусом.
 
 ### MAX egress / Channel M
 

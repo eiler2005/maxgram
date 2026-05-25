@@ -164,8 +164,26 @@
 - [x] **PymaxClientAdapter** — `src/adapters/max/backends/pymax/client_adapter.py` тонкий facade над PyMax 2 backend modules (`client_factory`, `transport`, `events`, `raw_gateway`, `models`, `media`) и конвертирует pymax objects в наши DTO.
 - [x] **Services больше не знают форму pymax-клиента** — `send`, `resolve`, `recovery`, `media`, `raw/history`, `voice_recovery`, `events` и `lifecycle` работают через typed port methods/snapshots вместо `_send_and_wait`, `_handle_message_notifications`, `fetch_history`, `get_file_by_id`, `contacts/dialogs/chats/channels/_users/me`.
 - [x] **Compatibility preserved** — public `MaxAdapter`, `BridgeCore`, compatibility imports и `client_factory.create_socket_client()` сохранены.
-- [x] **Regression coverage** — добавлен `tests/test_max_service_ports.py`, расширен `tests/test_bridge_contracts.py`, существующий `tests/test_max_adapter.py` покрывает raw voice recovery, channel unwrap/dedupe, media retry, outbound echo ack и lifecycle edge cases.
+- [x] **Regression coverage** — добавлен `tests/test_max_service_ports.py`, расширен `tests/test_bridge_contracts.py`, пакет `tests/test_max_adapter/` покрывает raw voice recovery, channel unwrap/dedupe, media retry, outbound echo ack и lifecycle edge cases.
 - [x] **Verified and deployed** — локальный gate зелёный (`183 passed`), production deploy и smoke check прошли успешно; изменение merged to `master` и deployed в commit `ec03f27` (`Decouple MAX services from pymax client shape`).
+
+---
+
+## Phase 11: Production reliability audit follow-up ✅
+
+**Дата:** 2026-05-25  
+**Цель:** закрыть high-signal пункты архитектурного аудита: production safety, observability и доказуемость backend boundary.
+
+- [x] **Graceful shutdown** — SIGTERM/SIGINT идут через supervisor `stop_event`, worker/background tasks отменяются управляемо, adapters/repository закрываются в `finally`.
+- [x] **Transaction-aware grouped writes** — `Repository.transaction()` с `BEGIN IMMEDIATE`, post-send DB groups коммитятся атомарно без транзакций вокруг network await.
+- [x] **Logged detached tasks** — fire-and-forget runtime/recovery/outbox tasks создаются через `create_logged_task`.
+- [x] **External await timeouts** — TG/MAX/topic/media операции получили bounded waits и metadata-only timeout events.
+- [x] **Prometheus textfile metrics** — default `data/maxtg_bridge.prom`, configurable `METRICS_TEXTFILE_PATH`, без HTTP `/metrics`.
+- [x] **Reviewer proof** — `FakeMaxBackend` integration test и `examples/swap_max_backend.py` доказывают заменяемость MAX backend без PyMax.
+- [x] **PyMax surface pin** — `tests/test_pymax_surface_pin.py` проверяет фактические PyMax 2 imports (`pymax.connection`, `pymax.connection.readers`, protocol/session/auth modules).
+- [x] **Maintainability pass** — typed `MaxError`/`BridgeError`, split `tests/test_max_adapter/`, Hypothesis guards для raw payload parser.
+
+Детали: [docs/audit-2026-05-25.md](audit-2026-05-25.md).
 
 ---
 

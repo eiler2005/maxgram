@@ -196,8 +196,11 @@ async def test_max_cdn_downloader_passes_proxy_options(tmp_path):
 
 
 def test_max_egress_unavailable_is_classified_as_fail_closed_issue():
-    issue = max_errors.classify_runtime_error(MaxEgressUnavailable("MAX egress proxy unavailable"))
+    error = MaxEgressUnavailable("MAX egress proxy unavailable")
+    issue = max_errors.classify_runtime_error(error)
 
+    assert isinstance(error, max_errors.MaxTransientError)
+    assert max_errors.is_retryable_send_error(error) is True
     assert issue is not None
     assert issue.kind == "max_egress_unavailable"
     assert issue.requires_reauth is False

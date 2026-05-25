@@ -159,13 +159,18 @@ def test_max_services_use_explicit_dependencies():
         ):
             offenders.append(f"{relative}: service takes MaxAdapter")
 
-    test_source = (PROJECT_ROOT / "tests/test_max_adapter.py").read_text(encoding="utf-8")
-    tree = ast.parse(test_source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef):
-            for base in node.bases:
-                if isinstance(base, ast.Name) and base.id in {"MaxAdapter", "RealMaxAdapter"}:
-                    offenders.append(f"tests/test_max_adapter.py: {node.name} subclasses {base.id}")
+    max_adapter_test_paths = sorted((PROJECT_ROOT / "tests/test_max_adapter").rglob("*.py"))
+    if not max_adapter_test_paths:
+        max_adapter_test_paths = [PROJECT_ROOT / "tests/test_max_adapter.py"]
+    for test_path in max_adapter_test_paths:
+        test_source = test_path.read_text(encoding="utf-8")
+        tree = ast.parse(test_source)
+        relative = test_path.relative_to(PROJECT_ROOT).as_posix()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for base in node.bases:
+                    if isinstance(base, ast.Name) and base.id in {"MaxAdapter", "RealMaxAdapter"}:
+                        offenders.append(f"{relative}: {node.name} subclasses {base.id}")
 
     assert offenders == []
 

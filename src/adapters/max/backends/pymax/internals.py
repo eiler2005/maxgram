@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from ...errors import MaxRuntimeContractError
 
-class PymaxInternalsContractError(RuntimeError):
+
+class PymaxInternalsContractError(MaxRuntimeContractError):
     """Raised when an expected PyMax private runtime shape is unavailable."""
 
 
