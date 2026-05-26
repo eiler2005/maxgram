@@ -205,13 +205,14 @@ async def test_send_message_sanitizes_pymax_sequence_overflow_error(tmp_path, ca
     assert adapter._client.calls == 1
     assert (
         adapter.get_last_outbound_error()
-        == "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
+        == "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded legacy one-byte limit"
     )
     assert adapter.get_last_outbound_attempts() == 1
     events = [getattr(record, "event_fields", {}) for record in caplog.records]
     assert any(
         event.get("event") == "max.outbound.failed"
-        and event.get("error") == "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
+        and event.get("error")
+        == "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded legacy one-byte limit"
         and event.get("retryable") is False
         for event in events
     )

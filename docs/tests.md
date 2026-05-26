@@ -258,7 +258,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_client_factory_passes_custom_auth_flow` | `client_factory.py` умеет принять custom auth flow для one-shot MAX reauth без изменения runtime path. |
 | `test_client_factory_can_disable_legacy_session_import` | Reauth path может отключить legacy PyMax 1 `auth` import, чтобы stale token не импортировался обратно. |
 | `test_pymax_msgpack_codec_tolerates_array_map_keys` | Backend-local PyMax codec не падает на raw msgpack map с array-like key, который встречается в некоторых `CHAT_HISTORY` ответах. |
-| `test_pymax_sequence_guard_wraps_to_one_byte` | Backend-local PyMax connection guard заворачивает TCP `seq` в one-byte диапазон, чтобы framer не падал после 255 requests. |
+| `test_pymax_sequence_guard_uses_pymax_2_1_word_range` | Backend-local PyMax connection guard использует 16-bit TCP `seq` диапазон PyMax 2.1 и не возвращает legacy one-byte overflow. |
 | `test_client_factory_installs_bridge_protocol_guards` | `client_factory.py` ставит bridge msgpack и sequence guards на PyMax connection/protocol при создании клиента. |
 | `test_pymax2_session_store_imports_legacy_pymax1_auth_table` | `session_store.py` импортирует legacy PyMax 1 `auth(token, device_id)` в PyMax 2 `sessions`, чтобы сохранить existing session без SMS-auth. |
 | `test_pymax2_session_store_can_skip_legacy_pymax1_auth_import` | `session_store.py` по явному флагу не импортирует stale legacy token и позволяет начать SMS-flow. |
@@ -273,7 +273,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pymax2_send_uses_attachments_list` | Outbound media отправляется через PyMax 2 `attachments=[...]`, не старый `attachment=`. |
 | `test_pymax2_snapshots_use_profile_users_and_chat_types` | Own id берётся из `client.me.contact.id`, users/chats snapshots нормализуются через PyMax 2 shape. |
 | `test_pymax2_egress_transport_uses_configured_socket_connector` | Custom PyMax 2 transport использует `MaxEgressProfile.socket_connector` и сохраняет TLS server hostname. |
-| `test_pymax2_egress_client_uses_bridge_connection_manager` | Egress PyMax client строит guarded `BridgeConnectionManager`, а не upstream `ConnectionManager` с 32-bit seq. |
+| `test_pymax2_egress_client_uses_bridge_connection_manager` | Egress PyMax client строит guarded `BridgeConnectionManager` с bridge egress transport и PyMax 2.1 16-bit seq. |
 | `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |
 
 ---

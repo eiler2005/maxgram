@@ -19,10 +19,10 @@ from .internals import pymax_client_connection, pymax_connection_protocol
 
 
 class BridgeConnectionManager(ConnectionManager):
-    """PyMax TCP connection guard for one-byte MAX sequence numbers."""
+    """Bridge-owned PyMax TCP connection manager with 16-bit sequence numbers."""
 
     def next_seq(self) -> int:
-        seq = (int(getattr(self, "_seq", -1)) + 1) % 0x100
+        seq = (int(getattr(self, "_seq", -1)) + 1) % 0x10000
         setattr(self, "_seq", seq)
         return seq
 
@@ -133,7 +133,7 @@ def install_bridge_sequence_guard(connection) -> None:
         return
 
     def next_seq() -> int:
-        connection._seq = (getattr(connection, "_seq", -1) + 1) % 0x100
+        connection._seq = (getattr(connection, "_seq", -1) + 1) % 0x10000
         return connection._seq
 
     connection.next_seq = next_seq

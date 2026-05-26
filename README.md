@@ -24,7 +24,7 @@
 2. The bridge runs 24/7 on a single VPS with a single MAX account; any unhandled disconnect can become silent message loss.
 3. We mitigate this with 6 surgical PyMax compatibility shims, each small and covered by a regression-marker test:
    - `BridgeSessionStore` — one-shot import of legacy PyMax v1 session table into the v2 schema
-   - `BridgeConnectionManager` — wraps TCP sequence numbers at 256 for PyMax / MAX server divergence
+   - `BridgeConnectionManager` — keeps the bridge egress connection on PyMax 2.1's 16-bit TCP sequence semantics
    - `BridgeMsgpackPayloadCodec` — handles MAX maps with array-valued keys that strict msgpack rejects
    - `BridgeAuthService` + `sanitize_login_payload` — strips upstream-unknown `UNSUPPORTED` attachment variants before validation
    - `EgressTCPTransport` — injects authenticated HTTP CONNECT proxy for MAX-only RU egress

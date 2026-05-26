@@ -28,7 +28,7 @@ class MaxEgressUnavailable(MaxTransientError):
 
 PYMAX_TCP_SEQUENCE_OVERFLOW_KIND = "pymax_tcp_sequence_overflow"
 PYMAX_TCP_SEQUENCE_OVERFLOW_ERROR = (
-    "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded 255"
+    "pymax_tcp_sequence_overflow: PyMax TCP seq exceeded legacy one-byte limit"
 )
 
 
@@ -51,7 +51,7 @@ def classify_runtime_error(error: BaseException) -> Optional[MaxIssue]:
     if is_pymax_tcp_sequence_overflow_error(error):
         return MaxIssue(
             kind=PYMAX_TCP_SEQUENCE_OVERFLOW_KIND,
-            summary="PyMax TCP seq вышел за one-byte лимит MAX protocol",
+            summary="PyMax TCP seq вышел за legacy one-byte лимит",
             raw_error=raw_error,
             requires_reauth=False,
         )

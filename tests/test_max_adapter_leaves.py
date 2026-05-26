@@ -198,7 +198,7 @@ def test_pymax_msgpack_codec_tolerates_array_map_keys():
     assert decoded["messages"] == []
 
 
-def test_pymax_sequence_guard_wraps_to_one_byte():
+def test_pymax_sequence_guard_uses_pymax_2_1_word_range():
     from pymax.protocol import OutboundFrame
 
     from src.adapters.max.backends.pymax.transport import (
@@ -211,20 +211,18 @@ def test_pymax_sequence_guard_wraps_to_one_byte():
         transport=object(),
         protocol=bridge_tcp_protocol(),
     )
-    connection._seq = 253
+    connection._seq = 65533
 
-    assert [connection.next_seq() for _ in range(4)] == [254, 255, 0, 1]
+    assert [connection.next_seq() for _ in range(4)] == [65534, 65535, 0, 1]
 
-    connection._seq = -1
-    for _ in range(300):
-        seq = connection.next_seq()
+    for seq in [65534, 65535, 0, 1]:
         connection.protocol.encode(
             OutboundFrame(ver=10, opcode=49, cmd=0, seq=seq, payload={"chatId": 1})
         )
 
     with pytest.raises(struct.error):
         connection.protocol.encode(
-            OutboundFrame(ver=10, opcode=49, cmd=0, seq=256, payload={"chatId": 1})
+            OutboundFrame(ver=10, opcode=49, cmd=0, seq=65536, payload={"chatId": 1})
         )
 
 
@@ -241,7 +239,7 @@ def test_client_factory_installs_bridge_protocol_guards(monkeypatch, tmp_path):
 
     class FakeClient:
         def __init__(self, **_kwargs):
-            self._connection = SimpleNamespace(protocol=FakeProtocol(), _seq=253)
+            self._connection = SimpleNamespace(protocol=FakeProtocol(), _seq=65533)
             self._app = SimpleNamespace(api=SimpleNamespace(auth=None))
 
     monkeypatch.setattr(pymax_factory, "Client", FakeClient)
@@ -254,7 +252,7 @@ def test_client_factory_installs_bridge_protocol_guards(monkeypatch, tmp_path):
 
     assert isinstance(client._connection.protocol.serializer, BridgeMsgpackPayloadCodec)
     assert isinstance(client._connection.protocol.payload_decoder.serializer, BridgeMsgpackPayloadCodec)
-    assert [client._connection.next_seq() for _ in range(4)] == [254, 255, 0, 1]
+    assert [client._connection.next_seq() for _ in range(4)] == [65534, 65535, 0, 1]
     assert client._maxtg_msgpack_guard_installed is True
     assert client._connection._maxtg_seq_guard_installed is True
     assert client._app.api.auth.__class__.__name__ == "BridgeAuthService"

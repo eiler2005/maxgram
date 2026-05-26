@@ -2,7 +2,7 @@
 
 **Статус:** Принято  
 **Дата:** 2026-04  
-**Обновлено:** 2026-05-24 для PyMax 2.0.1
+**Обновлено:** 2026-05-26 для PyMax 2.1.0  
 **Контекст:** Обнаружен баг при отладке production
 
 ## Проблема
@@ -51,3 +51,4 @@ async def _make_client(self):
 - `on_start` handlers вызываются при каждом reconnect — нужен флаг `_started_once` для дедупликации уведомлений
 - В PyMax 2 встроенный ping loop используется вместо bridge private ping patch; `failfast_ping_config()` для PyMax 2 возвращает `None`.
 - Readiness не равен только `_started`: после network/router flap PyMax 2 может закрыть внутренний transport, но не вернуть управление из `start()`. Поэтому `MaxAdapter.is_ready()` проверяет `client.is_connected`; watchdog видит закрытый transport и после grace-period может выполнить self-heal restart процесса.
+- PyMax 2.1.0 исправил TCP header/seq layout (`seq` стал 16-bit). Bridge больше не заворачивает `seq` на 256; `BridgeConnectionManager` оставлен как bridge-owned egress connection boundary с тем же 16-bit range и regression guard.
