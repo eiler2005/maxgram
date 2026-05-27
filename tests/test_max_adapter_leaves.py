@@ -489,6 +489,52 @@ def test_pymax2_login_payload_tolerates_animoji_element_attributes():
     assert "attributes" in payload["chats"][0]["lastMessage"]["elements"][0]
 
 
+def test_pymax2_login_validation_repairs_noncritical_payload_drift():
+    from src.adapters.max.backends.pymax.login import validate_login_response
+
+    payload = {
+        "profile": {"contact": {"id": 1}},
+        "token": "redacted",
+        "chats": [
+            {
+                "id": 10,
+                "type": "CHAT",
+                "status": "ACTIVE",
+                "owner": 1,
+                "lastMessage": {"type": "USER"},
+            }
+        ],
+        "messages": {10: [{"id": 21, "type": "USER"}]},
+        "contacts": [{"bad": "shape"}],
+    }
+
+    response = validate_login_response(payload)
+
+    assert response.chats[0].last_message is None
+    assert response.messages == {10: []}
+    assert response.contacts == [None]
+
+
+def test_pymax2_login_validation_error_is_safe_and_classified():
+    from src.adapters.max.backends.pymax.login import (
+        PymaxPayloadValidationError,
+        validate_login_response,
+    )
+
+    with pytest.raises(PymaxPayloadValidationError) as exc_info:
+        validate_login_response({"token": "secret", "profile": {"broken": "shape"}})
+
+    message = str(exc_info.value)
+    assert "pymax payload validation failed" in message
+    assert "input_val" not in message
+    assert "secret" not in message
+
+    issue = max_errors.classify_runtime_error(exc_info.value)
+    assert issue is not None
+    assert issue.kind == "pymax_payload_drift"
+    assert issue.requires_reauth is False
+
+
 def test_pymax2_user_payload_tolerates_numeric_gender_and_web_app_url():
     from pymax.types.domain import User
 

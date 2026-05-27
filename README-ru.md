@@ -14,7 +14,7 @@
    - `BridgeSessionStore` — one-shot импорт legacy PyMax v1 session table в v2 schema
    - `BridgeConnectionManager` — держит bridge egress connection на 16-bit TCP sequence semantics PyMax 2.1
    - `BridgeMsgpackPayloadCodec` — обрабатывает MAX maps с array-valued keys, которые strict msgpack отвергает
-   - `BridgeAuthService` + `sanitize_login_payload` — убирает неизвестные upstream `UNSUPPORTED` attachment variants до validation
+   - `BridgeAuthService` + `validate_login_response` — убирает неизвестные upstream variants и чинит некритичный initial-sync payload drift до validation
    - `EgressTCPTransport` — внедряет authenticated HTTP CONNECT proxy только для MAX RU egress
    - `PymaxInternalsContractError` — централизует доступ к private PyMax attrs и падает явно при upstream drift
 4. Заменяемость архитектуры проверяется, а не просто декларируется: `tests/integration/test_bridge_end_to_end.py` гоняет полный bridge против `tests/fakes/fake_max_backend.py` в CI. Короткий walkthrough: [docs/architecture-tour.md](docs/architecture-tour.md), 30-секундное demo: `examples/swap_max_backend.py`.

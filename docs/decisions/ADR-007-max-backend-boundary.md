@@ -25,9 +25,10 @@ internal backend boundary:
   package. PyMax 2 wiring is split into focused internal modules:
   `client_factory.py`, `login.py`, `session_store.py`, `transport.py`,
   `events.py`, `raw_gateway.py`, `models.py` and `media.py`.
-- `login.py` owns tolerant PyMax 2 login validation: unsupported attachment
-  variants in initial sync are stripped before upstream `LoginResponse`
-  validation, without changing bridge contracts.
+- `login.py` owns tolerant PyMax 2 login validation: unsupported initial-sync
+  variants are stripped, non-critical `lastMessage`/`messages`/`contacts` model
+  drift is repaired, and unrepaired `LoginResponse` failures are wrapped in a
+  safe error without raw MAX payload.
 - PyMax 2 session compatibility is isolated in `session_store.py`: it imports
   legacy PyMax 1 `auth(token, device_id)` into the PyMax 2 `sessions` schema
   once, without exposing token data outside the backend boundary.

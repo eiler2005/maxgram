@@ -79,7 +79,7 @@ python examples/swap_max_backend.py
 | `BridgeSessionStore` | `src/adapters/max/backends/pymax/session_store.py` | One-shot import legacy PyMax v1 session table into PyMax v2 schema | `tests/test_max_adapter_leaves.py`, `tests/test_pymax_surface_pin.py` |
 | `BridgeConnectionManager` | `src/adapters/max/backends/pymax/transport.py` | Bridge-owned egress connection with PyMax 2.1 16-bit TCP sequence semantics | sequence guard and `pymax_tcp_sequence_overflow` legacy marker tests |
 | `BridgeMsgpackPayloadCodec` | `src/adapters/max/backends/pymax/transport.py` | MAX msgpack maps with array-valued keys that strict msgpack rejects | msgpack codec regression in `tests/test_max_adapter_leaves.py` |
-| `BridgeAuthService` + `sanitize_login_payload` | `src/adapters/max/backends/pymax/login.py` | Strip upstream-unknown `UNSUPPORTED` attachment variants before validation | login payload tests in `tests/test_max_adapter_leaves.py` |
+| `BridgeAuthService` + `validate_login_response` | `src/adapters/max/backends/pymax/login.py` | Strip upstream-unknown variants and repair non-critical initial-sync payload drift before validation | login payload and validation-drift tests in `tests/test_max_adapter_leaves.py` |
 | `EgressTCPTransport` | `src/adapters/max/backends/pymax/transport.py` | Inject authenticated HTTP CONNECT proxy for MAX-only RU egress | `tests/test_max_egress.py` and pymax egress transport test |
 | `PymaxInternalsContractError` | `src/adapters/max/backends/pymax/internals.py` | Centralize private PyMax attr access and fail loudly on upstream drift | internals contract tests plus `test_pymax_surface_pin.py` |
 

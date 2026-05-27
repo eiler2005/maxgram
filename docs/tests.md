@@ -268,6 +268,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_max_reauth_refuses_fresh_bridge_heartbeat` | Reauth guard не даёт запускать SMS-flow рядом с живым bridge heartbeat без явного `--force`. |
 | `test_max_reauth_snapshot_session_db_copies_without_token_output` | Перед reauth создаётся `session.db.before-reauth-*` snapshot с правами `0600`, без чтения/печати token. |
 | `test_pymax2_login_payload_drops_unsupported_attachments` | `login.py` удаляет unsupported attachments из initial sync payload до strict PyMax 2 `LoginResponse` validation. |
+| `test_pymax2_login_validation_repairs_noncritical_payload_drift` | `validate_login_response()` не валит MAX runtime из-за одного битого `lastMessage`/history/contact узла initial sync. |
+| `test_pymax2_login_validation_error_is_safe_and_classified` | Невосстановимый PyMax payload drift логируется без raw payload/`input_val` и классифицируется как `pymax_payload_drift`, reauth не нужен. |
 | `test_pymax2_handler_signatures_are_adapted_to_bridge_callbacks` | PyMax 2 callbacks `(event, client)` адаптируются к bridge callbacks без pymax types снаружи. |
 | `test_pymax2_raw_gateway_converts_frames_and_invokes_app` | Native `on_raw` конвертируется в bridge raw dict, а raw requests изолированы через `_app.invoke`. |
 | `test_pymax2_send_uses_attachments_list` | Outbound media отправляется через PyMax 2 `attachments=[...]`, не старый `attachment=`. |

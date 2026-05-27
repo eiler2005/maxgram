@@ -72,6 +72,14 @@ def classify_runtime_error(error: BaseException) -> Optional[MaxIssue]:
             requires_reauth=False,
         )
 
+    if "pymax payload validation failed" in lowered:
+        return MaxIssue(
+            kind="pymax_payload_drift",
+            summary="MAX payload не совпал с моделями PyMax",
+            raw_error=raw_error,
+            requires_reauth=False,
+        )
+
     corrupt_session_markers = (
         "unsupported file format",
         "database disk image is malformed",
