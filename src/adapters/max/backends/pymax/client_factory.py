@@ -9,6 +9,7 @@ from ...network import MaxEgressProfile
 from .login import BridgeAuthService
 from .session_store import BridgeSessionStore
 from .transport import EgressClient, install_bridge_protocol_guards
+from .user import BridgeUserService
 
 
 def legacy_desktop_user_agent() -> MobileUserAgentPayload:
@@ -77,16 +78,17 @@ def create_pymax_client(
     if auth_flow is not None:
         kwargs["auth_flow"] = auth_flow
     if egress is None:
-        return _install_bridge_auth_service(Client(**kwargs))
-    return _install_bridge_auth_service(
+        return _install_bridge_services(Client(**kwargs))
+    return _install_bridge_services(
         EgressClient(**kwargs, socket_connector=egress.socket_connector)
     )
 
 
-def _install_bridge_auth_service(client):
+def _install_bridge_services(client):
     app = getattr(client, "_app", None)
     api = getattr(app, "api", None)
     if api is not None:
         api.auth = BridgeAuthService(app)
+        api.users = BridgeUserService(app)
     install_bridge_protocol_guards(client)
     return client

@@ -240,7 +240,7 @@ def test_client_factory_installs_bridge_protocol_guards(monkeypatch, tmp_path):
     class FakeClient:
         def __init__(self, **_kwargs):
             self._connection = SimpleNamespace(protocol=FakeProtocol(), _seq=65533)
-            self._app = SimpleNamespace(api=SimpleNamespace(auth=None))
+            self._app = SimpleNamespace(api=SimpleNamespace(auth=None, users=None))
 
     monkeypatch.setattr(pymax_factory, "Client", FakeClient)
 
@@ -256,6 +256,7 @@ def test_client_factory_installs_bridge_protocol_guards(monkeypatch, tmp_path):
     assert client._maxtg_msgpack_guard_installed is True
     assert client._connection._maxtg_seq_guard_installed is True
     assert client._app.api.auth.__class__.__name__ == "BridgeAuthService"
+    assert client._app.api.users.__class__.__name__ == "BridgeUserService"
 
 
 @pytest.mark.asyncio
@@ -486,6 +487,35 @@ def test_pymax2_login_payload_tolerates_animoji_element_attributes():
     assert Element.model_validate(elements[0]).attributes is None
     assert Element.model_validate(elements[1]).attributes.url == "https://example.test"
     assert "attributes" in payload["chats"][0]["lastMessage"]["elements"][0]
+
+
+def test_pymax2_user_payload_tolerates_numeric_gender_and_web_app_url():
+    from pymax.types.domain import User
+
+    from src.adapters.max.backends.pymax.user import sanitize_user_payload
+
+    payload = {
+        "contacts": [
+            {
+                "id": 42,
+                "names": [{"name": "Example User"}],
+                "gender": 1,
+                "webApp": "https://frontend.example.test/preserver",
+            }
+        ]
+    }
+
+    sanitized = sanitize_user_payload(payload)
+    user = User.model_validate(sanitized["contacts"][0])
+
+    assert "gender" not in sanitized["contacts"][0]
+    assert sanitized["contacts"][0]["webApp"] == {
+        "url": "https://frontend.example.test/preserver"
+    }
+    assert user.gender is None
+    assert user.web_app == {"url": "https://frontend.example.test/preserver"}
+    assert payload["contacts"][0]["gender"] == 1
+    assert payload["contacts"][0]["webApp"] == "https://frontend.example.test/preserver"
 
 
 @pytest.mark.asyncio
