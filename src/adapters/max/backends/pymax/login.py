@@ -29,6 +29,10 @@ def _sanitize_value(value):
                 for item in attaches
                 if not _is_unsupported_attachment(item)
             ]
+        attributes = sanitized.get("attributes")
+        if isinstance(attributes, dict) and _is_message_element(sanitized):
+            if "url" not in attributes:
+                sanitized.pop("attributes", None)
         return sanitized
     if isinstance(value, list):
         return [_sanitize_value(item) for item in value]
@@ -40,6 +44,10 @@ def _is_unsupported_attachment(value: object) -> bool:
         return False
     raw_type = value.get("type", value.get("_type"))
     return isinstance(raw_type, str) and raw_type not in SUPPORTED_ATTACHMENT_TYPES
+
+
+def _is_message_element(value: dict[str, Any]) -> bool:
+    return isinstance(value.get("type"), str) and isinstance(value.get("length"), int)
 
 
 class BridgeAuthService(AuthService):

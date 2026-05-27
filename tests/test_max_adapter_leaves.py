@@ -447,6 +447,47 @@ def test_pymax2_login_payload_drops_unsupported_attachments():
     assert len(payload["chats"][0]["lastMessage"]["attaches"]) == 2
 
 
+def test_pymax2_login_payload_tolerates_animoji_element_attributes():
+    from pymax.types.domain.element import Element
+
+    from src.adapters.max.backends.pymax.login import sanitize_login_payload
+
+    payload = {
+        "chats": [
+            {
+                "lastMessage": {
+                    "elements": [
+                        {
+                            "type": "ANIMOJI",
+                            "from": 0,
+                            "length": 1,
+                            "attributes": {
+                                "animojiLottieUrl": "https://cdn.example.test/a.json",
+                                "animojiSetId": 1,
+                            },
+                        },
+                        {
+                            "type": "LINK",
+                            "from": 2,
+                            "length": 7,
+                            "attributes": {"url": "https://example.test"},
+                        },
+                    ]
+                }
+            }
+        ]
+    }
+
+    sanitized = sanitize_login_payload(payload)
+    elements = sanitized["chats"][0]["lastMessage"]["elements"]
+
+    assert "attributes" not in elements[0]
+    assert elements[1]["attributes"] == {"url": "https://example.test"}
+    assert Element.model_validate(elements[0]).attributes is None
+    assert Element.model_validate(elements[1]).attributes.url == "https://example.test"
+    assert "attributes" in payload["chats"][0]["lastMessage"]["elements"][0]
+
+
 @pytest.mark.asyncio
 async def test_pymax2_handler_signatures_are_adapted_to_bridge_callbacks():
     from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
