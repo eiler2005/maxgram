@@ -515,6 +515,22 @@ def test_pymax2_login_validation_repairs_noncritical_payload_drift():
     assert response.contacts == [None]
 
 
+def test_pymax2_login_validation_fills_missing_token_from_session():
+    from src.adapters.max.backends.pymax.login import validate_login_response
+
+    response = validate_login_response(
+        {
+            "profile": {"contact": {"id": 1}},
+            "chats": [],
+            "messages": {},
+            "contacts": [],
+        },
+        session_token="existing-session-token",
+    )
+
+    assert response.token == "existing-session-token"
+
+
 def test_pymax2_login_validation_error_is_safe_and_classified():
     from src.adapters.max.backends.pymax.login import (
         PymaxPayloadValidationError,
