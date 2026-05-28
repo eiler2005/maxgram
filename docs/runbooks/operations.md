@@ -772,7 +772,7 @@ DM history sweep, session auth, media download или dependency update.
      video, audio/voice;
    - Telegram → MAX: обычный send, reply и media send;
    - reconnect создаёт fresh client и возвращает readiness;
-   - серия raw/history/send requests проходит через PyMax 2.1 16-bit TCP seq
+   - серия raw/history/send requests проходит через PyMax 2.1.x 16-bit TCP seq
      без legacy `pymax_tcp_sequence_overflow`;
    - DM history sweep пишет `bridge.dm_history_sweep.worker_started` и
      `bridge.dm_history_sweep.cycle_finished`, не создавая лишнюю MAX API
@@ -800,7 +800,7 @@ Rollback path:
 Dependency review: PyMax использует unofficial MAX internal API. При каждом
 обновлении `maxapi-python` сверять release/source diff и повторять checks для
 login sanitizer, legacy session import, raw gateway, msgpack guard, TCP seq
-guard (сейчас 16-bit seq в PyMax 2.1), MAX-only egress transport и media URL
+guard (сейчас 16-bit seq в PyMax 2.1.x), MAX-only egress transport и media URL
 handling.
 
 ## Обновление зависимостей

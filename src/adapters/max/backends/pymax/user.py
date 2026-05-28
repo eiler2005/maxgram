@@ -16,7 +16,7 @@ from pymax.types.domain import User
 
 
 def sanitize_user_payload(payload: dict[Any, Any]) -> dict[Any, Any]:
-    """Normalize MAX user shapes that PyMax 2.1.0 models still type too tightly."""
+    """Normalize MAX user shapes that PyMax 2.1.x models still type too tightly."""
     return _sanitize_user_value(deepcopy(payload))
 
 
