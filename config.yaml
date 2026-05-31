@@ -31,6 +31,7 @@ health:
   heartbeat_interval_seconds: 30
   worker_restart_backoff_seconds: 5
   max_egress_probe_interval_seconds: 30
+  max_egress_startup_grace_seconds: 900
   max_self_heal_grace_seconds: 180
   max_self_heal_restart_cooldown_seconds: 1800
   dm_history_sweep:

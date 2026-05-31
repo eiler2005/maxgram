@@ -224,12 +224,17 @@ max:
 
 Когда MAX offline и активен `home_ru_proxy`, watchdog делает безопасный egress
 probe: TCP до proxy, HTTP CONNECT к `api.oneme.ru:443`, затем TLS handshake с
-SNI. Если proxy/TLS не проходит, health получает `max_egress_unavailable` и
-bridge продолжает reconnect. Если proxy/TLS уже healthy, но pymax не дошёл до
-`on_start` после grace window, bridge записывает `data/max_egress_self_heal.json`
-и завершает процесс с rate limit; Docker `restart: always` поднимает свежий
-процесс. Это self-heal только для зависания процесса, не fallback на другой
-egress.
+SNI. После reboot VPS bridge может стартовать раньше, чем домашний reverse
+Channel M заново откроет listener на docker bridge. В течение
+`health.max_egress_startup_grace_seconds` такой `ConnectionRefused` считается
+startup wait: health получает `max_egress_startup_wait` без owner alert, а
+bridge продолжает reconnect. После grace обычный fail-closed режим возвращается:
+если proxy/TLS не проходит, health получает `max_egress_unavailable` и bridge
+продолжает reconnect. Если proxy/TLS уже healthy, но pymax не дошёл до
+`on_start` после self-heal grace window, bridge записывает
+`data/max_egress_self_heal.json` и завершает процесс с rate limit; Docker
+`restart: always` поднимает свежий процесс. Это self-heal только для зависания
+процесса, не fallback на другой egress.
 
 Для применения reverse Channel M на VPS используется `infra/ansible/channel-m-reverse.yml`: он берёт gitignored artifact из `router_configuration`, обновляет `MAX_EGRESS_PROXY_*`, пересоздаёт контейнер и проверяет socket CONNECT к MAX изнутри bridge.
 

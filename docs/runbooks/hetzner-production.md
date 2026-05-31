@@ -177,6 +177,12 @@ max:
     active: "home_ru_proxy"
 ```
 
+В базовом `config.yaml` `health.max_egress_startup_grace_seconds` задаёт окно
+после reboot VPS, когда bridge ждёт повторного подключения домашнего reverse
+Channel M без owner alert. Значение по умолчанию `900` секунд покрывает холодный
+старт роутерного tunnel; после этого окна `home_ru_proxy` снова считается
+обычной аварией `max_egress_unavailable`.
+
 Рекомендуемый способ применить эти значения после генерации artifact в
 `router_configuration`:
 

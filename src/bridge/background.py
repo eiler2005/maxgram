@@ -133,6 +133,7 @@ async def run_max_watchdog(
     alert_after_seconds: int = 60,
     check_interval: int = 10,
     egress_probe_interval: int = 30,
+    egress_startup_grace_seconds: int = 15 * 60,
     self_heal_grace_seconds: int = 180,
     self_heal_restart_cooldown_seconds: int = 1800,
     self_heal_state_path: Path | None = None,
@@ -183,6 +184,7 @@ async def run_max_watchdog(
             elapsed = time.time() - disconnected_since
             home_proxy_active = _egress_is_home_ru_proxy(max_adapter)
             latest_probe: dict[str, object] | None = None
+            home_proxy_startup_grace = False
             if home_proxy_active and (
                 time.monotonic() - last_egress_probe_at >= max(0, egress_probe_interval)
             ):
@@ -204,7 +206,17 @@ async def run_max_watchdog(
                         error=latest_probe["error"],
                     )
 
-                if latest_probe is not None and not latest_probe.get("ok") and health is not None:
+                home_proxy_startup_grace = (
+                    latest_probe is not None
+                    and not latest_probe.get("ok")
+                    and elapsed < egress_startup_grace_seconds
+                )
+                if (
+                    latest_probe is not None
+                    and not latest_probe.get("ok")
+                    and health is not None
+                    and not home_proxy_startup_grace
+                ):
                     await health.report_issue(
                         "max_link",
                         code="max_egress_unavailable",
@@ -296,6 +308,49 @@ async def run_max_watchdog(
 
             if not alert_sent and elapsed >= alert_after_seconds:
                 probe_for_alert = latest_probe or max_adapter.get_last_egress_probe()
+                home_proxy_startup_grace = (
+                    home_proxy_active
+                    and probe_for_alert is not None
+                    and not probe_for_alert.get("ok")
+                    and elapsed < egress_startup_grace_seconds
+                )
+                if home_proxy_startup_grace:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "bridge.watchdog.max_alert_suppressed",
+                        stage="watchdog",
+                        outcome="suppressed",
+                        reason="home_proxy_startup_grace",
+                        downtime_seconds=int(elapsed),
+                        egress_startup_grace_seconds=egress_startup_grace_seconds,
+                        probe_stage=probe_for_alert.get("stage"),
+                    )
+                    if health is not None:
+                        await health.report_issue(
+                            "max_link",
+                            code="max_egress_startup_wait",
+                            summary=(
+                                f"MAX egress home_ru_proxy недоступен {int(elapsed)}с "
+                                "после старта — жду reverse Channel M"
+                            ),
+                            raw_cause=_probe_summary(probe_for_alert),
+                            severity=Severity.WARNING,
+                            impact=(
+                                "После reboot VPS bridge может подняться раньше, чем домашний "
+                                "reverse tunnel заново подключится к listener."
+                            ),
+                            operator_hint=(
+                                "Ручное действие пока не требуется; watchdog продолжит probe "
+                                "и перейдёт к обычному alert только после startup grace."
+                            ),
+                            auto_recovery=(
+                                "Как только reverse Channel M начнёт отвечать, MAX reconnect "
+                                "loop восстановит связь автоматически."
+                            ),
+                            notify=False,
+                        )
+                    continue
                 self_heal_pending = (
                     home_proxy_active
                     and probe_for_alert is not None

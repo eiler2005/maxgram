@@ -335,6 +335,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_recovery_auto_changes_are_summarized_in_status_not_notified` | Обычные recovery auto-scan дельты не отправляют отдельный alert, но `/status` показывает агрегаты без invite/title/phone/raw payload. |
 | `test_watchdog_sends_gap_notice_after_reconnect` | После offline-окна watchdog отправляет и alert про downtime, и уведомление о возможном `missed messages gap` после восстановления. |
 | `test_max_watchdog_reports_egress_down_without_restart` | При упавшем `home_ru_proxy` watchdog пишет `max_egress_unavailable`, но не рестартит процесс. |
+| `test_max_watchdog_suppresses_home_proxy_down_during_startup_grace` | После reboot VPS `home_ru_proxy` может подняться позже bridge; watchdog пишет `max_egress_startup_wait` без owner alert до истечения startup grace. |
 | `test_max_watchdog_suppresses_owner_alert_while_self_heal_is_pending` | При healthy `home_ru_proxy` и ещё не истёкшем self-heal grace watchdog обновляет health/status без owner DM-шума. |
 | `test_max_watchdog_restarts_once_when_proxy_ok_but_max_stays_offline` | При healthy proxy/TLS и зависшем MAX watchdog пишет cooldown-файл и запускает rate-limited self-exit. |
 | `test_dm_history_sweep_skips_until_max_is_ready` | DM history sweep не стреляет `CHAT_HISTORY` raw requests до `MAX connected`, чтобы не шуметь `Not connected`/pending futures на старте. |

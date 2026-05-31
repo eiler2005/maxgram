@@ -90,6 +90,7 @@ Production local-only files:
 | `.env.secrets` | `MAX_EGRESS_PROXY_URL` | Secret authenticated proxy URL. For reverse Channel M it uses `http://...:<channel-m-reverse-listen-port>` because the leg is inside SSH. |
 | `.env.host` | `MAX_EGRESS_PROXY_HOST`, `MAX_EGRESS_PROXY_GATEWAY` | Compose `extra_hosts` maps the Channel M hostname to the VPS docker bridge gateway. |
 | `config.local.yaml` | `max.egress.active=home_ru_proxy` | Local-only production config; `hetzner_direct` is manual emergency only. |
+| `config.yaml` | `health.max_egress_startup_grace_seconds` | Startup grace after VPS reboot while the router-originated reverse Channel M reconnects. Defaults to `900`; after that window unavailable proxy is reported as `max_egress_unavailable`. |
 
 ## Fail-Closed Rule
 

@@ -79,6 +79,7 @@ class HealthConfig:
     metrics_textfile_path: Optional[Path] = None
     metrics_interval_seconds: int = 30
     max_egress_probe_interval_seconds: int = 30
+    max_egress_startup_grace_seconds: int = 15 * 60
     max_self_heal_grace_seconds: int = 180
     max_self_heal_restart_cooldown_seconds: int = 1800
     dm_history_sweep: DmHistorySweepConfig = field(default_factory=DmHistorySweepConfig)
@@ -315,6 +316,9 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         metrics_interval_seconds=int(health_raw.get("metrics_interval_seconds", 30)),
         max_egress_probe_interval_seconds=int(
             health_raw.get("max_egress_probe_interval_seconds", 30)
+        ),
+        max_egress_startup_grace_seconds=int(
+            health_raw.get("max_egress_startup_grace_seconds", 15 * 60)
         ),
         max_self_heal_grace_seconds=int(health_raw.get("max_self_heal_grace_seconds", 180)),
         max_self_heal_restart_cooldown_seconds=int(

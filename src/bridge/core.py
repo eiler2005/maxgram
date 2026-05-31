@@ -387,6 +387,11 @@ class BridgeCore:
             alert_after_seconds=alert_after_seconds,
             check_interval=check_interval,
             egress_probe_interval=getattr(health_cfg, "max_egress_probe_interval_seconds", 30),
+            egress_startup_grace_seconds=getattr(
+                health_cfg,
+                "max_egress_startup_grace_seconds",
+                15 * 60,
+            ),
             self_heal_grace_seconds=getattr(health_cfg, "max_self_heal_grace_seconds", 180),
             self_heal_restart_cooldown_seconds=getattr(
                 health_cfg,

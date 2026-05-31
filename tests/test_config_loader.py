@@ -63,6 +63,7 @@ chats:
     assert cfg.health.worker_restart_backoff_seconds == 5
     assert cfg.health.metrics_textfile_path == tmp_path / "data" / "maxtg_bridge.prom"
     assert cfg.health.metrics_interval_seconds == 30
+    assert cfg.health.max_egress_startup_grace_seconds == 15 * 60
     assert cfg.health.dm_history_sweep.enabled is True
     assert cfg.health.dm_history_sweep.warmup_seconds == 600
     assert cfg.health.dm_history_sweep.warmup_interval_seconds == 120
