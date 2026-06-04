@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **289 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **292 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -129,7 +129,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (87 тестов)
+## tests/test_max_adapter/ — MAX adapter behavior split (89 тестов)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -156,10 +156,12 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | Тест | Что проверяет |
 |------|--------------|
 | `test_handle_raw_message_unwraps_forward_link_content` | `CHANNEL`/forward с `link.message` разворачивается до исходного текста и вложений; media download использует исходные `chat_id/message_id`. |
+| `test_handle_raw_message_falls_back_from_zero_forward_chat_for_media` | Typed `link.message` с source `chat_id=0` скачивает media по внешнему chat id и nested message id. |
 | `test_handle_raw_receive_unwraps_channel_wrapper_and_skips_pymax_duplicate` | Raw `CHANNEL`-обёртка перехватывается до pymax-parser, реальный nested message отправляется дальше, последующий wrapper-дубликат подавляется. |
 | `test_handle_raw_receive_forwards_channel_wrapper_with_direct_attachments` | Raw `CHANNEL`-обёртка с прямым `text/attaches` доставляется как сообщение, а не логируется как missing-chat-id metadata. |
 | `test_empty_recovery_unwraps_forwarded_history_candidate_before_content_check` | Empty recovery сначала разворачивает history-candidate с nested forwarded `message`, и только потом проверяет наличие контента. |
 | `test_empty_recovery_unwraps_forward_link_candidate_before_content_check` | Empty recovery не считает wrapper пустым, если forwarded content лежит в `link.message`; media download использует source `chat_id/message_id`. |
+| `test_empty_recovery_falls_back_from_zero_forward_chat_for_media` | Если MAX отдаёт forwarded source `chatId=0`, media download берёт внешний chat id и сохраняет nested/link message id. |
 | `test_raw_message_interceptor_catches_audio_and_suppresses_duplicate` | Внутренний pymax notification handler дополнительно прогоняет raw payload через bridge до typed parsing; последующий пустой typed-дубликат подавляется. |
 | `test_handle_raw_message_renders_unknown_message_details` | Для неизвестного `CHANNEL` без доступного nested content формируется подробный `[Неизвестное сообщение MAX]` с `type`, `link_*` и списком полей. |
 
@@ -319,6 +321,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает queued-placeholder и создаёт `pending_media_downloads` job. |
 | `test_existing_pending_audio_failure_does_not_duplicate_placeholder` | Повторный replay того же voice по `media_msg_id/reference_id` переиспользует активный pending job и не отправляет второй queued-placeholder. |
 | `test_pending_media_worker_delivers_video_and_maps_reply` | Retry worker скачивает отложенное видео, отправляет `send_video`, закрывает job и сохраняет reply mapping на исходный MAX message. |
+| `test_pending_media_worker_falls_back_from_zero_media_chat` | Pending media retry для старых jobs с `media_chat_id=0` использует исходный MAX chat id и сохранённый media message id. |
 | `test_pending_media_worker_reschedules_download_failure` | Временный сбой скачивания переводит job в `retry` с увеличенным attempts и будущим `next_attempt_at`. |
 | `test_pending_media_worker_marks_missing_reference_terminal` | Job без стабильного `video_id` становится terminal failure, а не крутится бесконечно. |
 | `test_on_tg_reply_to_delayed_video_uses_original_max_message` | Reply на позднее досланное видео резолвится в исходный MAX `max_msg_id`. |

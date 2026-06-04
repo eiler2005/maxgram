@@ -13,6 +13,7 @@ from ...bridge.contracts import (
     MaxAttachmentFailure,
     MaxMessage,
     is_probable_client_cid,
+    is_usable_max_chat_id,
 )
 from .deps import EventsDeps
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
@@ -497,16 +498,22 @@ class MaxEventsService:
                 or getattr(content_message, "reaction_info", None)
             )
             msg_id = f"{raw_msg_id}:{status}" if raw_msg_id and status else raw_msg_id
-            media_chat_id = (
+            source_media_chat_id = (
                 forwarded.chat_id
                 if forwarded
                 else getattr(message, "_forward_source_chat_id", None)
-            ) or chat_id
-            media_msg_id = (
+            )
+            source_media_msg_id = (
                 forwarded.msg_id
                 if forwarded
                 else getattr(message, "_forward_source_msg_id", None)
-            ) or raw_msg_id
+            )
+            if is_usable_max_chat_id(source_media_chat_id):
+                media_chat_id = str(source_media_chat_id)
+                media_msg_id = str(source_media_msg_id or raw_msg_id)
+            else:
+                media_chat_id = chat_id
+                media_msg_id = str(source_media_msg_id or raw_msg_id)
 
             # Отправитель: message.sender — это int
             sender_int = getattr(message, "sender", None)

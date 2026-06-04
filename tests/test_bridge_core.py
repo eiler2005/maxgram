@@ -1505,6 +1505,62 @@ async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pending_media_worker_falls_back_from_zero_media_chat(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = BridgeCore(
+        config=SimpleNamespace(
+            bridge=SimpleNamespace(max_file_size_mb=50),
+            content=SimpleNamespace(
+                placeholder_unsupported="[unsupported: {type}]",
+                placeholder_file_too_large="[too large: {filename}]",
+            ),
+        ),
+        repo=repo,
+        max_adapter=max_adapter,
+        tg_adapter=tg_adapter,
+    )
+
+    video_path = Path(tmp_path) / "retry.mp4"
+    video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    max_adapter.video_reference_result = MaxAttachment(
+        "video",
+        str(video_path),
+        "retry.mp4",
+        10,
+        640,
+        360,
+        "VIDEO",
+    )
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-video-1",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="video",
+        source_type="VIDEO",
+        media_chat_id="0",
+        media_msg_id="source-video-1",
+        reference_kind="video_id",
+        reference_id="555",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert max_adapter.video_reference_calls[0]["chat_id"] == "-70000000000003"
+    assert max_adapter.video_reference_calls[0]["msg_id"] == "source-video-1"
+    assert tg_adapter.calls == [
+        ("video", "Докачанное видео MAX #1", "retry.mp4", 10, 640, 360),
+    ]
+    assert job.status == "delivered"
+    assert not video_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_pending_media_worker_delivers_audio_as_voice_and_maps_reply(tmp_path):
     repo = DummyRepo()
     max_adapter = DummyMax()

@@ -5,7 +5,7 @@ from typing import Optional
 from .. import payload as max_payload
 from ..ports import MaxClientAttachment, MaxClientMessage
 from ..types import ForwardedPayload
-from ....bridge.contracts import is_probable_client_cid
+from ....bridge.contracts import is_probable_client_cid, is_usable_max_chat_id
 from .inspection import AttachmentInspector
 
 
@@ -454,6 +454,12 @@ class RawPayloadParser:
             return None
         return str(chat_id), str(msg_id)
 
+    def _first_usable_chat_id(self, *values: object) -> Optional[str]:
+        for value in values:
+            if is_usable_max_chat_id(value):
+                return str(value)
+        return None
+
     def _find_nested_message_dict(self, wrapper: dict) -> tuple[Optional[dict], Optional[str]]:
         for key in (
             "message",
@@ -558,8 +564,11 @@ class RawPayloadParser:
         if not nested:
             if wrapper_type not in {"CHANNEL", "FORWARD", "FORWARDED"} or not wrapper_has_content:
                 return None
-            chat_id = self._payload_value(wrapper, "chatId", "chat_id") or outer_chat_id
-            if chat_id is None or is_probable_client_cid(chat_id):
+            chat_id = self._first_usable_chat_id(
+                outer_chat_id,
+                self._payload_value(wrapper, "chatId", "chat_id"),
+            )
+            if chat_id is None:
                 return None
             message_obj = self._message_object_from_dict(
                 wrapper,
@@ -576,12 +585,15 @@ class RawPayloadParser:
         ):
             return None
 
-        source_chat_id = (
-            nested_chat_id
-            or self._payload_value(nested, "chatId", "chat_id")
-            or self._payload_value(wrapper, "chatId", "chat_id")
-            or outer_chat_id
+        source_chat_id = self._first_usable_chat_id(
+            nested_chat_id,
+            self._payload_value(nested, "chatId", "chat_id"),
+            self._payload_value(wrapper, "chatId", "chat_id"),
+            outer_chat_id,
         )
+        target_chat_id = self._first_usable_chat_id(outer_chat_id, source_chat_id)
+        if target_chat_id is None:
+            return None
         nested_msg_id = self._payload_value(nested, "id", "messageId", "message_id")
         outer_msg_id = (
             self._payload_value(wrapper, "id", "messageId", "message_id")
@@ -595,7 +607,7 @@ class RawPayloadParser:
 
         return MaxClientMessage(
             id=outer_msg_id,
-            chat_id=outer_chat_id or source_chat_id,
+            chat_id=target_chat_id,
             sender=(
                 self._payload_value(wrapper, "sender")
                 or getattr(nested_obj, "sender", None)
@@ -613,7 +625,9 @@ class RawPayloadParser:
                 str(source_chat_id) if source_chat_id is not None else None
             ),
             _forward_source_msg_id=(
-                str(nested_msg_id) if nested_msg_id is not None else None
+                str(nested_msg_id)
+                if source_chat_id is not None and nested_msg_id is not None
+                else None
             ),
             _forward_link_type=wrapper_type or "CHANNEL",
             _from_raw_unwrapped=True,

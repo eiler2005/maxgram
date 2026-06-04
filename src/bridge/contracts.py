@@ -22,6 +22,18 @@ def is_probable_client_cid(value: object) -> bool:
     return value_int >= MAX_PROBABLE_CLIENT_CID_MIN
 
 
+def is_usable_max_chat_id(value: object) -> bool:
+    """MAX chat ids must be present, non-zero, and not client-side cids."""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        value_int = int(text)
+    except (TypeError, ValueError):
+        return True
+    return value_int != 0 and not is_probable_client_cid(value_int)
+
+
 @dataclass
 class MaxAttachment:
     """Нормализованное вложение из MAX."""

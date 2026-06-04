@@ -10,7 +10,13 @@ from typing import Optional
 
 from . import forwarding as bridge_forwarding
 from . import mapping as bridge_mapping
-from .contracts import MaxAttachment, MaxAttachmentFailure, MaxBridgePort, TelegramBridgePort
+from .contracts import (
+    MaxAttachment,
+    MaxAttachmentFailure,
+    MaxBridgePort,
+    TelegramBridgePort,
+    is_usable_max_chat_id,
+)
 from .retry_policy import exponential_backoff_seconds
 from ..config.loader import AppConfig
 from ..db.repository import PendingMediaDownload, Repository
@@ -46,6 +52,18 @@ def pending_media_retry_delay(attempts_after_failure: int) -> int:
     )
 
 
+def media_source_pair(
+    *,
+    source_chat_id: object,
+    source_msg_id: object,
+    fallback_chat_id: object,
+    fallback_msg_id: object,
+) -> tuple[str, str, bool]:
+    if is_usable_max_chat_id(source_chat_id):
+        return str(source_chat_id), str(source_msg_id or fallback_msg_id), False
+    return str(fallback_chat_id), str(source_msg_id or fallback_msg_id), True
+
+
 async def enqueue_retryable_media_failures(
     *,
     repo: Repository,
@@ -62,10 +80,19 @@ async def enqueue_retryable_media_failures(
             display_failures.append(failure)
             continue
 
+        media_chat_id, media_msg_id, source_fallback = media_source_pair(
+            source_chat_id=failure.media_chat_id,
+            source_msg_id=failure.media_msg_id,
+            fallback_chat_id=msg.chat_id,
+            fallback_msg_id=msg.msg_id,
+        )
+
         existing = await find_existing_pending_media_for_failure(
             repo=repo,
             msg=msg,
             failure=failure,
+            media_chat_id=media_chat_id,
+            media_msg_id=media_msg_id,
         )
         if existing is not None:
             log_event(
@@ -84,6 +111,7 @@ async def enqueue_retryable_media_failures(
                 attachment_index=failure.index,
                 kind=failure.kind,
                 reference_kind=failure.reference_kind,
+                media_source_fallback=source_fallback,
             )
             continue
 
@@ -95,8 +123,8 @@ async def enqueue_retryable_media_failures(
                 attachment_index=failure.index,
                 kind=failure.kind,
                 source_type=failure.source_type,
-                media_chat_id=failure.media_chat_id or msg.chat_id,
-                media_msg_id=failure.media_msg_id or msg.msg_id,
+                media_chat_id=media_chat_id,
+                media_msg_id=media_msg_id,
                 reference_kind=failure.reference_kind or "video_id",
                 reference_id=failure.reference_id or "",
                 filename=failure.filename,
@@ -124,6 +152,7 @@ async def enqueue_retryable_media_failures(
             attachment_index=failure.index,
             kind=failure.kind,
             reference_kind=failure.reference_kind,
+            media_source_fallback=source_fallback,
         )
     return enqueued, display_failures
 
@@ -133,6 +162,8 @@ async def find_existing_pending_media_for_failure(
     repo: Repository,
     msg,
     failure: MaxAttachmentFailure,
+    media_chat_id: str | None = None,
+    media_msg_id: str | None = None,
 ) -> PendingMediaDownload | None:
     finder = getattr(repo, "find_active_pending_media", None)
     if callable(finder):
@@ -150,12 +181,12 @@ async def find_existing_pending_media_for_failure(
         callable(ref_finder)
         and failure.reference_kind
         and failure.reference_id
-        and (failure.media_chat_id or msg.chat_id)
-        and (failure.media_msg_id or msg.msg_id)
+        and (media_chat_id or failure.media_chat_id or msg.chat_id)
+        and (media_msg_id or failure.media_msg_id or msg.msg_id)
     ):
         return await ref_finder(
-            media_chat_id=failure.media_chat_id or msg.chat_id,
-            media_msg_id=failure.media_msg_id or msg.msg_id,
+            media_chat_id=media_chat_id or failure.media_chat_id or msg.chat_id,
+            media_msg_id=media_msg_id or failure.media_msg_id or msg.msg_id,
             attachment_index=failure.index,
             kind=failure.kind,
             reference_kind=failure.reference_kind,
@@ -237,6 +268,13 @@ async def process_pending_media_download(
         )
         return
 
+    media_chat_id, media_msg_id, source_fallback = media_source_pair(
+        source_chat_id=job.media_chat_id,
+        source_msg_id=job.media_msg_id,
+        fallback_chat_id=job.max_chat_id,
+        fallback_msg_id=job.max_msg_id,
+    )
+
     log_event(
         logger,
         logging.INFO,
@@ -253,6 +291,7 @@ async def process_pending_media_download(
         attempts=int(job.attempts or 0) + 1,
         kind=job.kind,
         reference_kind=job.reference_kind,
+        media_source_fallback=source_fallback,
     )
 
     if job.kind == "audio":
@@ -263,8 +302,8 @@ async def process_pending_media_download(
     try:
         if job.kind == "audio":
             attachment = await download_media(
-                chat_id=job.media_chat_id,
-                msg_id=job.media_msg_id,
+                chat_id=media_chat_id,
+                msg_id=media_msg_id,
                 reference_id=job.reference_id,
                 reference_kind=job.reference_kind,
                 attachment_index=job.attachment_index,
@@ -275,8 +314,8 @@ async def process_pending_media_download(
             )
         else:
             attachment = await download_media(
-                chat_id=job.media_chat_id,
-                msg_id=job.media_msg_id,
+                chat_id=media_chat_id,
+                msg_id=media_msg_id,
                 video_id=job.reference_id,
                 attachment_index=job.attachment_index,
                 filename_hint=job.filename,

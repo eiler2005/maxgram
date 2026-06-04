@@ -32,12 +32,13 @@ All notable changes to Maxgram are documented here.
 - **Live empty-event recovery** — when pymax still emits a fresh empty `USER` event, the bridge tries a narrow recent-history lookup for that exact `msg_id` and forwards the recovered voice attachment if present. Diagnostic logs include only safe class/field names.
 - **Top-level MAX voice payloads** — raw notifications where `payload` itself is the message and media is stored under `attachments` are now normalized before pymax can drop the attachment list.
 - **Forwarded/channel MAX recovery** — empty-event recovery now unwraps `CHANNEL`/`FORWARD` history candidates with nested `message` or `link.message` before deciding they are contentless; raw receive also forwards direct `CHANNEL` wrappers with media instead of logging them as missing-chat-id metadata.
+- **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id, including already queued pending-video retries.
 
 ### Tests
 - Added PyMax 2.1.2 runtime version pinning and a regression test for tokenless `LoginResponse` validation.
 - Added coverage for durable inbound/outbound text queues, plaintext clearing after delivery, stale MAX transport readiness, non-queued ambiguous ack timeouts, and non-persisted TG→MAX media failures.
 - Added coverage for DM title resolution order, cached contact name lookup, raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
-- Added coverage for direct-media `CHANNEL` wrappers and forwarded empty-recovery candidates with nested `message` / `link.message` payloads.
+- Added coverage for direct-media `CHANNEL` wrappers, forwarded empty-recovery candidates with nested `message` / `link.message` payloads, and zero-source forwarded media fallback.
 - Added coverage for SQLite recovery migrations/idempotency/deltas, DM contact recovery upsert/export/privacy, recovery report/export/remap, MAX recovery snapshot collection, async event-driven recovery scans, quiet status-summary recovery alerts, account-migration notification privacy/deduplication, owner-only `/recovery`, command allowlist privacy, stale reply routing after remap, and privacy of recovery reports/logs.
 
 ---
