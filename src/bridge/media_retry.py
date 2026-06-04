@@ -325,6 +325,35 @@ async def process_pending_media_download(
                 source_type=job.source_type or "VIDEO",
                 flow_id=flow_id,
             )
+            if attachment is None and source_fallback and media_msg_id != str(job.max_msg_id):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "bridge.media_retry.source_fallback",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="media_retry",
+                    outcome="retry",
+                    reason="fallback_to_wrapper_message_id",
+                    max_chat_id=job.max_chat_id,
+                    max_msg_id=job.max_msg_id,
+                    tg_topic_id=job.tg_topic_id,
+                    pending_media_id=job.id,
+                    attachment_index=job.attachment_index,
+                    kind=job.kind,
+                )
+                attachment = await download_media(
+                    chat_id=job.max_chat_id,
+                    msg_id=job.max_msg_id,
+                    video_id=job.reference_id,
+                    attachment_index=job.attachment_index,
+                    filename_hint=job.filename,
+                    duration=job.duration,
+                    width=job.width,
+                    height=job.height,
+                    source_type=job.source_type or "VIDEO",
+                    flow_id=flow_id,
+                )
     except Exception as e:
         await mark_pending_media_retry(
             repo=repo,

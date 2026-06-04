@@ -32,7 +32,7 @@ All notable changes to Maxgram are documented here.
 - **Live empty-event recovery** — when pymax still emits a fresh empty `USER` event, the bridge tries a narrow recent-history lookup for that exact `msg_id` and forwards the recovered voice attachment if present. Diagnostic logs include only safe class/field names.
 - **Top-level MAX voice payloads** — raw notifications where `payload` itself is the message and media is stored under `attachments` are now normalized before pymax can drop the attachment list.
 - **Forwarded/channel MAX recovery** — empty-event recovery now unwraps `CHANNEL`/`FORWARD` history candidates with nested `message` or `link.message` before deciding they are contentless; raw receive also forwards direct `CHANNEL` wrappers with media instead of logging them as missing-chat-id metadata.
-- **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id, including already queued pending-video retries.
+- **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
 - Added PyMax 2.1.2 runtime version pinning and a regression test for tokenless `LoginResponse` validation.

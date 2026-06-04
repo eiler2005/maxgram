@@ -1507,7 +1507,15 @@ async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
 @pytest.mark.asyncio
 async def test_pending_media_worker_falls_back_from_zero_media_chat(tmp_path):
     repo = DummyRepo()
-    max_adapter = DummyMax()
+
+    class FallbackVideoMax(DummyMax):
+        async def download_video_reference(self, **kwargs):
+            self.video_reference_calls.append(kwargs)
+            if kwargs["msg_id"] == "mx-video-1":
+                return self.video_reference_result
+            return None
+
+    max_adapter = FallbackVideoMax()
     tg_adapter = DummyTelegram()
     bridge = BridgeCore(
         config=SimpleNamespace(
@@ -1553,6 +1561,8 @@ async def test_pending_media_worker_falls_back_from_zero_media_chat(tmp_path):
 
     assert max_adapter.video_reference_calls[0]["chat_id"] == "-70000000000003"
     assert max_adapter.video_reference_calls[0]["msg_id"] == "source-video-1"
+    assert max_adapter.video_reference_calls[1]["chat_id"] == "-70000000000003"
+    assert max_adapter.video_reference_calls[1]["msg_id"] == "mx-video-1"
     assert tg_adapter.calls == [
         ("video", "Докачанное видео MAX #1", "retry.mp4", 10, 640, 360),
     ]
