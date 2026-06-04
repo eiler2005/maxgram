@@ -17,6 +17,7 @@ All notable changes to Maxgram are documented here.
 - **Architecture decision ADR-005** — documents the account migration recovery registry, privacy constraints, remap behavior, and V1 non-automation boundaries.
 
 ### Changed
+- **PyMax 2.1.2 upgrade** — `maxapi-python` is pinned to 2.1.2. Bridge login validation now accepts tokenless `LOGIN` responses without re-injecting the saved session token, while keeping backend-local sanitizers for unsupported initial-sync payload drift.
 - **Telegram command access model** — `/dm` remains public only in General via an explicit allowlist; `/recovery ...` and other arg commands remain owner-only even in General.
 - **Remap-safe reply routing** — after `/recovery remap`, replies to old Telegram messages no longer send stale MAX `reply_to_msg_id` values when the mapped MAX message belongs to the old chat id.
 - **Recovery snapshot upsert deltas** — `upsert_recovery_snapshot()` now returns `inserted`, `status_changed`, `unmapped`, `needs_invite`, and `manual_admin_required`, and stores a redacted scan reason in recovery events.
@@ -32,6 +33,7 @@ All notable changes to Maxgram are documented here.
 - **Top-level MAX voice payloads** — raw notifications where `payload` itself is the message and media is stored under `attachments` are now normalized before pymax can drop the attachment list.
 
 ### Tests
+- Added PyMax 2.1.2 runtime version pinning and a regression test for tokenless `LoginResponse` validation.
 - Added coverage for durable inbound/outbound text queues, plaintext clearing after delivery, stale MAX transport readiness, non-queued ambiguous ack timeouts, and non-persisted TG→MAX media failures.
 - Added coverage for DM title resolution order, cached contact name lookup, raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
 - Added coverage for SQLite recovery migrations/idempotency/deltas, DM contact recovery upsert/export/privacy, recovery report/export/remap, MAX recovery snapshot collection, async event-driven recovery scans, quiet status-summary recovery alerts, account-migration notification privacy/deduplication, owner-only `/recovery`, command allowlist privacy, stale reply routing after remap, and privacy of recovery reports/logs.

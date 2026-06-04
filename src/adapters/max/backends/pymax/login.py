@@ -69,15 +69,9 @@ def sanitize_login_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def validate_login_response(
     payload: dict[str, Any],
-    *,
-    session_token: str | None = None,
 ) -> LoginResponse:
     """Validate login response while tolerating non-critical PyMax model drift."""
     sanitized = sanitize_login_payload(payload)
-    filled_token = _fill_missing_token_from_session(
-        sanitized,
-        session_token=session_token,
-    )
     try:
         response = LoginResponse.model_validate(sanitized)
     except ValidationError as exc:
@@ -89,21 +83,12 @@ def validate_login_response(
                 errors=_safe_validation_errors(exc),
             ) from exc
     else:
-        if filled_token:
-            _log_login_payload_repaired(
-                dropped_last_messages=0,
-                dropped_messages=0,
-                nulled_contacts=0,
-                filled_token_from_session=True,
-                validation_paths=[],
-            )
         return response
 
     _log_login_payload_repaired(
         dropped_last_messages=repair.dropped_last_messages,
         dropped_messages=repair.dropped_messages,
         nulled_contacts=repair.nulled_contacts,
-        filled_token_from_session=filled_token,
         validation_paths=repair.validation_paths[:8],
     )
     try:
@@ -146,20 +131,6 @@ def _is_unsupported_attachment(value: object) -> bool:
 
 def _is_message_element(value: dict[str, Any]) -> bool:
     return isinstance(value.get("type"), str) and isinstance(value.get("length"), int)
-
-
-def _fill_missing_token_from_session(
-    payload: dict[str, Any],
-    *,
-    session_token: str | None,
-) -> bool:
-    if not session_token:
-        return False
-    token = payload.get("token")
-    if isinstance(token, str) and token:
-        return False
-    payload["token"] = session_token
-    return True
 
 
 def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -290,7 +261,6 @@ def _log_login_payload_repaired(
     dropped_last_messages: int,
     dropped_messages: int,
     nulled_contacts: int,
-    filled_token_from_session: bool,
     validation_paths: list[str],
 ) -> None:
     log_event(
@@ -303,7 +273,6 @@ def _log_login_payload_repaired(
         dropped_last_messages=dropped_last_messages,
         dropped_messages=dropped_messages,
         nulled_contacts=nulled_contacts,
-        filled_token_from_session=filled_token_from_session,
         validation_paths=validation_paths,
     )
 
@@ -328,10 +297,7 @@ class BridgeAuthService(AuthService):
             sync=sync,
         )
         response = await self.app.invoke(Opcode.LOGIN, frame.to_payload())
-        login_response = validate_login_response(
-            response.payload,
-            session_token=session.token,
-        )
+        login_response = validate_login_response(response.payload)
         await self._update_session(login_response)
         return login_response
 
@@ -346,9 +312,6 @@ class BridgeAuthService(AuthService):
             sync=sync,
         )
         response = await self.app.invoke(Opcode.LOGIN, frame.to_payload())
-        login_response = validate_login_response(
-            response.payload,
-            session_token=session.token,
-        )
+        login_response = validate_login_response(response.payload)
         await self._update_session(login_response)
         return login_response

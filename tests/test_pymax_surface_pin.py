@@ -3,9 +3,14 @@
 import importlib
 
 import pytest
+import pymax
 
 
 pytestmark = pytest.mark.architecture
+
+
+def test_pymax_runtime_version_is_pinned():
+    assert pymax.__version__ == "2.1.2"
 
 
 PINS = {

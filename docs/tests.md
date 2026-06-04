@@ -15,11 +15,11 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **279 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **286 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
-Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
+Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.1.2"`. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
 
 ```text
                          pytest -q
@@ -269,6 +269,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_max_reauth_snapshot_session_db_copies_without_token_output` | Перед reauth создаётся `session.db.before-reauth-*` snapshot с правами `0600`, без чтения/печати token. |
 | `test_pymax2_login_payload_drops_unsupported_attachments` | `login.py` удаляет unsupported attachments из initial sync payload до strict PyMax 2 `LoginResponse` validation. |
 | `test_pymax2_login_validation_repairs_noncritical_payload_drift` | `validate_login_response()` не валит MAX runtime из-за одного битого `lastMessage`/history/contact узла initial sync. |
+| `test_pymax212_login_validation_allows_tokenless_response` | PyMax 2.1.2 `LoginResponse.token=None` принимается без bridge-side подстановки текущего session token. |
 | `test_pymax2_login_validation_error_is_safe_and_classified` | Невосстановимый PyMax payload drift логируется без raw payload/`input_val` и классифицируется как `pymax_payload_drift`, reauth не нужен. |
 | `test_pymax2_handler_signatures_are_adapted_to_bridge_callbacks` | PyMax 2 callbacks `(event, client)` адаптируются к bridge callbacks без pymax types снаружи. |
 | `test_pymax2_raw_gateway_converts_frames_and_invokes_app` | Native `on_raw` конвертируется в bridge raw dict, а raw requests изолированы через `_app.invoke`. |
