@@ -14,6 +14,16 @@ class EmptyRecoveryCandidateBuilder:
         self._parser = parser
         self._attachments = attachments
 
+    def _candidate_has_recoverable_content(self, candidate) -> bool:
+        if self._parser._message_object_has_content(candidate):
+            return True
+        forwarded = self._parser._extract_forwarded_payload(candidate)
+        return bool(
+            forwarded
+            and forwarded.message is not None
+            and self._parser._message_object_has_content(forwarded.message)
+        )
+
     def _prepare_empty_recovery_candidate(
         self,
         candidate,
@@ -25,13 +35,23 @@ class EmptyRecoveryCandidateBuilder:
         reason: str,
     ):
         if isinstance(candidate, dict):
-            candidate = self._parser._message_object_from_dict(
-                self._parser._normalize_message_dict(candidate),
-                chat_id,
-                prefer_raw=True,
+            normalized = self._parser._normalize_message_dict(candidate)
+            unwrapped = self._parser._build_unwrapped_channel_message(
+                {
+                    "chatId": chat_id_int,
+                    "message": normalized,
+                }
             )
+            if unwrapped is not None:
+                candidate = unwrapped
+            else:
+                candidate = self._parser._message_object_from_dict(
+                    normalized,
+                    chat_id,
+                    prefer_raw=True,
+                )
 
-        if not self._parser._message_object_has_content(candidate):
+        if not self._candidate_has_recoverable_content(candidate):
             log_event(
                 logger,
                 logging.INFO,

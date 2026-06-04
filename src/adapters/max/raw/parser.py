@@ -462,10 +462,15 @@ class RawPayloadParser:
             "channelMessage",
             "sourceMessage",
             "originalMessage",
+            "link",
         ):
             value = self._payload_value(wrapper, key)
             if not isinstance(value, dict):
                 continue
+            if key == "link":
+                link_type = str(self._payload_value(value, "type") or "").upper()
+                if link_type == "REPLY":
+                    continue
             source_chat_id = self._payload_value(value, "chatId", "chat_id")
             nested = self._payload_value(value, "message")
             if isinstance(nested, dict):
@@ -547,19 +552,25 @@ class RawPayloadParser:
             return None
 
         wrapper = self._normalize_message_dict(wrapper)
+        wrapper_type = str(self._payload_value(wrapper, "type") or "").upper()
+        wrapper_has_content = self._message_dict_has_content(wrapper)
         nested, nested_chat_id = self._find_nested_message_dict(wrapper)
         if not nested:
-            return None
+            if wrapper_type not in {"CHANNEL", "FORWARD", "FORWARDED"} or not wrapper_has_content:
+                return None
+            chat_id = self._payload_value(wrapper, "chatId", "chat_id") or outer_chat_id
+            if chat_id is None or is_probable_client_cid(chat_id):
+                return None
+            message_obj = self._message_object_from_dict(
+                wrapper,
+                str(chat_id),
+                prefer_raw=True,
+            )
+            setattr(message_obj, "_forward_link_type", wrapper_type or "CHANNEL")
+            setattr(message_obj, "_from_raw_unwrapped", True)
+            return message_obj
 
-        wrapper_type = str(self._payload_value(wrapper, "type") or "").upper()
-        wrapper_has_content = bool(
-            (self._payload_value(wrapper, "text") or "").strip()
-            or self._payload_value(wrapper, "attaches")
-        )
-        nested_has_content = bool(
-            (self._payload_value(nested, "text") or "").strip()
-            or self._payload_value(nested, "attaches")
-        )
+        nested_has_content = self._message_dict_has_content(nested)
         if wrapper_type not in {"CHANNEL", "FORWARD", "FORWARDED"} and (
             wrapper_has_content or not nested_has_content
         ):

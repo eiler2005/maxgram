@@ -230,6 +230,175 @@ async def test_handle_raw_receive_unwraps_channel_wrapper_and_skips_pymax_duplic
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_receive_forwards_channel_wrapper_with_direct_attachments(tmp_path):
+    adapter = CapturingDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")]
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    raw_event = {
+        "opcode": 128,
+        "payload": {
+            "chatId": -70000000000003,
+            "message": {
+                "id": 105,
+                "time": 1,
+                "sender": 7001,
+                "text": "Пересланный пост с фото",
+                "type": "CHANNEL",
+                "attaches": [
+                    {"_type": "PHOTO", "url": "https://cdn.example.test/photo.jpg"}
+                ],
+            },
+        },
+    }
+
+    await adapter._handle_raw_receive(raw_event)
+
+    assert len(received) == 1
+    assert received[0].msg_id == "105"
+    assert received[0].chat_id == "-70000000000003"
+    assert received[0].text == "Пересланный пост с фото"
+    assert received[0].message_type == "CHANNEL"
+    assert received[0].attachment_types == ["PHOTO"]
+    assert adapter.download_calls == [("-70000000000003", "105", "PHOTO", 0)]
+
+
+@pytest.mark.asyncio
+async def test_empty_recovery_unwraps_forwarded_history_candidate_before_content_check(tmp_path):
+    adapter = CapturingDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")]
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    candidate = {
+        "id": 106,
+        "time": 1,
+        "sender": 7001,
+        "text": "",
+        "type": "CHANNEL",
+        "attaches": [],
+        "message": {
+            "id": 906,
+            "time": 1,
+            "sender": None,
+            "text": "Вложенный пересланный пост",
+            "type": "TEXT",
+            "attaches": [
+                {"_type": "PHOTO", "url": "https://cdn.example.test/photo.jpg"}
+            ],
+        },
+    }
+
+    recovered = adapter._adapter._raw_payload._prepare_empty_recovery_candidate(
+        candidate,
+        chat_id="-70000000000003",
+        chat_id_int=-70000000000003,
+        raw_msg_id_str="106",
+        flow_id="mx:-70000000000003:106",
+        reason="raw_recent_history_match",
+    )
+
+    assert recovered is not None
+
+    await adapter._handle_raw_message(recovered)
+
+    assert len(received) == 1
+    assert received[0].msg_id == "106"
+    assert received[0].chat_id == "-70000000000003"
+    assert received[0].text == "Вложенный пересланный пост"
+    assert received[0].attachment_types == ["PHOTO"]
+    assert adapter.download_calls == [("-70000000000003", "906", "PHOTO", 0)]
+
+
+@pytest.mark.asyncio
+async def test_empty_recovery_unwraps_forward_link_candidate_before_content_check(tmp_path):
+    adapter = CapturingDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")]
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    candidate = {
+        "id": 107,
+        "time": 1,
+        "sender": 7001,
+        "text": "",
+        "type": "FORWARD",
+        "attaches": [],
+        "link": {
+            "type": "FORWARD",
+            "chatId": -80000000000001,
+            "message": {
+                "id": 907,
+                "time": 1,
+                "sender": None,
+                "text": "Связанный пересланный пост",
+                "type": "TEXT",
+                "attaches": [
+                    {"_type": "PHOTO", "url": "https://cdn.example.test/photo.jpg"}
+                ],
+            },
+        },
+    }
+
+    recovered = adapter._adapter._raw_payload._prepare_empty_recovery_candidate(
+        candidate,
+        chat_id="-70000000000003",
+        chat_id_int=-70000000000003,
+        raw_msg_id_str="107",
+        flow_id="mx:-70000000000003:107",
+        reason="raw_recent_history_match",
+    )
+
+    assert recovered is not None
+
+    await adapter._handle_raw_message(recovered)
+
+    assert len(received) == 1
+    assert received[0].msg_id == "107"
+    assert received[0].chat_id == "-70000000000003"
+    assert received[0].text == "Связанный пересланный пост"
+    assert received[0].attachment_types == ["PHOTO"]
+    assert adapter.download_calls == [("-80000000000001", "907", "PHOTO", 0)]
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_receive_forwards_regular_audio_before_pymax_can_drop_it(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

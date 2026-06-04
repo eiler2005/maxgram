@@ -481,6 +481,10 @@ rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallba
 # voice diagnostics/recovery for pymax-empty events
 rg 'event=max\.(raw|inbound)\.(empty_message|empty_recovery|auxiliary_event|handler_registered|interceptor_installed)' data/bridge.log
 
+# forwarded/channel wrappers that looked empty before recovery unwrap
+rg 'event=max\.inbound\.empty_recovery.*reason=.*(without_content|durable_history_retry|raw_recent_history_match|recent_history_match)' data/bridge.log
+rg 'event=max\.raw\.message_skipped.*reason=missing_chat_id' data/bridge.log
+
 # последние неуспешные TG -> MAX доставки из SQLite
 sqlite3 -header -column data/bridge.db \
   "SELECT max_msg_id, max_chat_id, error, attempts, datetime(created_at, 'unixepoch', 'localtime') AS created_local \
@@ -504,6 +508,20 @@ sqlite3 -header -column data/bridge.db \
    WHERE status IN ('pending', 'retry', 'leased') \
    ORDER BY next_attempt_at ASC LIMIT 20"
 ```
+
+Если в MAX видно forwarded/channel сообщение с текстом, фото или видео, а в Telegram нет
+доставки и в `message_map`/`delivery_log` нет свежей inbound-записи, сначала ищи
+безопасные markers в логах:
+
+- `max.inbound.empty_recovery reason=raw_recent_history_match_without_content` или `recent_history_match_without_content` — recovery видел candidate, но прежний content-check мог сработать до unwrap;
+- `max.inbound.empty_recovery reason=durable_history_retry` / `outcome=recovered` — meta-only retry перечитал history и нашел доставляемый payload;
+- `max.raw.message_skipped reason=missing_chat_id` вместе с `message_type=CHANNEL/FORWARD` и safe `payload_fields`/`message_fields` — raw receive увидел wrapper с контентом, но не смог построить routable message;
+- безопасные поля-симптомы: `link`, `attaches`, `_forward_source_chat_id`, `_forward_source_msg_id`, `_forward_link_type`, `type=CHANNEL/FORWARD`.
+
+Не копировать в issue/log dump текст сообщения, raw MAX payload, signed media URL,
+invite links или tokens. Для восстановления достаточно `flow_id`,
+`max_chat_id`, `max_msg_id`, `tg_topic_id`, `event`, `reason`, `outcome` и safe
+field names.
 
 Полезные `event`-группы:
 
