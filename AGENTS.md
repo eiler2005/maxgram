@@ -9,3 +9,10 @@ Useful follow-up references:
 - Operations: [docs/runbooks/operations.md](./docs/runbooks/operations.md)
 - Production deploy: [docs/runbooks/hetzner-production.md](./docs/runbooks/hetzner-production.md)
 - Ansible entrypoint: [infra/ansible/deploy.yml](./infra/ansible/deploy.yml)
+
+<!-- lean-ctx -->
+## lean-ctx
+
+Prefer lean-ctx MCP tools over native equivalents for token savings.
+Full rules: @LEAN-CTX.md
+<!-- /lean-ctx -->
