@@ -15,6 +15,10 @@ services:
       STARTUP_TESTS_ENABLED: "1"
       STARTUP_TESTS_TIMEOUT_SECONDS: "120"
     extra_hosts:
+      # MAX_EGRESS_PROXY_HOST and MAX_EGRESS_PROXY_GATEWAY are set in
+      # deploy/.env by 23-channel-m-reverse.yml. Defaults are no-ops when
+      # Channel M is not deployed. host-gateway is wrong here because the
+      # tunnel binds on the deploy_default network gateway, not docker0.
       - "${MAX_EGRESS_PROXY_HOST:-channel-m.invalid}:${MAX_EGRESS_PROXY_GATEWAY:-host-gateway}"
     user: "${APP_UID:-1000}:${APP_GID:-1000}"
     restart: always
