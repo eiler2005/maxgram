@@ -492,6 +492,29 @@ class TelegramAdapter:
         """Backwards-compatible alias for ops/system notifications."""
         return await self._notifier.send_notification(text)
 
+    async def send_typing_indicator(self, topic_id: int) -> None:
+        """Пробросить индикатор ввода из MAX в Telegram-топик (best-effort)."""
+        try:
+            await self._bot.send_chat_action(
+                chat_id=self._group_id,
+                action="typing",
+                message_thread_id=topic_id,
+            )
+        except Exception:
+            pass
+
+    async def edit_message_text(self, msg_id: int, text: str) -> bool:
+        """Обновить текст уже отправленного сообщения в Telegram (для реакций)."""
+        try:
+            await self._bot.edit_message_text(
+                chat_id=self._group_id,
+                message_id=msg_id,
+                text=text[:4096],
+            )
+            return True
+        except Exception:
+            return False
+
     async def flush_notification_outbox(self, *, limit: int = 100) -> int:
         return await self._notifier.flush_notification_outbox(limit=limit)
 

@@ -1028,3 +1028,60 @@ async def test_pending_empty_recovery_worker_reschedules_empty_history(tmp_path)
     assert pending["attempts"] == 1
     assert pending["last_error"] == "history_message_not_found_or_empty"
     assert pending["next_attempt_at"] > int(time.time())
+
+
+@pytest.mark.asyncio
+async def test_precise_get_message_is_tried_before_history_sweep(tmp_path):
+    """PyMax 2.2.0 get_message() is attempted first; history sweep is skipped when it succeeds."""
+    from src.adapters.max.voice_recovery import MaxVoiceRecoveryService
+    from src.adapters.max.deps import VoiceRecoveryDeps
+    from src.adapters.max.state import ConnectionState, RawHistoryState, EmptyRecoveryState
+
+    history_calls = []
+    precise_calls = []
+
+    class PreciseClient:
+        async def get_message(self, *, chat_id, message_id):
+            precise_calls.append((chat_id, message_id))
+            return SimpleNamespace(
+                id=message_id,
+                chat_id=chat_id,
+                sender=101,
+                type="USER",
+                text="voice",
+                attaches=[SimpleNamespace(type="AUDIO", url="https://cdn.example/audio.ogg")],
+            )
+
+        async def history_messages(self, **kwargs):
+            history_calls.append(kwargs)
+            return []
+
+    class FakeRawPayload:
+        def _get_cached_raw_history_message(self, *a): return None
+        def _remember_expected_raw_history_message(self, *a): pass
+        async def _fetch_raw_history_payload(self, **kw): return None
+        def _find_raw_history_message_dict(self, *a): return None
+        def _prepare_empty_recovery_candidate(self, obj, **kw): return obj
+        def log_typed_empty_message(self, **kw): pass
+
+    conn = ConnectionState()
+    conn.client = PreciseClient()
+
+    deps = VoiceRecoveryDeps(
+        connection=conn,
+        raw_history=RawHistoryState(),
+        empty_recovery=EmptyRecoveryState(),
+        data_dir=str(tmp_path),
+        raw_payload=FakeRawPayload(),
+    )
+    svc = MaxVoiceRecoveryService(deps)
+
+    result = await svc._recover_empty_message_from_recent_history(
+        chat_id="-100",
+        raw_msg_id="9001",
+        flow_id="test",
+    )
+
+    assert precise_calls == [(-100, 9001)], "get_message must be called with int args"
+    assert history_calls == [], "history sweep must not fire when get_message returns a result"
+    assert result is not None

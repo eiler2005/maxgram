@@ -122,6 +122,9 @@ class Repository:
     async def save_message(self, record: MessageRecord):
         await self._messages.save_message(record)
 
+    async def get_tg_msg_by_max(self, max_chat_id: str, max_msg_id: str) -> Optional[int]:
+        return await self._messages.get_tg_msg_by_max(max_chat_id, max_msg_id)
+
     async def get_max_msg_id_by_tg(self, tg_msg_id: int) -> Optional[str]:
         return await self._messages.get_max_msg_id_by_tg(tg_msg_id)
 

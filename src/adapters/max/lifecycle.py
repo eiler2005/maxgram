@@ -259,6 +259,10 @@ class MaxLifecycleService:
                 self._client.register_message_handler(self._deps.events._handle_raw_message)
                 self._client.register_message_edit_handler(self._deps.events._handle_raw_message)
                 self._client.register_message_delete_handler(self._deps.events._handle_raw_message)
+                self._client.register_typing_handler(self._deps.events._handle_typing)
+                self._client.register_message_read_handler(self._deps.events._handle_message_read)
+                self._client.register_presence_handler(self._deps.events._handle_presence)
+                self._client.register_reaction_update_handler(self._deps.events._handle_reaction_update)
 
                 log_event(
                     logger,

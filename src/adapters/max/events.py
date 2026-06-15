@@ -12,6 +12,8 @@ from ...bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
     MaxMessage,
+    MaxReactionUpdate,
+    MaxTypingEvent,
     is_probable_client_cid,
     is_usable_max_chat_id,
 )
@@ -922,3 +924,95 @@ class MaxEventsService:
                 reason="message_parse_failed",
                 error=str(e),
             )
+
+    # ── PyMax 2.2.0 event handlers ────────────────────────────────────────
+
+    async def _handle_typing(self, event) -> None:
+        chat_id = str(getattr(event, "chat_id", None) or "")
+        user_id = str(getattr(event, "user_id", None) or "")
+        if not chat_id:
+            return
+        typing = MaxTypingEvent(chat_id=chat_id, user_id=user_id)
+        for handler in self._deps.typing_handlers:
+            try:
+                await handler(typing)
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "max.inbound.handler_failed",
+                    direction="inbound",
+                    stage="dispatch",
+                    outcome="failed",
+                    reason="typing_handler_error",
+                    max_chat_id=chat_id,
+                    error=str(e),
+                )
+
+    async def _handle_reaction_update(self, event) -> None:
+        chat_id = str(getattr(event, "chat_id", None) or "")
+        message_id = str(getattr(event, "message_id", None) or "")
+        total_count = int(getattr(event, "total_count", 0) or 0)
+        raw_counters = getattr(event, "counters", None) or []
+        counters = [
+            {
+                "emoji": str(getattr(c, "emoji", None) or ""),
+                "count": int(getattr(c, "count", 0) or 0),
+            }
+            for c in raw_counters
+        ]
+        if not chat_id or not message_id:
+            return
+        reaction = MaxReactionUpdate(
+            chat_id=chat_id,
+            message_id=message_id,
+            total_count=total_count,
+            counters=counters,
+        )
+        for handler in self._deps.reaction_update_handlers:
+            try:
+                await handler(reaction)
+            except Exception as e:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "max.inbound.handler_failed",
+                    direction="inbound",
+                    stage="dispatch",
+                    outcome="failed",
+                    reason="reaction_update_handler_error",
+                    max_chat_id=chat_id,
+                    max_msg_id=message_id,
+                    error=str(e),
+                )
+
+    async def _handle_message_read(self, event) -> None:
+        chat_id = str(getattr(event, "chat_id", None) or "")
+        user_id = str(getattr(event, "user_id", None) or "")
+        mark = getattr(event, "mark", None)
+        log_event(
+            logger,
+            logging.DEBUG,
+            "max.inbound.message_read",
+            direction="inbound",
+            stage="received",
+            outcome="noted",
+            max_chat_id=chat_id,
+            user_id=user_id,
+            mark=mark,
+        )
+
+    async def _handle_presence(self, event) -> None:
+        user_id = str(getattr(event, "user_id", None) or "")
+        presence = getattr(event, "presence", None)
+        status = str(getattr(presence, "online", None) or "")
+        log_event(
+            logger,
+            logging.DEBUG,
+            "max.inbound.presence",
+            direction="inbound",
+            stage="received",
+            outcome="noted",
+            user_id=user_id,
+            online=status,
+        )

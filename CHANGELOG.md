@@ -16,7 +16,14 @@ All notable changes to Maxgram are documented here.
 - **Quiet recovery status summary** — automatic recovery scans fold routine deltas into the 4-hour status report; owner/ops gets an immediate alert only when a MAX account migration is required.
 - **Architecture decision ADR-005** — documents the account migration recovery registry, privacy constraints, remap behavior, and V1 non-automation boundaries.
 
+### Added
+- **TypingEvent → Telegram typing indicator** — when a MAX user starts typing, the bridge sends a Telegram `typing` chat action to the bound topic (best-effort, no DB write). Unbound chats are silently ignored.
+- **ReactionUpdateEvent mirroring** — standalone MAX reaction-change events are now dispatched to the bridge; the bridge fetches the mapped Telegram message and edits it to reflect a compact reaction summary (emoji + count). Unmapped messages are silently ignored.
+- **MessageReadEvent / PresenceEvent diagnostics** — read-receipt and presence events from MAX are subscribed and logged at DEBUG level for observability. No Telegram-side expression; no topic creation.
+- **Precise message recovery via `get_message()`** — empty-event voice/forward recovery now attempts the new PyMax 2.2.0 `get_message(chat_id, message_id)` API first, bypassing the time-window history sweep when a precise fetch succeeds. The full fallback chain (cache → raw history payload → `history_messages`) is preserved.
+
 ### Changed
+- **PyMax 2.2.0 upgrade** — `maxapi-python` is pinned to 2.2.0 (from 2.1.2). The 2.2.0 breaking change for `MessageDeleteEvent` (`chat` and `message` fields now optional; `chat_id` always present) is tolerated by the existing defensive `MaxClientMessage.from_object` extraction. Spurious empty-event recovery sweeps for delete events are prevented by an early exit when `raw_msg_id` is absent.
 - **PyMax 2.1.2 upgrade** — `maxapi-python` is pinned to 2.1.2. Bridge login validation now accepts tokenless `LOGIN` responses without re-injecting the saved session token, while keeping backend-local sanitizers for unsupported initial-sync payload drift.
 - **Telegram command access model** — `/dm` remains public only in General via an explicit allowlist; `/recovery ...` and other arg commands remain owner-only even in General.
 - **Remap-safe reply routing** — after `/recovery remap`, replies to old Telegram messages no longer send stale MAX `reply_to_msg_id` values when the mapped MAX message belongs to the old chat id.
@@ -40,6 +47,7 @@ All notable changes to Maxgram are documented here.
 - Added coverage for DM title resolution order, cached contact name lookup, raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
 - Added coverage for direct-media `CHANNEL` wrappers, forwarded empty-recovery candidates with nested `message` / `link.message` payloads, and zero-source forwarded media fallback.
 - Added coverage for SQLite recovery migrations/idempotency/deltas, DM contact recovery upsert/export/privacy, recovery report/export/remap, MAX recovery snapshot collection, async event-driven recovery scans, quiet status-summary recovery alerts, account-migration notification privacy/deduplication, owner-only `/recovery`, command allowlist privacy, stale reply routing after remap, and privacy of recovery reports/logs.
+- Added PyMax 2.2.0 surface pin, `MessageDeleteEvent` shape regression test (chat_id only, no crash/recovery), typing/reaction/read/presence handler dispatch tests, and precise `get_message()` recovery test (history sweep skipped on precise hit).
 
 ---
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from .backends.base import MaxBackend
 from .state import ConnectionState, EmptyRecoveryState, OutboundState, RawHistoryState
 from ..max_session_store import MaxSessionStore
-from ...bridge.contracts import IssueHandler, MessageHandler
+from ...bridge.contracts import IssueHandler, MessageHandler, ReactionUpdateHandler, TypingHandler
 
 
 @dataclass
@@ -59,6 +59,8 @@ class EventsDeps:
     resolver: Any
     runtime: Any
     voice_recovery: Any | None = None
+    typing_handlers: list[TypingHandler] = field(default_factory=list)
+    reaction_update_handlers: list[ReactionUpdateHandler] = field(default_factory=list)
 
 
 @dataclass

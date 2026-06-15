@@ -137,9 +137,27 @@ class MaxRecoverySnapshot:
     contacts: list[MaxRecoveryContactSnapshot] = field(default_factory=list)
 
 
+@dataclass
+class MaxTypingEvent:
+    """A MAX user started typing in a chat."""
+    chat_id: str
+    user_id: str
+
+
+@dataclass
+class MaxReactionUpdate:
+    """Standalone reaction-change event for an already-sent MAX message."""
+    chat_id: str
+    message_id: str
+    total_count: int
+    counters: list[dict]    # [{emoji: str, count: int}, ...]
+
+
 MessageHandler = Callable[[MaxMessage], Awaitable[None]]
 StartHandler = Callable[[], object]
 IssueHandler = Callable[[MaxIssue], Optional[Awaitable[None]]]
+TypingHandler = Callable[[MaxTypingEvent], Awaitable[None]]
+ReactionUpdateHandler = Callable[[MaxReactionUpdate], Awaitable[None]]
 ReplyHandler = Callable[
     [int, Optional[int], str, Optional[int], Optional[str], Optional[str], Optional[str]],
     Awaitable[None],
@@ -154,6 +172,8 @@ class MaxBridgePort(Protocol):
     def on_message(self, handler: MessageHandler) -> None: ...
     def on_start(self, handler: StartHandler) -> None: ...
     def on_issue(self, handler: IssueHandler) -> None: ...
+    def on_typing(self, handler: TypingHandler) -> None: ...
+    def on_reaction_update(self, handler: ReactionUpdateHandler) -> None: ...
 
     async def send_message(
         self,
@@ -258,6 +278,8 @@ class TelegramBridgePort(Protocol):
     async def send_system_notification(self, text: str, *, category: str = "system") -> bool: ...
     async def send_notification(self, text: str) -> bool: ...
     def get_last_send_error(self) -> Optional[str]: ...
+    async def send_typing_indicator(self, topic_id: int) -> None: ...
+    async def edit_message_text(self, msg_id: int, text: str) -> bool: ...
 
 
 class OpsNotifierPort(Protocol):

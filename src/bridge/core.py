@@ -26,6 +26,8 @@ from .contracts import (
     MaxAttachmentFailure,
     MaxBridgePort,
     MaxMessage,
+    MaxReactionUpdate,
+    MaxTypingEvent,
     OpsNotifierPort,
     TelegramBridgePort,
 )
@@ -90,6 +92,8 @@ class BridgeCore:
         )
 
         self._max.on_message(self._on_max_message)
+        self._max.on_typing(self._on_max_typing)
+        self._max.on_reaction_update(self._on_max_reaction_update)
         self._tg.on_reply(self._on_tg_reply)
         self._commands.register()
 
@@ -106,6 +110,26 @@ class BridgeCore:
         if change is None or not getattr(change, "notify", False):
             return
         await self._send_ops_notification(build_operator_alert(change))
+
+    async def _on_max_typing(self, event: MaxTypingEvent) -> None:
+        """MAX пользователь начал печатать → отправляем typing в связанный топик."""
+        binding = await self._repo.get_binding(event.chat_id)
+        if binding is None:
+            return
+        await self._tg.send_typing_indicator(binding.tg_topic_id)
+
+    async def _on_max_reaction_update(self, event: MaxReactionUpdate) -> None:
+        """Обновление реакции в MAX → обновляем footer реакций в TG-сообщении."""
+        tg_msg_id = await self._repo.get_tg_msg_by_max(event.chat_id, event.message_id)
+        if tg_msg_id is None:
+            return
+        if not event.counters:
+            return
+        parts = [f"{c['emoji']} {c['count']}" for c in event.counters if c.get("emoji")]
+        if not parts:
+            return
+        footer = "  ".join(parts)
+        await self._tg.edit_message_text(tg_msg_id, footer)
 
     async def _on_max_message(self, msg: MaxMessage):
         """Входящее сообщение из MAX → форвардим в Telegram."""

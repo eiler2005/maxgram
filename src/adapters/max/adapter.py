@@ -70,6 +70,8 @@ from ...bridge.contracts import (
     MaxRecoveryContactSnapshot,
     MaxRecoverySnapshot,
     MessageHandler,
+    ReactionUpdateHandler,
+    TypingHandler,
 )
 from ...logging_utils import log_event
 
@@ -158,6 +160,8 @@ class MaxAdapter:
                 resolver=resolver,
                 runtime=runtime,
                 voice_recovery=voice_recovery,
+                typing_handlers=state.typing_handlers,
+                reaction_update_handlers=state.reaction_update_handlers,
             )
         )
         voice_recovery_deps.events = events
@@ -218,6 +222,12 @@ class MaxAdapter:
 
     def on_issue(self, handler: IssueHandler):
         self._state.issue_handlers.append(handler)
+
+    def on_typing(self, handler: TypingHandler):
+        self._state.typing_handlers.append(handler)
+
+    def on_reaction_update(self, handler: ReactionUpdateHandler):
+        self._state.reaction_update_handlers.append(handler)
 
     async def start(self):
         return await self._lifecycle.start()

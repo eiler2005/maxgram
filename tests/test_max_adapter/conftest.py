@@ -190,6 +190,20 @@ class LookupClient:
             for message in await fetch(chat_id, from_time=from_time, forward=forward, backward=backward)
         ]
 
+    async def get_message(self, *, chat_id: int, message_id: int):
+        get_msg = getattr(self, "_get_message", None)
+        if get_msg is None:
+            return None
+        result = await get_msg(chat_id=chat_id, message_id=message_id)
+        return MaxClientMessage.from_object(result) if result is not None else None
+
+    async def get_messages(self, *, chat_id: int, message_ids: list[int]):
+        get_msgs = getattr(self, "_get_messages", None)
+        if get_msgs is None:
+            return []
+        results = await get_msgs(chat_id=chat_id, message_ids=message_ids)
+        return [MaxClientMessage.from_object(m) for m in (results or []) if m is not None]
+
     def install_raw_message_interceptor(self, handler):
         if getattr(self, "_maxtg_raw_interceptor_installed", False):
             return MaxRawInterceptorResult(

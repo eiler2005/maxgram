@@ -25,6 +25,10 @@ class FakeMaxClient:
         self._message_handlers = []
         self._message_edit_handlers = []
         self._message_delete_handlers = []
+        self._typing_handlers = []
+        self._message_read_handlers = []
+        self._presence_handlers = []
+        self._reaction_update_handlers = []
         self._raw_receive_handlers = []
         self._raw_interceptor = None
         self.sent_messages: list[dict[str, Any]] = []
@@ -65,6 +69,24 @@ class FakeMaxClient:
 
     def register_message_delete_handler(self, handler):
         self._message_delete_handlers.append(handler)
+
+    def register_typing_handler(self, handler):
+        self._typing_handlers.append(handler)
+
+    def register_message_read_handler(self, handler):
+        self._message_read_handlers.append(handler)
+
+    def register_presence_handler(self, handler):
+        self._presence_handlers.append(handler)
+
+    def register_reaction_update_handler(self, handler):
+        self._reaction_update_handlers.append(handler)
+
+    async def get_message(self, *, chat_id: int, message_id: int):
+        return None
+
+    async def get_messages(self, *, chat_id: int, message_ids: list[int]):
+        return []
 
     async def start(self):
         self._connected = True

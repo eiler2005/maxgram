@@ -11,7 +11,7 @@ from .context import MaxAdapterContext
 from .ports import MaxClientPort
 from .types import OutboundFailureState, PendingOutboundAck
 from ..max_session_store import MaxSessionStore
-from ...bridge.contracts import IssueHandler, MaxIssue, MessageHandler
+from ...bridge.contracts import IssueHandler, MaxIssue, MessageHandler, ReactionUpdateHandler, TypingHandler
 
 
 @dataclass
@@ -64,6 +64,8 @@ class MaxRuntimeState:
     handlers: list[MessageHandler] = field(default_factory=list)
     start_handlers: list[Callable] = field(default_factory=list)
     issue_handlers: list[IssueHandler] = field(default_factory=list)
+    typing_handlers: list[TypingHandler] = field(default_factory=list)
+    reaction_update_handlers: list[ReactionUpdateHandler] = field(default_factory=list)
     interactive_ping_failure_limit: int = 3
     connection: ConnectionState = field(default_factory=ConnectionState)
     outbound: OutboundState = field(default_factory=OutboundState)

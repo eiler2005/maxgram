@@ -38,6 +38,15 @@ class MessagesRepo(BaseRepo):
             )
         await self._commit()
 
+    async def get_tg_msg_by_max(self, max_chat_id: str, max_msg_id: str) -> Optional[int]:
+        """Найти tg_msg_id по MAX (chat_id, msg_id) — для реакций и редактирования."""
+        async with self._db.execute(
+            "SELECT tg_msg_id FROM message_map WHERE max_chat_id = ? AND max_msg_id = ? AND tg_msg_id IS NOT NULL",
+            (max_chat_id, max_msg_id),
+        ) as cur:
+            row = await cur.fetchone()
+            return int(row["tg_msg_id"]) if row else None
+
     async def get_max_msg_id_by_tg(self, tg_msg_id: int) -> Optional[str]:
         """Найти max_msg_id по tg_msg_id — для reply routing."""
         async with self._db.execute(

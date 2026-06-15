@@ -1333,3 +1333,152 @@ async def test_handle_raw_message_logs_received_and_skip_reason(tmp_path, caplog
         event.get("event") == "max.inbound.skipped" and event.get("reason") == "empty_event"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_tolerates_pymax_220_delete_event_shape(tmp_path):
+    """PyMax 2.2.0 breaking change: MessageDeleteEvent carries message_ids list + guaranteed
+    chat_id at top level; .chat and .message are optional and may be absent.
+    The bridge must not crash and must not trigger spurious voice-recovery sweeps."""
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = LookupClient()
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    delete_event = SimpleNamespace(
+        chat_id=-70000000000099,
+        message_ids=[1001, 1002],
+        # .id, .chat, .message, .status intentionally absent — 2.2.0 shape
+    )
+
+    # Must not raise; must not trigger recovery (no msg id to recover)
+    await adapter._handle_raw_message(delete_event)
+
+    # Delete event is silently dropped — no text, no attachments, no status=REMOVED
+    assert received == []
+
+
+@pytest.mark.asyncio
+async def test_handle_typing_dispatches_to_typing_handlers(tmp_path):
+    """TypingEvent from MAX is dispatched to registered typing_handlers."""
+    from src.adapters.max.deps import EventsDeps
+    from src.adapters.max.events import MaxEventsService
+    from src.adapters.max.state import ConnectionState, OutboundState
+
+    received = []
+
+    async def typing_handler(event):
+        received.append(event)
+
+    deps = EventsDeps(
+        connection=ConnectionState(),
+        outbound=OutboundState(),
+        handlers=[],
+        backend=None,
+        raw_payload=None,
+        media=None,
+        resolver=None,
+        runtime=None,
+        typing_handlers=[typing_handler],
+    )
+    svc = MaxEventsService(deps)
+
+    event = SimpleNamespace(chat_id=-999, user_id=42)
+    await svc._handle_typing(event)
+
+    assert len(received) == 1
+    assert received[0].chat_id == "-999"
+    assert received[0].user_id == "42"
+
+
+@pytest.mark.asyncio
+async def test_handle_typing_no_op_when_no_chat_id(tmp_path):
+    """TypingEvent without chat_id is silently dropped."""
+    from src.adapters.max.deps import EventsDeps
+    from src.adapters.max.events import MaxEventsService
+    from src.adapters.max.state import ConnectionState, OutboundState
+
+    received = []
+
+    async def typing_handler(event):
+        received.append(event)
+
+    deps = EventsDeps(
+        connection=ConnectionState(),
+        outbound=OutboundState(),
+        handlers=[],
+        backend=None,
+        raw_payload=None,
+        media=None,
+        resolver=None,
+        runtime=None,
+        typing_handlers=[typing_handler],
+    )
+    svc = MaxEventsService(deps)
+
+    await svc._handle_typing(SimpleNamespace())
+    assert received == []
+
+
+@pytest.mark.asyncio
+async def test_handle_reaction_update_dispatches_counters(tmp_path):
+    """ReactionUpdateEvent is normalized and dispatched to reaction_update_handlers."""
+    from src.adapters.max.deps import EventsDeps
+    from src.adapters.max.events import MaxEventsService
+    from src.adapters.max.state import ConnectionState, OutboundState
+
+    received = []
+
+    async def reaction_handler(event):
+        received.append(event)
+
+    deps = EventsDeps(
+        connection=ConnectionState(),
+        outbound=OutboundState(),
+        handlers=[],
+        backend=None,
+        raw_payload=None,
+        media=None,
+        resolver=None,
+        runtime=None,
+        reaction_update_handlers=[reaction_handler],
+    )
+    svc = MaxEventsService(deps)
+
+    counter = SimpleNamespace(emoji="👍", count=3)
+    event = SimpleNamespace(chat_id=-100, message_id="msg42", total_count=3, counters=[counter])
+    await svc._handle_reaction_update(event)
+
+    assert len(received) == 1
+    assert received[0].chat_id == "-100"
+    assert received[0].message_id == "msg42"
+    assert received[0].total_count == 3
+    assert received[0].counters == [{"emoji": "👍", "count": 3}]
+
+
+@pytest.mark.asyncio
+async def test_handle_presence_and_read_do_not_raise(tmp_path):
+    """MessageReadEvent and PresenceEvent are consumed silently (diagnostics only)."""
+    from src.adapters.max.deps import EventsDeps
+    from src.adapters.max.events import MaxEventsService
+    from src.adapters.max.state import ConnectionState, OutboundState
+
+    deps = EventsDeps(
+        connection=ConnectionState(),
+        outbound=OutboundState(),
+        handlers=[],
+        backend=None,
+        raw_payload=None,
+        media=None,
+        resolver=None,
+        runtime=None,
+    )
+    svc = MaxEventsService(deps)
+
+    await svc._handle_message_read(SimpleNamespace(chat_id=-5, user_id=7, mark=1001))
+    await svc._handle_presence(SimpleNamespace(user_id=7, presence=SimpleNamespace(online=True)))

@@ -10,11 +10,14 @@ pytestmark = pytest.mark.architecture
 
 
 def test_pymax_runtime_version_is_pinned():
-    assert pymax.__version__ == "2.1.2"
+    assert pymax.__version__ == "2.2.0"
 
 
 PINS = {
-    "pymax": ("Client", "ExtraConfig", "SyncOverrides", "File", "Message", "Photo", "Video"),
+    "pymax": (
+        "Client", "ExtraConfig", "SyncOverrides", "File", "Message", "Photo", "Video",
+        "TypingEvent", "PresenceEvent", "MessageReadEvent", "ReactionUpdateEvent", "MessageDeleteEvent",
+    ),
     "pymax.client": ("Client",),
     "pymax.connection": ("ConnectionManager",),
     "pymax.connection.readers": ("TCPReader",),

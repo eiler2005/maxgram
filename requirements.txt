@@ -2,7 +2,7 @@
 aiogram==3.26.0
 
 # MAX userbot
-maxapi-python==2.1.2
+maxapi-python==2.2.0
 requests>=2.31,<3
 
 # Database

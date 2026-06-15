@@ -370,6 +370,12 @@ class DummyMax:
     def on_issue(self, handler):
         self.issue_handlers.append(handler)
 
+    def on_typing(self, handler):
+        pass
+
+    def on_reaction_update(self, handler):
+        pass
+
     def is_ready(self):
         return self.ready
 
@@ -517,6 +523,13 @@ class DummyTelegram:
 
     def get_last_send_error(self):
         return self.last_send_error
+
+    async def send_typing_indicator(self, topic_id: int) -> None:
+        self.calls.append(("typing", topic_id))
+
+    async def edit_message_text(self, msg_id: int, text: str) -> bool:
+        self.calls.append(("edit", msg_id, text))
+        return True
 
     async def send_notification(self, text):
         self.calls.append(("notification", text))

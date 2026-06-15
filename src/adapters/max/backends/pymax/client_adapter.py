@@ -97,6 +97,30 @@ class PymaxClientAdapter:
     def register_message_delete_handler(self, handler) -> None:
         self._events.register_message_delete_handler(handler)
 
+    def register_typing_handler(self, handler) -> None:
+        self._events.register_typing_handler(handler)
+
+    def register_message_read_handler(self, handler) -> None:
+        self._events.register_message_read_handler(handler)
+
+    def register_presence_handler(self, handler) -> None:
+        self._events.register_presence_handler(handler)
+
+    def register_reaction_update_handler(self, handler) -> None:
+        self._events.register_reaction_update_handler(handler)
+
+    async def get_message(self, *, chat_id: int, message_id: int):
+        result = await self._client.get_message(chat_id, message_id)
+        if result is None:
+            return None
+        from ...ports import MaxClientMessage
+        return MaxClientMessage.from_object(result)
+
+    async def get_messages(self, *, chat_id: int, message_ids: list[int]):
+        from ...ports import MaxClientMessage
+        results = await self._client.get_messages(chat_id, message_ids)
+        return [MaxClientMessage.from_object(m) for m in (results or [])]
+
     async def start(self):
         return await self._client.start()
 

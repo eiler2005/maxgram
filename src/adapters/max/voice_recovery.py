@@ -80,6 +80,9 @@ class MaxVoiceRecoveryService:
         except (TypeError, ValueError):
             return None
 
+        if not raw_msg_id_str:
+            return None
+
         cached = self._raw_payload._get_cached_raw_history_message(chat_id, raw_msg_id_str)
         if cached is not None:
             recovered = self._raw_payload._prepare_empty_recovery_candidate(
@@ -95,6 +98,25 @@ class MaxVoiceRecoveryService:
 
         if not self._client:
             return None
+
+        # Phase 3: try the precise single-message fetch first (PyMax 2.2.0+)
+        get_message = getattr(self._client, "get_message", None)
+        if callable(get_message):
+            try:
+                precise = await get_message(chat_id=chat_id_int, message_id=int(raw_msg_id_str))
+                if precise is not None:
+                    recovered = self._raw_payload._prepare_empty_recovery_candidate(
+                        precise,
+                        chat_id=chat_id,
+                        chat_id_int=chat_id_int,
+                        raw_msg_id_str=raw_msg_id_str,
+                        flow_id=flow_id,
+                        reason="get_message_precise",
+                    )
+                    if recovered is not None:
+                        return recovered
+            except Exception:
+                pass
 
         self._raw_payload._remember_expected_raw_history_message(chat_id, raw_msg_id_str)
         history_from_time = int(time.time() * 1000) + 60_000
