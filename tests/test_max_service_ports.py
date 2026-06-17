@@ -182,7 +182,7 @@ def test_max_client_attachment_preserves_pydantic_extra_fields():
         __pydantic_extra__ = {"targetUser": {"userId": 7001}}
 
         def model_dump(self, **kwargs):
-            assert kwargs == {"by_alias": True, "exclude_none": True}
+            assert kwargs["exclude_none"] is True
             return {"_type": "CONTROL", "event": "remove"}
 
     attachment = MaxClientAttachment.from_object(PydanticLikeAttachment())
@@ -190,3 +190,23 @@ def test_max_client_attachment_preserves_pydantic_extra_fields():
     assert attachment.type == "CONTROL"
     assert attachment.event == "remove"
     assert attachment.targetUser == {"userId": 7001}
+
+
+def test_max_client_attachment_preserves_pydantic_snake_case_photo_fields():
+    class PydanticLikePhoto:
+        def model_dump(self, **kwargs):
+            assert kwargs["exclude_none"] is True
+            if kwargs["by_alias"]:
+                return {"_type": "PHOTO", "baseUrl": "https://cdn.example/photo.jpg"}
+            return {
+                "type": "PHOTO",
+                "base_url": "https://cdn.example/photo.jpg",
+                "photo_id": 42,
+            }
+
+    attachment = MaxClientAttachment.from_object(PydanticLikePhoto())
+
+    assert attachment.type == "PHOTO"
+    assert attachment.base_url == "https://cdn.example/photo.jpg"
+    assert attachment.baseUrl == "https://cdn.example/photo.jpg"
+    assert attachment.photo_id == 42

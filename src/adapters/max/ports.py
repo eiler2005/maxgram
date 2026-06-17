@@ -16,23 +16,23 @@ def _object_fields(value: object) -> dict[str, Any]:
         return {}
     if isinstance(value, dict):
         return dict(value)
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        try:
-            data = dump(by_alias=True, exclude_none=True)
-            if isinstance(data, dict):
-                extra = getattr(value, "__pydantic_extra__", None)
-                if isinstance(extra, dict):
-                    data.update(extra)
-                return data
-        except Exception:
-            pass
+    data: dict[str, Any] = {}
     raw_fields = getattr(value, "__dict__", None)
     if isinstance(raw_fields, dict):
-        data = dict(raw_fields)
-        extra = getattr(value, "__pydantic_extra__", None)
-        if isinstance(extra, dict):
-            data.update(extra)
+        data.update(raw_fields)
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        for by_alias in (False, True):
+            try:
+                dumped = dump(by_alias=by_alias, exclude_none=True)
+            except Exception:
+                continue
+            if isinstance(dumped, dict):
+                data.update(dumped)
+    extra = getattr(value, "__pydantic_extra__", None)
+    if isinstance(extra, dict):
+        data.update(extra)
+    if data:
         return data
     result: dict[str, Any] = {}
     for name in dir(value):
