@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **305 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **306 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -129,7 +129,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (99 тестов)
+## tests/test_max_adapter/ — MAX adapter behavior split (100 тестов)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -161,6 +161,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 |------|--------------|
 | `test_handle_raw_message_unwraps_forward_link_content` | `CHANNEL`/forward с `link.message` разворачивается до исходного текста и вложений; media download использует исходные `chat_id/message_id`. |
 | `test_handle_raw_message_falls_back_from_zero_forward_chat_for_media` | Typed `link.message` с source `chat_id=0` скачивает media по внешнему chat id и nested message id. |
+| `test_handle_raw_message_recovers_degraded_channel_media_before_partial` | Typed `CHANNEL` media wrapper с неполными refs не занимает `message_map` partial-сообщением: adapter сначала восстанавливает полноценный raw/history payload с фото/видео. |
 | `test_handle_raw_receive_unwraps_channel_wrapper_and_skips_pymax_duplicate` | Raw `CHANNEL`-обёртка перехватывается до pymax-parser, реальный nested message отправляется дальше, последующий wrapper-дубликат подавляется. |
 | `test_handle_raw_receive_forwards_channel_wrapper_with_direct_attachments` | Raw `CHANNEL`-обёртка с прямым `text/attaches` доставляется как сообщение, а не логируется как missing-chat-id metadata. |
 | `test_empty_recovery_unwraps_forwarded_history_candidate_before_content_check` | Empty recovery сначала разворачивает history-candidate с nested forwarded `message`, и только потом проверяет наличие контента. |

@@ -724,6 +724,89 @@ class MaxEventsService:
             return False
         return bool(fields & _CHANNEL_METADATA_MARKER_FIELDS)
 
+    def _is_degraded_channel_media_event(
+        self,
+        *,
+        message_type: Optional[str],
+        message,
+        attachments: list[MaxAttachment],
+        rendered_texts: list[str],
+        attachment_failures: list[MaxAttachmentFailure],
+    ) -> bool:
+        normalized_type = str(message_type or "").upper()
+        if normalized_type not in _CHANNEL_METADATA_MESSAGE_TYPES:
+            return False
+        if getattr(message, "_from_raw_unwrapped", False):
+            return False
+        if getattr(message, "_from_empty_recovery", False):
+            return False
+        if attachments or rendered_texts or not attachment_failures:
+            return False
+        return any(
+            failure.kind in {"photo", "video", "audio", "document"}
+            for failure in attachment_failures
+        )
+
+    async def _recover_degraded_channel_media_event(
+        self,
+        *,
+        chat_id: str,
+        raw_msg_id: str,
+        flow_id: str,
+    ) -> bool:
+        recovered = await self._voice_recovery._recover_empty_message_from_recent_history(
+            chat_id=chat_id,
+            raw_msg_id=raw_msg_id,
+            flow_id=flow_id,
+        )
+        if recovered is not None:
+            log_event(
+                logger,
+                logging.INFO,
+                "max.inbound.degraded_media_recovery",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="recover",
+                outcome="recovered",
+                reason="recent_history_match",
+                max_chat_id=chat_id,
+                max_msg_id=raw_msg_id,
+            )
+            await self._handle_raw_message(recovered)
+            return True
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if self._raw_payload._is_raw_processed_message(chat_id, raw_msg_id):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.inbound.degraded_media_recovery",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="recover",
+                    outcome="skipped",
+                    reason="raw_unwrapped_arrived",
+                    max_chat_id=chat_id,
+                    max_msg_id=raw_msg_id,
+                )
+                return True
+            await asyncio.sleep(0.2)
+
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.degraded_media_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="recover",
+            outcome="miss",
+            reason="raw_unwrapped_timeout",
+            max_chat_id=chat_id,
+            max_msg_id=raw_msg_id,
+        )
+        return False
+
     async def _handle_raw_message(self, message):
         """Конвертируем raw MAX Message → MaxMessage и вызываем handlers.
 
@@ -1056,6 +1139,20 @@ class MaxEventsService:
                 rendered_texts.insert(0, "[Сообщение отредактировано]")
             elif status == "REMOVED":
                 rendered_texts = ["[Сообщение удалено]"]
+
+            if self._is_degraded_channel_media_event(
+                message_type=message_type,
+                message=message,
+                attachments=attachments,
+                rendered_texts=rendered_texts,
+                attachment_failures=attachment_failures,
+            ):
+                if await self._recover_degraded_channel_media_event(
+                    chat_id=chat_id,
+                    raw_msg_id=raw_msg_id,
+                    flow_id=flow_id,
+                ):
+                    return
 
             if self._should_skip_empty_event(
                 message_type,

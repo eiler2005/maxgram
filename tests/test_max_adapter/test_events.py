@@ -219,6 +219,91 @@ async def test_handle_raw_message_falls_back_from_zero_forward_chat_for_media(tm
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_recovers_degraded_channel_media_before_partial(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    client = LookupClient(chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")])
+
+    async def get_message(*, chat_id: int, message_id: int):
+        return SimpleNamespace(
+            id=message_id,
+            chat_id=chat_id,
+            sender=7001,
+            text="Пост с медиа",
+            type="CHANNEL",
+            status=None,
+            attaches=[
+                SimpleNamespace(type="VIDEO", video_id=555, duration=32000),
+                SimpleNamespace(type="PHOTO", base_url="https://cdn.example.test/photo.jpg"),
+            ],
+            link=None,
+        )
+
+    client._get_message = get_message
+    adapter._client = client
+    received = []
+    download_calls = []
+
+    async def download_attachment(chat_id: str, msg_id: str, attach, index: int = 0, flow_id=None):
+        raw_type = adapter._attachment_type_name(attach)
+        download_calls.append((chat_id, msg_id, raw_type, index))
+        if raw_type == "VIDEO" and getattr(attach, "video_id", None):
+            return MaxAttachment(
+                kind="video",
+                local_path="/tmp/recovered-video.mp4",
+                filename="recovered-video.mp4",
+                duration=32,
+                width=1280,
+                height=720,
+                source_type=raw_type,
+            )
+        if raw_type == "PHOTO" and getattr(attach, "base_url", None):
+            return MaxAttachment(
+                kind="photo",
+                local_path="/tmp/recovered-photo.jpg",
+                filename="recovered-photo.jpg",
+                duration=None,
+                width=1280,
+                height=720,
+                source_type=raw_type,
+            )
+        return None
+
+    adapter._adapter._media._download_attachment = download_attachment
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+    degraded = SimpleNamespace(
+        id=109,
+        chat_id=-70000000000003,
+        sender=7001,
+        text="Пост с медиа",
+        type="CHANNEL",
+        status=None,
+        attaches=[SimpleNamespace(type="VIDEO"), SimpleNamespace(type="PHOTO")],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(degraded)
+
+    assert len(received) == 1
+    assert received[0].attachment_failures == []
+    assert [attachment.kind for attachment in received[0].attachments] == ["video", "photo"]
+    assert download_calls == [
+        ("-70000000000003", "109", "VIDEO", 0),
+        ("-70000000000003", "109", "PHOTO", 1),
+        ("-70000000000003", "109", "VIDEO", 0),
+        ("-70000000000003", "109", "PHOTO", 1),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_receive_unwraps_channel_wrapper_and_skips_pymax_duplicate(tmp_path):
     adapter = AdapterHarness(
         phone="+7",
