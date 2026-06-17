@@ -578,7 +578,9 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - при обрыве следующая попытка отправляет `Range: bytes=<уже_скачано>-`;
 - если CDN не поддерживает `Range` и отвечает `200`, bridge удаляет `*.part` и качает заново;
 - если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
-- если ретриабельное видео или голосовое всё равно не скачалось, bridge отправляет остальные части сообщения сразу, показывает `⏳ Видео MAX #N докачивается...` / `⏳ Голосовое MAX #N докачивается...` и кладёт job в `pending_media_downloads`;
+- если медиа не скачалось сразу, bridge отправляет остальные части сообщения, показывает `⏳ Фото/Видео/Аудио/Файл MAX #N загружается и будет дослано через пару минут` и кладёт meta-only job в `pending_media_downloads`;
+- для фото/файлов без стабильного download reference этот job служит delayed-finalizer: если late duplicate/raw recovery не доставил media за несколько минут, bridge отправит terminal warning `⚠️ ... так и не удалось загрузить автоматически`;
+- для ретриабельных видео/аудио job продолжает retry/resume без terminal warning, пока есть шанс докачать; terminal warning отправляется только при окончательных причинах вроде missing stable reference или oversized file;
 - повторный sweep той же voice/media-reference не отправляет второй queued-placeholder: существующий pending job переиспользуется по `media_chat_id/media_msg_id/attachment_index/kind/reference_*`;
 - для degraded `CHANNEL/FORWARD` wrappers bridge принимает recovery только если payload содержит usable media refs; low-quality `PHOTO`/`VIDEO` без refs не занимает dedup partial сразу, а ждёт raw/history cache до короткого timeout;
 - если первый проход всё же дал `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные фото/видео, bridge best-effort досылает только media в тот же Telegram topic, пишет `delivery_log.error=late_media_recovered` и `tg_reply_map` для reply routing;

@@ -39,15 +39,7 @@ def compose_message_text(primary: str, secondary: str = "") -> str:
 def compose_attachment_failure_text(failures: list[MaxAttachmentFailure]) -> str:
     lines = []
     for failure in failures:
-        label = failure.filename or f"{failure.kind} #{failure.index + 1}"
-        if media_retry.is_retryable_media_failure(failure):
-            media_label = "Голосовое MAX" if failure.kind == "audio" else "Видео MAX"
-            lines.append(
-                f"⏳ {media_label} #{failure.index + 1} докачивается "
-                "и будет дослано позже"
-            )
-        else:
-            lines.append(f"⚠️ Не удалось скачать вложение MAX: {label}")
+        lines.append(media_retry.compose_pending_media_text(failure))
     return "\n".join(lines)
 
 
@@ -214,7 +206,7 @@ async def recover_late_duplicate_media(
     if topic_id is None:
         return False
 
-    sent_ids: list[int] = []
+    sent_records: list[tuple[int, MaxAttachment, int]] = []
     for index, attachment in enumerate(msg.attachments):
         attachment_path = Path(attachment.local_path)
         if not attachment_path.exists():
@@ -239,9 +231,9 @@ async def recover_late_duplicate_media(
                 flow_id=flow_id,
             )
         if sent_id:
-            sent_ids.append(sent_id)
+            sent_records.append((index, attachment, sent_id))
 
-    if len(sent_ids) != len(msg.attachments):
+    if len(sent_records) != len(msg.attachments):
         log_event(
             logger,
             logging.WARNING,
@@ -254,7 +246,7 @@ async def recover_late_duplicate_media(
             max_chat_id=msg.chat_id,
             max_msg_id=msg.msg_id,
             tg_topic_id=topic_id,
-            sent_media_count=len(sent_ids),
+            sent_media_count=len(sent_records),
             attachment_count=len(msg.attachments),
         )
         return False
@@ -264,7 +256,7 @@ async def recover_late_duplicate_media(
             Path(attachment.local_path).unlink(missing_ok=True)
 
     async with mapping.repo_transaction(repo):
-        for sent_id in sent_ids:
+        for _index, _attachment, sent_id in sent_records:
             await repo.save_tg_reply_mapping(
                 sent_id,
                 msg.chat_id,
@@ -273,6 +265,17 @@ async def recover_late_duplicate_media(
                 source="late_media_recovery",
                 commit=False,
             )
+        find_pending = getattr(repo, "find_active_pending_media", None)
+        if callable(find_pending):
+            for index, attachment, sent_id in sent_records:
+                pending = await find_pending(
+                    max_chat_id=msg.chat_id,
+                    max_msg_id=msg.msg_id,
+                    attachment_index=index,
+                    kind=attachment.kind,
+                )
+                if pending and pending.id:
+                    await repo.mark_pending_media_delivered(pending.id, tg_msg_id=sent_id)
         await repo.log_delivery(
             msg.msg_id,
             msg.chat_id,
@@ -293,7 +296,7 @@ async def recover_late_duplicate_media(
         max_chat_id=msg.chat_id,
         max_msg_id=msg.msg_id,
         tg_topic_id=topic_id,
-        sent_media_count=len(sent_ids),
+        sent_media_count=len(sent_records),
     )
     return True
 

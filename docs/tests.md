@@ -330,15 +330,18 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pending_outbound_worker_delivers_and_clears_text` | Outbox worker досылает текст после восстановления MAX, сохраняет mapping/delivery и очищает plaintext. |
 | `test_on_tg_reply_logs_too_large_outbound_failure` | Явно отклонённый oversized TG→MAX файл тоже фиксируется в `delivery_log`, а не только показывается в Telegram topic. |
 | `test_on_tg_reply_does_not_persist_failed_media_for_retry` | TG→MAX media failure не сохраняет файл/текст в outbox и просит переотправить вручную. |
-| `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает queued-placeholder и создаёт `pending_media_downloads` job. |
+| `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает pending-placeholder и создаёт `pending_media_downloads` job. |
+| `test_on_max_message_enqueues_photo_failure_for_delayed_final_notice` | Фото без stable refs сначала показывает pending-placeholder и создаёт delayed-finalizer job, чтобы late duplicate мог дослать media до terminal warning. |
 | `test_existing_pending_audio_failure_does_not_duplicate_placeholder` | Повторный replay того же voice по `media_msg_id/reference_id` переиспользует активный pending job и не отправляет второй queued-placeholder. |
-| `test_duplicate_after_partial_delivery_sends_late_media` | Если первый inbound delivery был `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные media, core досылает только вложения в существующий topic и пишет `late_media_recovered`. |
+| `test_duplicate_after_partial_delivery_sends_late_media` | Если первый inbound delivery был `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные media, core досылает только вложения, пишет `late_media_recovered` и гасит delayed-finalizer job. |
 | `test_duplicate_after_late_media_recovered_is_skipped` | Повторный duplicate после `delivery_log status=delivered/error=late_media_recovered` не досылает media повторно. |
 | `test_delivered_duplicate_with_media_is_skipped` | Обычный delivered duplicate с media остаётся dedup-skipped и не меняет прежнее поведение. |
 | `test_pending_media_worker_delivers_video_and_maps_reply` | Retry worker скачивает отложенное видео, отправляет `send_video`, закрывает job и сохраняет reply mapping на исходный MAX message. |
 | `test_pending_media_worker_falls_back_from_zero_media_chat` | Pending media retry для старых jobs с `media_chat_id=0` использует исходный MAX chat id, а при `not.found` пробует wrapper message id. |
 | `test_pending_media_worker_reschedules_download_failure` | Временный сбой скачивания переводит job в `retry` с увеличенным attempts и будущим `next_attempt_at`. |
-| `test_pending_media_worker_marks_missing_reference_terminal` | Job без стабильного `video_id` становится terminal failure, а не крутится бесконечно. |
+| `test_pending_media_worker_marks_missing_reference_terminal` | Job без стабильного `video_id` становится terminal failure, отправляет финальное предупреждение и не крутится бесконечно. |
+| `test_pending_media_late_duplicate_finalizer_sends_terminal_notice` | Delayed-finalizer для photo/file после timeout отправляет финальное предупреждение, если late duplicate так и не восстановил media. |
+| `test_pending_media_late_duplicate_finalizer_skips_after_late_recovery` | Delayed-finalizer не отправляет warning, если late recovery уже доставил media и delivery log стал `delivered`. |
 | `test_on_tg_reply_to_delayed_video_uses_original_max_message` | Reply на позднее досланное видео резолвится в исходный MAX `max_msg_id`. |
 | `test_on_tg_reply_after_remap_skips_stale_reply_to_max_id` | После `/recovery remap` reply на старое TG сообщение не отправляет `reply_to_msg_id`, если исходный MAX message принадлежит старому `max_chat_id`. |
 | `test_get_or_create_topic_resolves_group_title_via_live_max_lookup` | Если `chat_title=None`, `_get_or_create_topic` делает live запрос `resolve_chat_title` и создаёт топик с правильным именем. |

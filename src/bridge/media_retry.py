@@ -25,6 +25,32 @@ from ..logging_utils import build_max_flow_id, log_event
 logger = logging.getLogger("src.bridge.core")
 
 SendAttachment = Callable[[int, MaxAttachment, str], Awaitable[Optional[int]]]
+LATE_DUPLICATE_REFERENCE_KIND = "late_duplicate"
+LATE_DUPLICATE_FINAL_DELAY_SECONDS = 180
+
+
+def media_kind_label(kind: str | None, *, source_type: str | None = None) -> str:
+    normalized_kind = str(kind or "").lower()
+    normalized_source = str(source_type or "").upper()
+    if normalized_kind == "photo":
+        return "Фото MAX"
+    if normalized_kind == "video":
+        return "Видео MAX"
+    if normalized_kind == "audio":
+        return "Голосовое MAX" if "VOICE" in normalized_source or not normalized_source else "Аудио MAX"
+    if normalized_kind == "document":
+        return "Файл MAX"
+    return "Медиа MAX"
+
+
+def compose_pending_media_text(failure: MaxAttachmentFailure) -> str:
+    label = media_kind_label(failure.kind, source_type=failure.source_type)
+    return f"⏳ {label} #{failure.index + 1} загружается и будет дослано через пару минут"
+
+
+def compose_terminal_media_failure_text(*, kind: str, index: int, source_type: str | None = None) -> str:
+    label = media_kind_label(kind, source_type=source_type)
+    return f"⚠️ {label} #{index + 1} так и не удалось загрузить автоматически"
 
 
 def is_retryable_media_failure(failure: MaxAttachmentFailure) -> bool:
@@ -40,6 +66,24 @@ def is_retryable_media_failure(failure: MaxAttachmentFailure) -> bool:
     if failure.kind == "audio":
         return failure.reference_kind in {"audio_id", "file_id"}
     return False
+
+
+def is_late_duplicate_finalizer_job(job: PendingMediaDownload) -> bool:
+    return job.reference_kind == LATE_DUPLICATE_REFERENCE_KIND
+
+
+def is_late_duplicate_resolved_delivery(latest_delivery: Optional[dict]) -> bool:
+    if not latest_delivery:
+        return False
+    if latest_delivery.get("status") != "delivered":
+        return False
+    error = str(latest_delivery.get("error") or "")
+    return not error or error in {
+        "late_media_recovered",
+        "manual_photo_recovery",
+        "manual_video_recovery",
+        "manual_media_recovery",
+    }
 
 
 def pending_media_retry_delay(attempts_after_failure: int) -> int:
@@ -77,7 +121,64 @@ async def enqueue_retryable_media_failures(
     first_retry_at = now + 60
     for failure in msg.attachment_failures:
         if not is_retryable_media_failure(failure):
+            existing = await find_existing_pending_media_for_failure(repo=repo, msg=msg, failure=failure)
+            if existing is not None:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "bridge.media_retry.enqueued",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="media_retry",
+                    outcome="existing",
+                    reason="pending_late_duplicate_finalizer_exists",
+                    max_chat_id=msg.chat_id,
+                    max_msg_id=msg.msg_id,
+                    tg_topic_id=topic_id,
+                    pending_media_id=existing.id,
+                    attachment_index=failure.index,
+                    kind=failure.kind,
+                )
+                continue
+            job_id = await repo.enqueue_pending_media(
+                PendingMediaDownload(
+                    max_chat_id=msg.chat_id,
+                    max_msg_id=msg.msg_id,
+                    tg_topic_id=topic_id,
+                    attachment_index=failure.index,
+                    kind=failure.kind,
+                    source_type=failure.source_type,
+                    media_chat_id=str(failure.media_chat_id or msg.chat_id),
+                    media_msg_id=str(failure.media_msg_id or msg.msg_id),
+                    reference_kind=LATE_DUPLICATE_REFERENCE_KIND,
+                    reference_id="",
+                    filename=failure.filename,
+                    duration=failure.duration,
+                    width=failure.width,
+                    height=failure.height,
+                    next_attempt_at=now + LATE_DUPLICATE_FINAL_DELAY_SECONDS,
+                    last_error=failure.reason,
+                )
+            )
+            enqueued += 1
             display_failures.append(failure)
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.media_retry.enqueued",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="media_retry",
+                outcome="enqueued",
+                reason="late_duplicate_finalizer",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+                pending_media_id=job_id,
+                attachment_index=failure.index,
+                kind=failure.kind,
+                retry_in_seconds=LATE_DUPLICATE_FINAL_DELAY_SECONDS,
+            )
             continue
 
         media_chat_id, media_msg_id, source_fallback = media_source_pair(
@@ -245,10 +346,67 @@ async def process_pending_media_download(
     ) or "mx:pending-media"
     if not job.id:
         return
+    if is_late_duplicate_finalizer_job(job):
+        latest_delivery = await repo.get_latest_delivery(job.max_chat_id, job.max_msg_id, "inbound")
+        if is_late_duplicate_resolved_delivery(latest_delivery):
+            await repo.mark_pending_media_delivered(job.id, tg_msg_id=0)
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.media_retry.resolved",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="media_retry",
+                outcome="delivered",
+                reason="late_duplicate_media_already_delivered",
+                max_chat_id=job.max_chat_id,
+                max_msg_id=job.max_msg_id,
+                tg_topic_id=job.tg_topic_id,
+                pending_media_id=job.id,
+                attachment_index=job.attachment_index,
+                kind=job.kind,
+            )
+            return
+        await tg.send_text(
+            job.tg_topic_id,
+            compose_terminal_media_failure_text(
+                kind=job.kind,
+                index=job.attachment_index,
+                source_type=job.source_type,
+            ),
+            flow_id=flow_id,
+        )
+        await repo.mark_pending_media_failed(job.id, error="late_media_not_recovered")
+        log_event(
+            logger,
+            logging.ERROR,
+            "bridge.media_retry.failed",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="media_retry",
+            outcome="failed",
+            reason="late_media_not_recovered",
+            max_chat_id=job.max_chat_id,
+            max_msg_id=job.max_msg_id,
+            tg_topic_id=job.tg_topic_id,
+            pending_media_id=job.id,
+            attachment_index=job.attachment_index,
+            kind=job.kind,
+        )
+        return
     if not job.reference_id or not (
         (job.kind == "video" and job.reference_kind == "video_id")
         or (job.kind == "audio" and job.reference_kind in {"audio_id", "file_id"})
     ):
+        await tg.send_text(
+            job.tg_topic_id,
+            compose_terminal_media_failure_text(
+                kind=job.kind,
+                index=job.attachment_index,
+                source_type=job.source_type,
+            ),
+            flow_id=flow_id,
+        )
         await repo.mark_pending_media_failed(
             job.id,
             error="missing_stable_media_reference",

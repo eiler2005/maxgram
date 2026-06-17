@@ -940,6 +940,22 @@ async def test_duplicate_after_partial_delivery_sends_late_media(tmp_path):
         "status": "partial",
         "error": "attachment_download_failed:1",
     }
+    repo.pending_media.append(
+        PendingMediaDownload(
+            id=1,
+            max_chat_id="-70000000000003",
+            max_msg_id="42",
+            tg_topic_id=99,
+            attachment_index=0,
+            kind="photo",
+            source_type="PHOTO",
+            media_chat_id="-70000000000003",
+            media_msg_id="42",
+            reference_kind="late_duplicate",
+            reference_id="",
+            status="pending",
+        )
+    )
     tg_adapter = DummyTelegram()
     bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
 
@@ -975,6 +991,8 @@ async def test_duplicate_after_partial_delivery_sends_late_media(tmp_path):
         "delivered",
         "late_media_recovered",
     )
+    assert repo.pending_media[0].status == "delivered"
+    assert repo.pending_media[0].delivered_tg_msg_id == 1
     assert not photo_path.exists()
 
 
@@ -1411,7 +1429,7 @@ async def test_forward_to_telegram_reports_failed_attachment_download(tmp_path):
 
     assert result == 5
     assert tg_adapter.calls == [
-        ("text", "⚠️ Не удалось скачать вложение MAX: video #1"),
+        ("text", "⏳ Видео MAX #1 загружается и будет дослано через пару минут"),
     ]
 
 
@@ -1479,7 +1497,7 @@ async def test_on_max_message_enqueues_retryable_video_failure(tmp_path):
 
     assert tg_adapter.calls == [
         ("photo", "[Тестовый Пользователь]"),
-        ("text", "⏳ Видео MAX #5 докачивается и будет дослано позже"),
+        ("text", "⏳ Видео MAX #5 загружается и будет дослано через пару минут"),
     ]
     assert len(repo.pending_media) == 1
     job = repo.pending_media[0]
@@ -1549,13 +1567,62 @@ async def test_on_max_message_enqueues_retryable_audio_failure():
     await bridge._on_max_message(msg)
 
     assert tg_adapter.calls == [
-        ("text", "⏳ Голосовое MAX #1 докачивается и будет дослано позже"),
+        ("text", "⏳ Аудио MAX #1 загружается и будет дослано через пару минут"),
     ]
     assert len(repo.pending_media) == 1
     job = repo.pending_media[0]
     assert job.kind == "audio"
     assert job.reference_kind == "audio_id"
     assert job.reference_id == "92"
+
+
+@pytest.mark.asyncio
+async def test_on_max_message_enqueues_photo_failure_for_delayed_final_notice():
+    repo = DummyRepo()
+    repo.binding_by_chat["-70000000000003"] = SimpleNamespace(
+        max_chat_id="-70000000000003",
+        tg_topic_id=99,
+        title="Тестовая группа",
+        mode="active",
+    )
+    bridge = _make_bridge(repo=repo, tg_adapter=DummyTelegram())
+    msg = MaxMessage(
+        msg_id="mx-photo-1",
+        chat_id="-70000000000003",
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text="",
+        attachments=[],
+        attachment_types=["PHOTO"],
+        rendered_texts=[],
+        message_type="CHANNEL",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+        attachment_failures=[
+            MaxAttachmentFailure(
+                kind="photo",
+                source_type="PHOTO",
+                filename=None,
+                index=0,
+                reason="download_failed",
+            )
+        ],
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert bridge._tg.calls == [
+        ("text", "⏳ Фото MAX #1 загружается и будет дослано через пару минут"),
+    ]
+    assert len(repo.pending_media) == 1
+    job = repo.pending_media[0]
+    assert job.kind == "photo"
+    assert job.reference_kind == "late_duplicate"
+    assert job.reference_id == ""
+    assert job.next_attempt_at > job.created_at
 
 
 @pytest.mark.asyncio
@@ -1894,6 +1961,75 @@ async def test_pending_media_worker_marks_missing_reference_terminal():
 
     assert job.status == "failed"
     assert job.last_error == "missing_stable_media_reference"
+    assert tg_adapter.calls == [
+        ("text", "⚠️ Видео MAX #5 так и не удалось загрузить автоматически"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_media_late_duplicate_finalizer_sends_terminal_notice():
+    repo = DummyRepo()
+    repo.latest_deliveries[("-70000000000003", "mx-photo-1", "inbound")] = {
+        "status": "partial",
+        "error": "attachment_download_failed:1",
+    }
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-photo-1",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="photo",
+        source_type="PHOTO",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-photo-1",
+        reference_kind="late_duplicate",
+        reference_id="",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert tg_adapter.calls == [
+        ("text", "⚠️ Фото MAX #1 так и не удалось загрузить автоматически"),
+    ]
+    assert job.status == "failed"
+    assert job.last_error == "late_media_not_recovered"
+
+
+@pytest.mark.asyncio
+async def test_pending_media_late_duplicate_finalizer_skips_after_late_recovery():
+    repo = DummyRepo()
+    repo.latest_deliveries[("-70000000000003", "mx-photo-1", "inbound")] = {
+        "status": "delivered",
+        "error": "late_media_recovered",
+    }
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-photo-1",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="photo",
+        source_type="PHOTO",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-photo-1",
+        reference_kind="late_duplicate",
+        reference_id="",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert tg_adapter.calls == []
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 0
 
 
 @pytest.mark.asyncio
