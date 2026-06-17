@@ -453,6 +453,109 @@ async def test_degraded_channel_photo_recovers_from_raw_cache_before_partial(
 
 
 @pytest.mark.asyncio
+async def test_degraded_channel_prod_like_seven_photos_waits_for_raw_refs(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(max_constants, "MAX_DEGRADED_MEDIA_RECOVERY_WAIT_SECONDS", 0.1)
+    monkeypatch.setattr(max_constants, "MAX_DEGRADED_MEDIA_RECOVERY_POLL_SECONDS", 0.01)
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    chat_id = -70000000012345
+    msg_id = 900000000000001
+    client = LookupClient(chats=[SimpleNamespace(id=chat_id, title="Тестовая группа")])
+
+    async def get_message(*, chat_id: int, message_id: int):
+        return SimpleNamespace(
+            id=message_id,
+            chat_id=chat_id,
+            sender=7001,
+            text="",
+            type="CHANNEL",
+            status=None,
+            attaches=[SimpleNamespace(type="PHOTO") for _ in range(7)],
+            link=None,
+        )
+
+    client._get_message = get_message
+    adapter._client = client
+    download_calls = []
+
+    async def download_attachment(chat_id: str, msg_id: str, attach, index: int = 0, flow_id=None):
+        download_calls.append((chat_id, msg_id, adapter._attachment_type_name(attach), index))
+        if getattr(attach, "base_url", None) or getattr(attach, "url", None):
+            return MaxAttachment(
+                kind="photo",
+                local_path=f"/tmp/prod-like-photo-{index}.jpg",
+                filename=f"prod-like-photo-{index}.jpg",
+                duration=None,
+                width=1280,
+                height=720,
+                source_type="PHOTO",
+            )
+        return None
+
+    adapter._adapter._media._download_attachment = download_attachment
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+    degraded = SimpleNamespace(
+        id=msg_id,
+        chat_id=chat_id,
+        sender=7001,
+        text="",
+        type="CHANNEL",
+        status=None,
+        attaches=[SimpleNamespace(type="PHOTO") for _ in range(7)],
+        link=None,
+    )
+
+    task = asyncio.create_task(adapter._handle_raw_message(degraded))
+    await asyncio.sleep(0.02)
+    assert received == []
+    adapter._adapter._raw_payload._cache_raw_history_payload(
+        {
+            "chatId": chat_id,
+            "messages": [
+                {
+                    "id": msg_id,
+                    "time": 1,
+                    "sender": 7001,
+                    "text": "",
+                    "type": "CHANNEL",
+                    "attaches": [
+                        {"_type": "PHOTO", "baseUrl": f"https://cdn.example.test/photo-{i}.jpg"}
+                        for i in range(7)
+                    ],
+                }
+            ],
+        }
+    )
+    await task
+
+    assert len(received) == 1
+    assert received[0].msg_id == str(msg_id)
+    assert received[0].chat_id == str(chat_id)
+    assert received[0].attachment_failures == []
+    assert [attachment.kind for attachment in received[0].attachments] == ["photo"] * 7
+    assert download_calls[:7] == [
+        (str(chat_id), str(msg_id), "PHOTO", index)
+        for index in range(7)
+    ]
+    assert download_calls[7:] == [
+        (str(chat_id), str(msg_id), "PHOTO", index)
+        for index in range(7)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_degraded_channel_photo_video_recovers_from_raw_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(max_constants, "MAX_DEGRADED_MEDIA_RECOVERY_WAIT_SECONDS", 0.1)
     monkeypatch.setattr(max_constants, "MAX_DEGRADED_MEDIA_RECOVERY_POLL_SECONDS", 0.01)
