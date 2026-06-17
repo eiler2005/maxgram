@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **304 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **305 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -290,7 +290,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_service_ports.py — MAX client ports (5 тестов)
+## test_max_service_ports.py — MAX client ports (6 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -299,6 +299,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_media_service_uses_raw_request_port_for_audio_probe` | `MaxMediaService` делает protocol probe через `raw_request(...)`, без прямого `_send_and_wait`. |
 | `test_events_service_installs_raw_interceptor_through_port` | `MaxEventsService` ставит raw interceptor через client port, без доступа к pymax notification handler. |
 | `test_max_client_attachment_preserves_pydantic_extra_fields` | Pydantic/pymax attachment extra fields сохраняются в `MaxClientAttachment`, чтобы CONTROL target data не терялась. |
+| `test_max_client_attachment_preserves_pydantic_snake_case_photo_fields` | Pydantic/pymax `PhotoAttachment` сохраняет snake_case `base_url` вместе с alias `baseUrl`, чтобы inbound фото не теряло download reference. |
 
 ---
 
