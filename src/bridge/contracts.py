@@ -151,6 +151,9 @@ class MaxReactionUpdate:
     message_id: str
     total_count: int
     counters: list[dict]    # [{emoji: str, count: int}, ...]
+    actor_user_id: Optional[str] = None
+    actor_name: Optional[str] = None
+    reaction: Optional[str] = None
 
 
 MessageHandler = Callable[[MaxMessage], Awaitable[None]]

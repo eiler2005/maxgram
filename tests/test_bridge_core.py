@@ -18,6 +18,7 @@ from src.bridge.contracts import (
     MaxRecoveryChatSnapshot,
     MaxRecoveryContactSnapshot,
     MaxRecoverySnapshot,
+    MaxReactionUpdate,
 )
 from src.bridge.core import BridgeCore
 from src.db.repository import (
@@ -42,6 +43,7 @@ class DummyRepo:
         self.pending_inbound = []
         self.pending_outbound = []
         self.reply_mappings = {}
+        self.max_to_tg_mappings = {}
         self.pending_stats = {"pending_count": 0, "oldest_created_at": None}
         self.duplicates: set[tuple[str, str]] = set()
         self.phantom_bindings = []
@@ -70,6 +72,9 @@ class DummyRepo:
             source="test",
             created_at=1,
         )
+
+    async def get_tg_msg_by_max(self, max_chat_id: str, max_msg_id: str):
+        return self.max_to_tg_mappings.get((max_chat_id, max_msg_id))
 
     async def save_message(self, record):
         self.saved_record = record
@@ -622,6 +627,28 @@ def test_command_dispatcher_registers_expected_commands():
     assert tg.arg_commands["dm"] == bridge._commands.handle_dm
     assert tg.arg_commands["recovery"] == bridge._recovery.handle_command
     assert tg.arg_command_options["dm"] == {"allow_group_general": True}
+
+
+@pytest.mark.asyncio
+async def test_on_max_reaction_update_edits_footer_with_actor_name():
+    repo = DummyRepo()
+    repo.max_to_tg_mappings[("-100", "msg42")] = 321
+    tg = DummyTelegram()
+    bridge = make_bridge(repo=repo, tg_adapter=tg)
+
+    await bridge._on_max_reaction_update(
+        MaxReactionUpdate(
+            chat_id="-100",
+            message_id="msg42",
+            total_count=3,
+            counters=[{"emoji": "👍", "count": 3}],
+            actor_user_id="7001",
+            actor_name="Марина Ермилова",
+            reaction="👍",
+        )
+    )
+
+    assert tg.calls == [("edit", 321, "👍 3\nПоследняя реакция: Марина Ермилова — 👍")]
 
 
 @pytest.mark.asyncio

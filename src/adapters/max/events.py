@@ -60,6 +60,61 @@ _CHANNEL_METADATA_MARKER_FIELDS = {
     "stats",
     "unread",
 }
+_CONTROL_USER_LIST_KEYS = (
+    "user_ids",
+    "userIds",
+    "users",
+    "members",
+    "participants",
+    "contacts",
+)
+_CONTROL_USER_OBJECT_KEYS = (
+    "target",
+    "target_user",
+    "targetUser",
+    "target_member",
+    "targetMember",
+    "user",
+    "member",
+    "participant",
+    "contact",
+)
+_CONTROL_USER_ID_KEYS = (
+    "user_id",
+    "userId",
+    "member_id",
+    "memberId",
+    "participant_id",
+    "participantId",
+    "contact_id",
+    "contactId",
+    "account_id",
+    "accountId",
+)
+_USER_ID_KEYS = _CONTROL_USER_ID_KEYS + ("id",)
+_REACTION_ACTOR_OBJECT_KEYS = (
+    "actor",
+    "author",
+    "sender",
+    "user",
+    "member",
+    "participant",
+)
+_REACTION_ACTOR_ID_KEYS = (
+    "actor_id",
+    "actorId",
+    "author_id",
+    "authorId",
+    "sender_id",
+    "senderId",
+    "user_id",
+    "userId",
+    "member_id",
+    "memberId",
+    "participant_id",
+    "participantId",
+)
+_REACTION_VALUE_KEYS = ("reaction", "emoji", "reaction_id", "reactionId")
 
 
 class MaxEventsService:
@@ -204,16 +259,54 @@ class MaxEventsService:
         )
         return client
 
-    def _get_extra_value(self, extra: dict, *keys: str):
+    @staticmethod
+    def _normalize_field_key(key: object) -> str:
+        return str(key).lower().replace("_", "").replace("-", "")
+
+    def _object_values(self, value) -> dict[str, object]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return dict(value)
+        raw_fields = getattr(value, "__dict__", None)
+        if isinstance(raw_fields, dict):
+            data = dict(raw_fields)
+            extra = getattr(value, "__pydantic_extra__", None)
+            if isinstance(extra, dict):
+                data.update(extra)
+            return data
+        result: dict[str, object] = {}
+        for name in dir(value):
+            if name.startswith("__"):
+                continue
+            try:
+                attr = getattr(value, name)
+            except Exception:
+                continue
+            if callable(attr):
+                continue
+            result[name] = attr
+        extra = getattr(value, "__pydantic_extra__", None)
+        if isinstance(extra, dict):
+            result.update(extra)
+        return result
+
+    def _get_field_value(self, source, *keys: str):
+        fields = self._object_values(source)
+        if not fields:
+            return None
         normalized = {
-            str(k).lower().replace("_", ""): v
-            for k, v in extra.items()
+            self._normalize_field_key(k): v
+            for k, v in fields.items()
         }
         for key in keys:
-            candidate = key.lower().replace("_", "")
+            candidate = self._normalize_field_key(key)
             if candidate in normalized:
                 return normalized[candidate]
         return None
+
+    def _get_extra_value(self, extra: dict, *keys: str):
+        return self._get_field_value(extra, *keys)
 
     def _coerce_user_ids(self, value) -> list[str]:
         if value is None:
@@ -221,6 +314,100 @@ class MaxEventsService:
         if isinstance(value, (list, tuple, set)):
             return [str(v) for v in value if v is not None]
         return [str(value)]
+
+    def _text_value(self, value) -> str | None:
+        raw = getattr(value, "value", value)
+        if raw is None:
+            return None
+        if isinstance(raw, bool):
+            return None
+        text = str(raw).strip()
+        return text or None
+
+    def _extract_user_id(self, value) -> str | None:
+        if isinstance(value, (int, str)) and not isinstance(value, bool):
+            return self._text_value(value)
+        for key in _USER_ID_KEYS:
+            text = self._text_value(self._get_field_value(value, key))
+            if text:
+                return text
+        return None
+
+    def _extract_embedded_user_name(self, value) -> str | None:
+        for key in ("display_name", "displayName", "full_name", "fullName"):
+            name = self._text_value(self._get_field_value(value, key))
+            if name:
+                return name
+
+        names = self._get_field_value(value, "names")
+        if isinstance(names, (list, tuple)) and names:
+            first_item = names[0]
+            first = (
+                self._text_value(self._get_field_value(first_item, "first_name", "firstName"))
+                or self._text_value(self._get_field_value(first_item, "name"))
+                or ""
+            )
+            last = self._text_value(
+                self._get_field_value(first_item, "last_name", "lastName")
+            ) or ""
+            name = f"{first} {last}".strip()
+            if name:
+                return name
+
+        first = (
+            self._text_value(self._get_field_value(value, "first_name", "firstName"))
+            or ""
+        )
+        last = self._text_value(self._get_field_value(value, "last_name", "lastName")) or ""
+        name = f"{first} {last}".strip()
+        if name:
+            return name
+
+        return self._text_value(self._get_field_value(value, "name"))
+
+    def _collect_user_refs_from_value(self, value) -> list[object]:
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            refs: list[object] = []
+            for item in value:
+                refs.extend(self._collect_user_refs_from_value(item))
+            return refs
+        if isinstance(value, dict):
+            if self._extract_user_id(value) or self._extract_embedded_user_name(value):
+                return [value]
+            refs = []
+            for key, item in value.items():
+                if item is None and self._extract_user_id(key):
+                    refs.append(key)
+                elif self._extract_user_id(item) or self._extract_embedded_user_name(item):
+                    refs.append(item)
+            return refs
+        return [value] if self._extract_user_id(value) or self._extract_embedded_user_name(value) else []
+
+    def _extract_control_user_refs(self, attach) -> list[object]:
+        refs: list[object] = []
+        for source in (self._get_field_value(attach, "extra") or {}, attach):
+            for key in _CONTROL_USER_LIST_KEYS:
+                refs.extend(self._collect_user_refs_from_value(self._get_field_value(source, key)))
+            for key in _CONTROL_USER_OBJECT_KEYS:
+                refs.extend(self._collect_user_refs_from_value(self._get_field_value(source, key)))
+            for key in _CONTROL_USER_ID_KEYS:
+                value = self._get_field_value(source, key)
+                if value is not None:
+                    refs.append(value)
+
+        seen: set[str] = set()
+        unique_refs: list[object] = []
+        for ref in refs:
+            ref_id = self._extract_user_id(ref)
+            ref_name = self._extract_embedded_user_name(ref)
+            key = ref_id or (f"name:{ref_name}" if ref_name else None)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique_refs.append(ref)
+        return unique_refs
 
     async def _render_user_list(self, user_ids: list[str]) -> Optional[str]:
         if not user_ids:
@@ -244,14 +431,65 @@ class MaxEventsService:
             return "участник"
         return f"{len(user_ids)} участников"
 
+    async def _render_user_refs(self, refs: list[object]) -> Optional[str]:
+        if not refs:
+            return None
+
+        names: list[str] = []
+        unresolved = 0
+        for ref in refs:
+            embedded_name = self._extract_embedded_user_name(ref)
+            if embedded_name:
+                names.append(embedded_name)
+                continue
+            user_id = self._extract_user_id(ref)
+            if user_id:
+                name = await self._resolver.resolve_user_name(user_id)
+                if name:
+                    names.append(name)
+                else:
+                    unresolved += 1
+
+        if names:
+            if unresolved:
+                names.append(f"ещё {unresolved}")
+            return ", ".join(names)
+        if unresolved == 1:
+            return "участник"
+        if unresolved > 1:
+            return f"{unresolved} участников"
+        return None
+
+    def _control_fallback_text(self, attach) -> str:
+        event = str(self._get_field_value(attach, "event") or "").lower()
+        if event in {"joinbylink", "join_by_link", "joinedbylink"}:
+            return "Участник присоединился по ссылке"
+        if event in {"add", "invite", "join", "joined"}:
+            return "В чат добавлен участник"
+        if event in {"leave", "left", "exit"}:
+            return "Участник вышел из чата"
+        if event in {"remove", "removed", "kick"}:
+            return "Участник удалён из чата"
+        if event in {"new", "create", "created"}:
+            return "Создан новый чат"
+        if event in {"rename", "title", "theme"}:
+            return "Изменено название чата"
+        if event in {"description", "about", "profile"}:
+            return "Изменён профиль чата"
+        return "Системное событие MAX"
+
     async def _render_control_attach(self, attach, sender_id: Optional[str],
                                      sender_name: Optional[str]) -> Optional[str]:
-        event = str(getattr(attach, "event", "") or "").lower()
-        extra = getattr(attach, "extra", None) or {}
+        event = str(self._get_field_value(attach, "event") or "").lower()
+        extra = self._get_field_value(attach, "extra") or {}
         user_ids = self._coerce_user_ids(
             self._get_extra_value(extra, "user_ids", "userIds", "users", "members")
         )
-        rendered_users = await self._render_user_list(user_ids)
+        user_refs = self._extract_control_user_refs(attach)
+        rendered_users = (
+            await self._render_user_refs(user_refs)
+            or await self._render_user_list(user_ids)
+        )
         title = self._get_extra_value(extra, "title", "theme", "name")
         actor = sender_name
 
@@ -309,6 +547,45 @@ class MaxEventsService:
             return f"Системное событие MAX `{event}`{suffix}"
 
         return "Системное событие MAX"
+
+    async def _safe_render_non_media_attach(
+        self,
+        attach,
+        *,
+        atype: str,
+        raw_type: str,
+        sender_id: Optional[str],
+        sender_name: Optional[str],
+        flow_id: str,
+        chat_id: str,
+        msg_id: str,
+    ) -> Optional[str]:
+        try:
+            if atype == "CONTROL":
+                return await self._render_control_attach(attach, sender_id, sender_name)
+            if atype == "CONTACT":
+                return self._render_contact_attach(attach)
+            if atype == "STICKER":
+                return self._render_sticker_attach(attach)
+            return f"[Вложение MAX: {raw_type.lower()}]" if raw_type else None
+        except Exception as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.inbound.service_render_failed",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="normalize",
+                outcome="degraded",
+                reason="non_media_attachment_render_error",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                attachment_type=atype or raw_type,
+                error_type=type(e).__name__,
+            )
+            if atype == "CONTROL":
+                return self._control_fallback_text(attach)
+            return f"[Вложение MAX: {raw_type.lower()}]" if raw_type else None
 
     def _render_contact_attach(self, attach) -> str:
         name = getattr(attach, "name", None) or " ".join(
@@ -705,7 +982,22 @@ class MaxEventsService:
             # активный MAX socket на CONTACT_INFO перед CHAT_HISTORY.
             sender_name = None
             if sender_id:
-                sender_name = await self._resolver.resolve_user_name(sender_id)
+                try:
+                    sender_name = await self._resolver.resolve_user_name(sender_id)
+                except Exception as e:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.inbound.sender_resolve_failed",
+                        flow_id=flow_id,
+                        direction="inbound",
+                        stage="normalize",
+                        outcome="degraded",
+                        reason="sender_name_lookup_error",
+                        max_chat_id=chat_id,
+                        max_msg_id=msg_id,
+                        error_type=type(e).__name__,
+                    )
 
             # own_id сохраняем в msg для фильтрации в BridgeCore
             # (не фильтруем здесь — bridge решает сам)
@@ -746,14 +1038,16 @@ class MaxEventsService:
                         )
                     continue
 
-                if atype == "CONTROL":
-                    rendered = await self._render_control_attach(attach, sender_id, sender_name)
-                elif atype == "CONTACT":
-                    rendered = self._render_contact_attach(attach)
-                elif atype == "STICKER":
-                    rendered = self._render_sticker_attach(attach)
-                else:
-                    rendered = f"[Вложение MAX: {raw_type.lower()}]" if raw_type else None
+                rendered = await self._safe_render_non_media_attach(
+                    attach,
+                    atype=atype,
+                    raw_type=raw_type,
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    flow_id=flow_id,
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                )
 
                 if rendered:
                     rendered_texts.append(rendered)
@@ -949,25 +1243,71 @@ class MaxEventsService:
                     error=str(e),
                 )
 
+    def _extract_reaction_actor_ref(self, event):
+        for key in _REACTION_ACTOR_OBJECT_KEYS:
+            value = self._get_field_value(event, key)
+            if value is not None:
+                return value
+        for key in _REACTION_ACTOR_ID_KEYS:
+            value = self._get_field_value(event, key)
+            if value is not None:
+                return value
+        return None
+
+    def _extract_reaction_value(self, event, counters: list[dict]) -> str | None:
+        for key in _REACTION_VALUE_KEYS:
+            value = self._text_value(self._get_field_value(event, key))
+            if value:
+                return value
+        if len(counters) == 1:
+            return self._text_value(counters[0].get("emoji"))
+        return None
+
     async def _handle_reaction_update(self, event) -> None:
-        chat_id = str(getattr(event, "chat_id", None) or "")
-        message_id = str(getattr(event, "message_id", None) or "")
-        total_count = int(getattr(event, "total_count", 0) or 0)
-        raw_counters = getattr(event, "counters", None) or []
+        chat_id = str(self._get_field_value(event, "chat_id", "chatId") or "")
+        message_id = str(self._get_field_value(event, "message_id", "messageId") or "")
+        total_count = int(self._get_field_value(event, "total_count", "totalCount") or 0)
+        raw_counters = self._get_field_value(event, "counters") or []
         counters = [
             {
-                "emoji": str(getattr(c, "emoji", None) or ""),
-                "count": int(getattr(c, "count", 0) or 0),
+                "emoji": str(self._get_field_value(c, "emoji", "reaction") or ""),
+                "count": int(self._get_field_value(c, "count") or 0),
             }
             for c in raw_counters
         ]
         if not chat_id or not message_id:
             return
+        actor_user_id = None
+        actor_name = None
+        reaction_value = None
+        try:
+            actor_ref = self._extract_reaction_actor_ref(event)
+            actor_user_id = self._extract_user_id(actor_ref)
+            actor_name = self._extract_embedded_user_name(actor_ref)
+            if actor_user_id and not actor_name and self._resolver is not None:
+                actor_name = await self._resolver.resolve_user_name(actor_user_id)
+            reaction_value = self._extract_reaction_value(event, counters)
+        except Exception as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.inbound.reaction_enrichment_failed",
+                direction="inbound",
+                stage="normalize",
+                outcome="degraded",
+                reason="reaction_actor_enrichment_error",
+                max_chat_id=chat_id,
+                max_msg_id=message_id,
+                error_type=type(e).__name__,
+            )
         reaction = MaxReactionUpdate(
             chat_id=chat_id,
             message_id=message_id,
             total_count=total_count,
             counters=counters,
+            actor_user_id=actor_user_id,
+            actor_name=actor_name,
+            reaction=reaction_value,
         )
         for handler in self._deps.reaction_update_handlers:
             try:

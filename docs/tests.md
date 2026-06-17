@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
 ```
 
-Всего: **292 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **304 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -129,7 +129,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (89 тестов)
+## tests/test_max_adapter/ — MAX adapter behavior split (99 тестов)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -149,7 +149,11 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_handle_raw_message_extracts_text_from_msgpack_bytes` | SHARE/msgpack-like `message.text` bytes распаковываются до настоящего text без `�` и raw field names. |
 | `test_classify_runtime_error_uses_exception_context_for_logout_all` | Если PyMax перекрывает `FAIL_LOGOUT_ALL/login.token` SSL close exception, классификация всё равно требует reauth. |
 | `test_handle_raw_message_renders_control_add_with_partial_name_resolution` | `CONTROL/add` с двумя `userIds` — один известен в кеше, другой нет → `"Добавлены участники: Имя Фамилия, ещё 1"`. Проверяет частичное разрешение имён. |
+| `test_handle_raw_message_renders_control_remove_with_target_user_id` | `CONTROL/remove` берёт удалённого участника из target-полей, а не из sender-админа. |
+| `test_handle_raw_message_renders_control_add_with_nested_embedded_name` | `CONTROL/add` с nested user/member object выводит embedded имя без live lookup. |
+| `test_handle_raw_message_delivers_text_when_control_rendering_fails` | Ошибка enrichment service attachment даёт generic service text и не блокирует доставку основного текста. |
 | `test_handle_raw_message_renders_control_join_by_link` | `CONTROL/joinbylink` рендерится в человекочитаемый текст `"Присоединились по ссылке: ..."`, а не сырой `joinbylink`. |
+| `test_handle_reaction_update_dispatches_actor_and_pymax_reaction_field` | ReactionUpdate читает pymax-native `counter.reaction`, optional actor user id и резолвит имя автора реакции. |
 
 ### CHANNEL/forward и неизвестные MAX-типы
 
@@ -286,7 +290,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_service_ports.py — MAX client ports (4 теста)
+## test_max_service_ports.py — MAX client ports (5 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -294,6 +298,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_send_service_uses_outbound_port_method` | `MaxSendService` вызывает `send_outbound_message(...)` и получает `MaxSendResult`, не создавая library attachments сам. |
 | `test_media_service_uses_raw_request_port_for_audio_probe` | `MaxMediaService` делает protocol probe через `raw_request(...)`, без прямого `_send_and_wait`. |
 | `test_events_service_installs_raw_interceptor_through_port` | `MaxEventsService` ставит raw interceptor через client port, без доступа к pymax notification handler. |
+| `test_max_client_attachment_preserves_pydantic_extra_fields` | Pydantic/pymax attachment extra fields сохраняются в `MaxClientAttachment`, чтобы CONTROL target data не терялась. |
 
 ---
 
@@ -308,6 +313,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_forward_to_telegram_sends_media_then_rendered_system_text` | Сообщение с видео-вложением и `rendered_texts`: сначала отправляется видео (`send_video` с caption `[Имя]`), затем текст системного события (`send_text`). Возвращает `message_id` медиа. |
 | `test_forward_to_telegram_sends_voice_note_for_voice_source` | Вложение с `source_type=VOICE` отправляется как нативный `send_voice` (voice bubble), а не как обычное аудио. |
 | `test_forward_to_telegram_uses_rendered_text_without_media` | Сообщение типа `CONTROL` без вложений: отправляется только текст из `rendered_texts`. Файловые методы не вызываются. |
+| `test_on_max_reaction_update_edits_footer_with_actor_name` | Reaction footer редактируется с агрегатами и строкой `Последняя реакция: Имя — emoji`, если actor известен. |
 | `test_on_max_message_queues_text_when_tg_send_fails` | Retryable MAX→TG text delivery failure попадает в durable inbound outbox без увеличения failed-счётчика. |
 | `test_pending_inbound_worker_delivers_and_clears_text` | Inbound text worker досылает текст в Telegram, сохраняет mapping/delivery и очищает plaintext. |
 | `test_on_tg_reply_prefixes_sender_name_for_max` | Reply из Telegram: текст отправляется в MAX с префиксом `[Мария Иванова]\nПроверка связи`; `reply_to_msg_id` разрешается через `get_max_msg_id_by_tg`. |

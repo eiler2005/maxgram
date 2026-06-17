@@ -164,6 +164,21 @@ LOG_FORMAT=json
 Инвариант приватности тот же: не логировать текст сообщений, media, invite links,
 телефоны, токены или raw MAX payloads.
 
+### MAX service events и реакции
+
+MAX `CONTROL` события (`add`, `remove`, `leave`, `joinbylink`) отображаются в
+Telegram человекочитаемым сервисным текстом. Bridge best-effort подставляет имя
+участника из target/member/user полей или из кеша пользователей; если MAX/pymax
+не отдаёт target, остаётся generic текст вроде `Участник удалён из чата`.
+Ошибки такого enrichment не должны блокировать доставку обычного текста/медиа:
+в лог пишется безопасный metadata-only warning без raw payload/message text, а
+в Telegram уходит generic service text.
+
+Reaction updates не создают отдельное сообщение: bridge редактирует footer
+уже доставленного Telegram-сообщения. Если MAX отдаёт автора реакции, footer
+получает строку `Последняя реакция: <имя> — <emoji>`; иначе остаются только
+агрегированные счётчики.
+
 Prometheus textfile metrics пишутся атомарно в `data/maxtg_bridge.prom` по
 умолчанию. Если позже появится node_exporter textfile collector, укажи абсолютный
 путь через config/env:

@@ -129,6 +129,11 @@ class BridgeCore:
         if not parts:
             return
         footer = "  ".join(parts)
+        if event.actor_name:
+            actor_footer = f"Последняя реакция: {event.actor_name}"
+            if event.reaction:
+                actor_footer = f"{actor_footer} — {event.reaction}"
+            footer = f"{footer}\n{actor_footer}"
         await self._tg.edit_message_text(tg_msg_id, footer)
 
     async def _on_max_message(self, msg: MaxMessage):

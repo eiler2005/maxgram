@@ -8,6 +8,7 @@ from src.adapters.max.deps import EventsDeps, MediaDeps, ResolveDeps, SendDeps
 from src.adapters.max.events import MaxEventsService
 from src.adapters.max.media.attachments import MaxMediaService
 from src.adapters.max.ports import (
+    MaxClientAttachment,
     MaxRawInterceptorResult,
     MaxSendResult,
     MaxUserView,
@@ -174,3 +175,18 @@ def test_events_service_installs_raw_interceptor_through_port():
 
     assert returned is client
     assert client.handler == service._handle_raw_receive
+
+
+def test_max_client_attachment_preserves_pydantic_extra_fields():
+    class PydanticLikeAttachment:
+        __pydantic_extra__ = {"targetUser": {"userId": 7001}}
+
+        def model_dump(self, **kwargs):
+            assert kwargs == {"by_alias": True, "exclude_none": True}
+            return {"_type": "CONTROL", "event": "remove"}
+
+    attachment = MaxClientAttachment.from_object(PydanticLikeAttachment())
+
+    assert attachment.type == "CONTROL"
+    assert attachment.event == "remove"
+    assert attachment.targetUser == {"userId": 7001}

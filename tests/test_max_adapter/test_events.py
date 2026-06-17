@@ -1130,6 +1130,114 @@ async def test_handle_raw_message_renders_control_add_with_partial_name_resoluti
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_renders_control_remove_with_target_user_id(tmp_path):
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = LookupClient(
+        users={7001: make_user("Тестовый", "Пользователь")},
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")],
+    )
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=4,
+        chat_id=-70000000000003,
+        sender=40053201,
+        text="",
+        type="USER",
+        status=None,
+        attaches=[SimpleNamespace(type="CONTROL", event="remove", extra={"targetUser": {"userId": 7001}})],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].rendered_texts == ["Удалены участники: Тестовый Пользователь"]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_renders_control_add_with_nested_embedded_name(tmp_path):
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = LookupClient(chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")])
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=5,
+        chat_id=-70000000000003,
+        sender=40053201,
+        text="",
+        type="USER",
+        status=None,
+        attaches=[
+            SimpleNamespace(
+                type="CONTROL",
+                event="add",
+                extra={
+                    "member": {
+                        "accountId": 7002,
+                        "firstName": "Новый",
+                        "lastName": "Участник",
+                    }
+                },
+            )
+        ],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].rendered_texts == ["Добавлены участники: Новый Участник"]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_delivers_text_when_control_rendering_fails(tmp_path):
+    class FailingResolver:
+        async def resolve_user_name(self, _user_id):
+            raise RuntimeError("lookup failed")
+
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    adapter._client = LookupClient(chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")])
+    adapter._adapter._events._deps.resolver = FailingResolver()
+
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=6,
+        chat_id=-70000000000003,
+        sender=7003,
+        text="Основной текст",
+        type="USER",
+        status=None,
+        attaches=[SimpleNamespace(type="CONTROL", event="add", extra={"userIds": [7001]})],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].text == "Основной текст"
+    assert received[0].rendered_texts == ["В чат добавлен участник"]
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_message_renders_control_join_by_link(tmp_path):
     adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     adapter._client = LookupClient(
@@ -1459,6 +1567,53 @@ async def test_handle_reaction_update_dispatches_counters(tmp_path):
     assert received[0].message_id == "msg42"
     assert received[0].total_count == 3
     assert received[0].counters == [{"emoji": "👍", "count": 3}]
+
+
+@pytest.mark.asyncio
+async def test_handle_reaction_update_dispatches_actor_and_pymax_reaction_field(tmp_path):
+    """PyMax counters use .reaction, and event may include the reacting user id."""
+    from src.adapters.max.deps import EventsDeps
+    from src.adapters.max.events import MaxEventsService
+    from src.adapters.max.state import ConnectionState, OutboundState
+
+    class Resolver:
+        async def resolve_user_name(self, user_id):
+            return "Марина Ермилова" if user_id == "7001" else None
+
+    received = []
+
+    async def reaction_handler(event):
+        received.append(event)
+
+    deps = EventsDeps(
+        connection=ConnectionState(),
+        outbound=OutboundState(),
+        handlers=[],
+        backend=None,
+        raw_payload=None,
+        media=None,
+        resolver=Resolver(),
+        runtime=None,
+        reaction_update_handlers=[reaction_handler],
+    )
+    svc = MaxEventsService(deps)
+
+    counter = SimpleNamespace(reaction="👍", count=3)
+    event = SimpleNamespace(
+        chat_id=-100,
+        message_id="msg42",
+        total_count=3,
+        counters=[counter],
+        userId=7001,
+        reaction="👍",
+    )
+    await svc._handle_reaction_update(event)
+
+    assert len(received) == 1
+    assert received[0].counters == [{"emoji": "👍", "count": 3}]
+    assert received[0].actor_user_id == "7001"
+    assert received[0].actor_name == "Марина Ермилова"
+    assert received[0].reaction == "👍"
 
 
 @pytest.mark.asyncio
