@@ -580,6 +580,8 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
 - если ретриабельное видео или голосовое всё равно не скачалось, bridge отправляет остальные части сообщения сразу, показывает `⏳ Видео MAX #N докачивается...` / `⏳ Голосовое MAX #N докачивается...` и кладёт job в `pending_media_downloads`;
 - повторный sweep той же voice/media-reference не отправляет второй queued-placeholder: существующий pending job переиспользуется по `media_chat_id/media_msg_id/attachment_index/kind/reference_*`;
+- для degraded `CHANNEL/FORWARD` wrappers bridge принимает recovery только если payload содержит usable media refs; low-quality `PHOTO`/`VIDEO` без refs не занимает dedup partial сразу, а ждёт raw/history cache до короткого timeout;
+- если первый проход всё же дал `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные фото/видео, bridge best-effort досылает только media в тот же Telegram topic, пишет `delivery_log.error=late_media_recovered` и `tg_reply_map` для reply routing;
 - retry worker для видео заново получает playable URL через `VIDEO_PLAY`; для голосовых заново читает raw `CHAT_HISTORY`, пробует exact `MSG_GET`, dialog cache, MAX Web `audioGetSources` (`opcode=301`) и только затем известный pymax/userbot-safe `FILE_DOWNLOAD` payload (`fileId`) + legacy pymax `get_file_by_id`; signed URL/token/text не хранятся, медиа досылается в тот же Telegram topic отдельным сообщением. `audioId`/token payload для `FILE_DOWNLOAD` в prod вернул `proto.payload` и закрыл socket, поэтому он отключён.
 
 Что смотреть в логах:
@@ -588,10 +590,12 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 rg 'flow_id=mx:<chat_id>:<msg_id>' data/bridge.log
 rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback|audio_fallback|audio_protocol_probe|voice_reference_missing)' data/bridge.log
 rg 'event=bridge\.media_retry\.(enqueued|attempt_started|retry_scheduled|delivered|failed)' data/bridge.log
+rg 'event=bridge\.inbound\.late_media_recovery|event=max\.inbound\.degraded_media_recovery' data/bridge.log
 rg 'event=bridge\.inbound\.forward_finished .*outcome=partial' data/bridge.log
 ```
 
 Для CDN download-ошибок смотри поля `src_ag`, `ua_family`, `http_status` и `download_source`. Signed query-параметры URL в логах не должны появляться.
+Для degraded/late recovery логи содержат только meta (`chat_id/msg_id`, типы вложений, counts, outcome/reason), без raw payload и текста сообщения.
 
 Очередь durable media retry:
 

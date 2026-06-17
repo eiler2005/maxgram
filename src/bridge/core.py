@@ -139,6 +139,8 @@ class BridgeCore:
     async def _on_max_message(self, msg: MaxMessage):
         """Входящее сообщение из MAX → форвардим в Telegram."""
         await bridge_forwarding.handle_max_message(
+            cfg=self._cfg,
+            tg=self._tg,
             repo=self._repo,
             stats=self._stats,
             msg=msg,

@@ -129,7 +129,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (100 тестов)
+## tests/test_max_adapter/ — MAX adapter behavior split (103 теста)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -162,6 +162,9 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_handle_raw_message_unwraps_forward_link_content` | `CHANNEL`/forward с `link.message` разворачивается до исходного текста и вложений; media download использует исходные `chat_id/message_id`. |
 | `test_handle_raw_message_falls_back_from_zero_forward_chat_for_media` | Typed `link.message` с source `chat_id=0` скачивает media по внешнему chat id и nested message id. |
 | `test_handle_raw_message_recovers_degraded_channel_media_before_partial` | Typed `CHANNEL` media wrapper с неполными refs не занимает `message_map` partial-сообщением: adapter сначала восстанавливает полноценный raw/history payload с фото/видео. |
+| `test_degraded_channel_photo_low_quality_recovery_waits_before_partial` | Если `get_message_precise` возвращает `PHOTO` без usable refs, adapter логирует low-quality recovery, ждёт raw/cache и только после timeout отдаёт generic partial без потери текста. |
+| `test_degraded_channel_photo_recovers_from_raw_cache_before_partial` | Если raw/history cache появляется во время degraded wait, adapter доставляет recovered фото с `attachment_failures=[]`, не занимая dedup partial-сообщением. |
+| `test_degraded_channel_photo_video_recovers_from_raw_cache` | Тот же degraded wait/recovery path работает для смешанных `PHOTO` + `VIDEO` вложений. |
 | `test_handle_raw_receive_unwraps_channel_wrapper_and_skips_pymax_duplicate` | Raw `CHANNEL`-обёртка перехватывается до pymax-parser, реальный nested message отправляется дальше, последующий wrapper-дубликат подавляется. |
 | `test_handle_raw_receive_forwards_channel_wrapper_with_direct_attachments` | Raw `CHANNEL`-обёртка с прямым `text/attaches` доставляется как сообщение, а не логируется как missing-chat-id metadata. |
 | `test_empty_recovery_unwraps_forwarded_history_candidate_before_content_check` | Empty recovery сначала разворачивает history-candidate с nested forwarded `message`, и только потом проверяет наличие контента. |
@@ -328,6 +331,9 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_on_tg_reply_does_not_persist_failed_media_for_retry` | TG→MAX media failure не сохраняет файл/текст в outbox и просит переотправить вручную. |
 | `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает queued-placeholder и создаёт `pending_media_downloads` job. |
 | `test_existing_pending_audio_failure_does_not_duplicate_placeholder` | Повторный replay того же voice по `media_msg_id/reference_id` переиспользует активный pending job и не отправляет второй queued-placeholder. |
+| `test_duplicate_after_partial_delivery_sends_late_media` | Если первый inbound delivery был `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные media, core досылает только вложения в существующий topic и пишет `late_media_recovered`. |
+| `test_duplicate_after_late_media_recovered_is_skipped` | Повторный duplicate после `delivery_log status=delivered/error=late_media_recovered` не досылает media повторно. |
+| `test_delivered_duplicate_with_media_is_skipped` | Обычный delivered duplicate с media остаётся dedup-skipped и не меняет прежнее поведение. |
 | `test_pending_media_worker_delivers_video_and_maps_reply` | Retry worker скачивает отложенное видео, отправляет `send_video`, закрывает job и сохраняет reply mapping на исходный MAX message. |
 | `test_pending_media_worker_falls_back_from_zero_media_chat` | Pending media retry для старых jobs с `media_chat_id=0` использует исходный MAX chat id, а при `not.found` пробует wrapper message id. |
 | `test_pending_media_worker_reschedules_download_failure` | Временный сбой скачивания переводит job в `retry` с увеличенным attempts и будущим `next_attempt_at`. |

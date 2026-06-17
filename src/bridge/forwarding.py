@@ -23,6 +23,14 @@ from ..logging_utils import build_max_flow_id, log_event
 logger = logging.getLogger("src.bridge.core")
 
 
+_LATE_MEDIA_KIND_LABELS = {
+    "photo": "фото",
+    "video": "видео",
+    "audio": "аудио",
+    "document": "файл",
+}
+
+
 def compose_message_text(primary: str, secondary: str = "") -> str:
     parts = [part.strip() for part in [primary, secondary] if part and part.strip()]
     return "\n".join(parts)
@@ -169,6 +177,127 @@ async def send_attachment(
     )
 
 
+def _is_late_media_recovery_candidate(latest_delivery: Optional[dict]) -> bool:
+    if not latest_delivery:
+        return False
+    if latest_delivery.get("status") != "partial":
+        return False
+    error = str(latest_delivery.get("error") or "")
+    return error.startswith("attachment_download_failed:")
+
+
+def _late_media_caption(attachment: MaxAttachment, index: int) -> str:
+    label = _LATE_MEDIA_KIND_LABELS.get(attachment.kind, attachment.kind or "медиа")
+    return f"Досланное {label} MAX #{index + 1}"
+
+
+async def recover_late_duplicate_media(
+    *,
+    cfg: AppConfig,
+    tg: TelegramBridgePort,
+    repo: Repository,
+    msg: MaxMessage,
+    get_or_create_topic: Callable[..., Awaitable[Optional[int]]],
+    flow_id: str,
+) -> bool:
+    if not msg.attachments:
+        return False
+
+    latest_delivery = await repo.get_latest_delivery(msg.chat_id, msg.msg_id, "inbound")
+    if not _is_late_media_recovery_candidate(latest_delivery):
+        return False
+
+    binding = await repo.get_binding(msg.chat_id)
+    if binding and binding.mode == "disabled":
+        return False
+    topic_id = binding.tg_topic_id if binding else await get_or_create_topic(msg, flow_id=flow_id)
+    if topic_id is None:
+        return False
+
+    sent_ids: list[int] = []
+    for index, attachment in enumerate(msg.attachments):
+        attachment_path = Path(attachment.local_path)
+        if not attachment_path.exists():
+            continue
+        caption = _late_media_caption(attachment, index)
+        if is_file_too_large(cfg, attachment.local_path):
+            placeholder = cfg.content.placeholder_file_too_large.format(
+                filename=attachment.filename or attachment_path.name
+            )
+            sent_id = await tg.send_text(
+                topic_id,
+                compose_message_text(caption, placeholder),
+                flow_id=flow_id,
+            )
+        else:
+            sent_id = await send_attachment(
+                cfg=cfg,
+                tg=tg,
+                topic_id=topic_id,
+                attachment=attachment,
+                caption=caption,
+                flow_id=flow_id,
+            )
+        if sent_id:
+            sent_ids.append(sent_id)
+
+    if len(sent_ids) != len(msg.attachments):
+        log_event(
+            logger,
+            logging.WARNING,
+            "bridge.inbound.late_media_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="dedup",
+            outcome="failed",
+            reason="late_media_send_incomplete",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            tg_topic_id=topic_id,
+            sent_media_count=len(sent_ids),
+            attachment_count=len(msg.attachments),
+        )
+        return False
+
+    for attachment in msg.attachments:
+        with suppress(Exception):
+            Path(attachment.local_path).unlink(missing_ok=True)
+
+    async with mapping.repo_transaction(repo):
+        for sent_id in sent_ids:
+            await repo.save_tg_reply_mapping(
+                sent_id,
+                msg.chat_id,
+                msg.msg_id,
+                topic_id,
+                source="late_media_recovery",
+                commit=False,
+            )
+        await repo.log_delivery(
+            msg.msg_id,
+            msg.chat_id,
+            "inbound",
+            "delivered",
+            "late_media_recovered",
+        )
+
+    log_event(
+        logger,
+        logging.INFO,
+        "bridge.inbound.late_media_recovery",
+        flow_id=flow_id,
+        direction="inbound",
+        stage="dedup",
+        outcome="delivered",
+        reason="late_media_recovered",
+        max_chat_id=msg.chat_id,
+        max_msg_id=msg.msg_id,
+        tg_topic_id=topic_id,
+        sent_media_count=len(sent_ids),
+    )
+    return True
+
+
 async def forward_to_telegram(
     *,
     cfg: AppConfig,
@@ -262,6 +391,8 @@ async def forward_to_telegram(
 
 async def handle_max_message(
     *,
+    cfg: AppConfig,
+    tg: TelegramBridgePort,
     repo: Repository,
     stats: dict[str, int | float],
     msg: MaxMessage,
@@ -296,6 +427,16 @@ async def handle_max_message(
 
     if msg.is_own:
         if await repo.is_duplicate(msg.msg_id, msg.chat_id):
+            if await recover_late_duplicate_media(
+                cfg=cfg,
+                tg=tg,
+                repo=repo,
+                msg=msg,
+                get_or_create_topic=get_or_create_topic,
+                flow_id=flow_id,
+            ):
+                stats["inbound_media"] += 1
+                return
             log_event(
                 logger,
                 logging.INFO,
@@ -323,6 +464,16 @@ async def handle_max_message(
         )
 
     elif await repo.is_duplicate(msg.msg_id, msg.chat_id):
+        if await recover_late_duplicate_media(
+            cfg=cfg,
+            tg=tg,
+            repo=repo,
+            msg=msg,
+            get_or_create_topic=get_or_create_topic,
+            flow_id=flow_id,
+        ):
+            stats["inbound_media"] += 1
+            return
         log_event(
             logger,
             logging.INFO,

@@ -29,6 +29,22 @@ class DeliveryRepo(BaseRepo):
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
+    async def get_latest_delivery(
+        self,
+        max_chat_id: str,
+        max_msg_id: str,
+        direction: str,
+    ) -> Optional[dict]:
+        async with self._db.execute(
+            """SELECT * FROM delivery_log
+               WHERE max_chat_id = ? AND max_msg_id = ? AND direction = ?
+               ORDER BY created_at DESC, id DESC
+               LIMIT 1""",
+            (max_chat_id, max_msg_id, direction),
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
     async def count_messages_since(self, since_ts: int) -> dict[str, int]:
         """Количество сообщений по направлениям начиная с since_ts."""
         async with self._db.execute(

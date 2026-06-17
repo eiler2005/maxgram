@@ -39,10 +39,12 @@ class DummyRepo:
         self.saved_users: dict[str, str] = {}   # user_id → name
         self._find_user_result: str | None = None
         self.delivery_logs = []
+        self.latest_deliveries = {}
         self.pending_media = []
         self.pending_inbound = []
         self.pending_outbound = []
         self.reply_mappings = {}
+        self.saved_reply_mappings = []
         self.max_to_tg_mappings = {}
         self.pending_stats = {"pending_count": 0, "oldest_created_at": None}
         self.duplicates: set[tuple[str, str]] = set()
@@ -98,6 +100,19 @@ class DummyRepo:
     async def log_delivery(self, *args, **kwargs):
         self.delivery_logs.append((args, kwargs))
         self.logged = (args, kwargs)
+        if len(args) >= 4:
+            max_msg_id, max_chat_id, direction, status = args[:4]
+            error = args[4] if len(args) > 4 else kwargs.get("error")
+            self.latest_deliveries[(max_chat_id, max_msg_id, direction)] = {
+                "max_msg_id": max_msg_id,
+                "max_chat_id": max_chat_id,
+                "direction": direction,
+                "status": status,
+                "error": error,
+            }
+
+    async def get_latest_delivery(self, max_chat_id: str, max_msg_id: str, direction: str):
+        return self.latest_deliveries.get((max_chat_id, max_msg_id, direction))
 
     async def enqueue_pending_media(self, job):
         for existing in self.pending_media:
@@ -186,6 +201,7 @@ class DummyRepo:
     async def save_tg_reply_mapping(self, tg_msg_id: int, max_chat_id: str, max_msg_id: str,
                                     tg_topic_id: int | None, *, source: str, commit: bool = True):
         self.reply_mappings[tg_msg_id] = max_msg_id
+        self.saved_reply_mappings.append((tg_msg_id, max_chat_id, max_msg_id, tg_topic_id, source))
 
     async def count_pending_media(self):
         return self.pending_stats
@@ -907,6 +923,140 @@ async def test_forward_to_telegram_sends_media_then_rendered_system_text(tmp_pat
         ("video", "[Тестовый Пользователь]", "clip.mp4", 7, 640, 360),
         ("text", "Участник вышел из чата"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_after_partial_delivery_sends_late_media(tmp_path):
+    repo = DummyRepo()
+    repo.duplicates.add(("42", "-70000000000003"))
+    repo.binding_by_chat["-70000000000003"] = ChatBinding(
+        "-70000000000003",
+        99,
+        "Тестовая группа",
+        "active",
+        1,
+    )
+    repo.latest_deliveries[("-70000000000003", "42", "inbound")] = {
+        "status": "partial",
+        "error": "attachment_download_failed:1",
+    }
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+
+    photo_path = Path(tmp_path) / "late-photo.jpg"
+    photo_path.write_bytes(b"jpg")
+    msg = MaxMessage(
+        msg_id="42",
+        chat_id="-70000000000003",
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text="Не повторять текст",
+        attachments=[MaxAttachment("photo", str(photo_path), "late-photo.jpg", None, 640, 480, "PHOTO")],
+        attachment_types=["PHOTO"],
+        rendered_texts=[],
+        message_type="CHANNEL",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == [("photo", "Досланное фото MAX #1")]
+    assert repo.saved_reply_mappings == [
+        (1, "-70000000000003", "42", 99, "late_media_recovery")
+    ]
+    assert repo.delivery_logs[-1][0] == (
+        "42",
+        "-70000000000003",
+        "inbound",
+        "delivered",
+        "late_media_recovered",
+    )
+    assert not photo_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_after_late_media_recovered_is_skipped(tmp_path):
+    repo = DummyRepo()
+    repo.duplicates.add(("43", "-70000000000003"))
+    repo.binding_by_chat["-70000000000003"] = ChatBinding(
+        "-70000000000003",
+        99,
+        "Тестовая группа",
+        "active",
+        1,
+    )
+    repo.latest_deliveries[("-70000000000003", "43", "inbound")] = {
+        "status": "delivered",
+        "error": "late_media_recovered",
+    }
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+
+    photo_path = Path(tmp_path) / "late-photo.jpg"
+    photo_path.write_bytes(b"jpg")
+    msg = MaxMessage(
+        msg_id="43",
+        chat_id="-70000000000003",
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text=None,
+        attachments=[MaxAttachment("photo", str(photo_path), "late-photo.jpg", None, 640, 480, "PHOTO")],
+        attachment_types=["PHOTO"],
+        rendered_texts=[],
+        message_type="CHANNEL",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == []
+    assert repo.saved_reply_mappings == []
+    assert photo_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_delivered_duplicate_with_media_is_skipped(tmp_path):
+    repo = DummyRepo()
+    repo.duplicates.add(("44", "-70000000000003"))
+    repo.latest_deliveries[("-70000000000003", "44", "inbound")] = {
+        "status": "delivered",
+        "error": None,
+    }
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+
+    photo_path = Path(tmp_path) / "delivered-photo.jpg"
+    photo_path.write_bytes(b"jpg")
+    msg = MaxMessage(
+        msg_id="44",
+        chat_id="-70000000000003",
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text=None,
+        attachments=[MaxAttachment("photo", str(photo_path), "delivered-photo.jpg", None, 640, 480, "PHOTO")],
+        attachment_types=["PHOTO"],
+        rendered_texts=[],
+        message_type="CHANNEL",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == []
+    assert repo.saved_reply_mappings == []
+    assert photo_path.exists()
 
 
 @pytest.mark.asyncio

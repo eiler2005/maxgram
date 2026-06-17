@@ -18,6 +18,7 @@ from ...bridge.contracts import (
     is_usable_max_chat_id,
 )
 from .deps import EventsDeps
+from . import constants as max_constants
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
@@ -747,6 +748,116 @@ class MaxEventsService:
             for failure in attachment_failures
         )
 
+    def _object_value(self, source, *names: str):
+        if isinstance(source, dict):
+            return self._raw_payload._payload_value(source, *names)
+        for name in names:
+            if hasattr(source, name):
+                value = getattr(source, name, None)
+                if value is not None:
+                    return value
+        return None
+
+    def _content_message_for_media_quality(self, message):
+        forwarded = self._raw_payload._extract_forwarded_payload(message)
+        if forwarded and forwarded.message is not None:
+            return forwarded.message
+        return message
+
+    def _attachment_has_usable_media_ref(self, attach, raw_type: str) -> bool:
+        normalized_type = self._media._normalize_attachment_type(raw_type)
+        if normalized_type == "PHOTO":
+            names = ("base_url", "baseUrl", "baseRawUrl", "url", "file_id", "fileId", "id")
+        elif normalized_type == "VIDEO":
+            names = ("url", "video_id", "videoId", "id")
+        elif normalized_type == "AUDIO":
+            names = ("url", "audio_id", "audioId", "file_id", "fileId", "id", "wave")
+        elif normalized_type in {"FILE", "DOCUMENT"}:
+            names = ("url", "file_id", "fileId", "id")
+        else:
+            return True
+        return any(self._object_value(attach, name) is not None for name in names)
+
+    def _media_ref_quality(self, message) -> tuple[bool, bool, list[str]]:
+        content_message = self._content_message_for_media_quality(message)
+        attaches = self._object_value(content_message, "attaches", "attachments") or []
+        attach_list = attaches if isinstance(attaches, list) else [attaches]
+        media_types: list[str] = []
+        has_low_quality_media = False
+        for attach in attach_list:
+            if attach is None:
+                continue
+            raw_type = self._media._attachment_type_name(attach)
+            normalized_type = self._media._normalize_attachment_type(raw_type)
+            if normalized_type not in {"PHOTO", "VIDEO", "AUDIO", "FILE", "DOCUMENT"}:
+                continue
+            media_types.append(normalized_type)
+            if not self._attachment_has_usable_media_ref(attach, raw_type):
+                has_low_quality_media = True
+        return bool(media_types), has_low_quality_media, media_types
+
+    def _has_usable_degraded_media_recovery(self, message) -> bool:
+        has_media, has_low_quality_media, _media_types = self._media_ref_quality(message)
+        return has_media and not has_low_quality_media
+
+    def _log_low_quality_degraded_media_recovery(
+        self,
+        *,
+        flow_id: str,
+        chat_id: str,
+        raw_msg_id: str,
+        reason: str,
+        message,
+    ):
+        _has_media, _has_low_quality, media_types = self._media_ref_quality(message)
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.degraded_media_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="recover",
+            outcome="skipped",
+            reason=reason,
+            max_chat_id=chat_id,
+            max_msg_id=raw_msg_id,
+            attachment_types=media_types,
+        )
+
+    async def _process_cached_degraded_media_recovery(
+        self,
+        *,
+        chat_id: str,
+        raw_msg_id: str,
+        flow_id: str,
+    ) -> bool:
+        cached = self._raw_payload._get_cached_raw_history_message(chat_id, raw_msg_id)
+        if cached is None:
+            return False
+        if not self._has_usable_degraded_media_recovery(cached):
+            self._log_low_quality_degraded_media_recovery(
+                flow_id=flow_id,
+                chat_id=chat_id,
+                raw_msg_id=raw_msg_id,
+                reason="low_quality_cached_recovery",
+                message=cached,
+            )
+            return False
+        log_event(
+            logger,
+            logging.INFO,
+            "max.inbound.degraded_media_recovery",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="recover",
+            outcome="recovered",
+            reason="raw_history_cache_match",
+            max_chat_id=chat_id,
+            max_msg_id=raw_msg_id,
+        )
+        await self._handle_raw_message(cached)
+        return True
+
     async def _recover_degraded_channel_media_event(
         self,
         *,
@@ -760,22 +871,40 @@ class MaxEventsService:
             flow_id=flow_id,
         )
         if recovered is not None:
-            log_event(
-                logger,
-                logging.INFO,
-                "max.inbound.degraded_media_recovery",
-                flow_id=flow_id,
-                direction="inbound",
-                stage="recover",
-                outcome="recovered",
-                reason="recent_history_match",
-                max_chat_id=chat_id,
-                max_msg_id=raw_msg_id,
-            )
-            await self._handle_raw_message(recovered)
+            if not self._has_usable_degraded_media_recovery(recovered):
+                self._log_low_quality_degraded_media_recovery(
+                    flow_id=flow_id,
+                    chat_id=chat_id,
+                    raw_msg_id=raw_msg_id,
+                    reason="low_quality_recovery",
+                    message=recovered,
+                )
+            else:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "max.inbound.degraded_media_recovery",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="recover",
+                    outcome="recovered",
+                    reason="recent_history_match",
+                    max_chat_id=chat_id,
+                    max_msg_id=raw_msg_id,
+                )
+                await self._handle_raw_message(recovered)
+                return True
+
+        if await self._process_cached_degraded_media_recovery(
+            chat_id=chat_id,
+            raw_msg_id=raw_msg_id,
+            flow_id=flow_id,
+        ):
             return True
 
-        deadline = time.monotonic() + 2.0
+        wait_seconds = float(max_constants.get("MAX_DEGRADED_MEDIA_RECOVERY_WAIT_SECONDS"))
+        poll_seconds = float(max_constants.get("MAX_DEGRADED_MEDIA_RECOVERY_POLL_SECONDS"))
+        deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:
             if self._raw_payload._is_raw_processed_message(chat_id, raw_msg_id):
                 log_event(
@@ -791,7 +920,13 @@ class MaxEventsService:
                     max_msg_id=raw_msg_id,
                 )
                 return True
-            await asyncio.sleep(0.2)
+            if await self._process_cached_degraded_media_recovery(
+                chat_id=chat_id,
+                raw_msg_id=raw_msg_id,
+                flow_id=flow_id,
+            ):
+                return True
+            await asyncio.sleep(poll_seconds)
 
         log_event(
             logger,

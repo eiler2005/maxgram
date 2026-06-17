@@ -152,6 +152,14 @@ class Repository:
 
     # ── MAX account recovery registry ──────────────────────────────────────
 
+    async def get_latest_delivery(
+        self,
+        max_chat_id: str,
+        max_msg_id: str,
+        direction: str,
+    ) -> Optional[dict]:
+        return await self._delivery.get_latest_delivery(max_chat_id, max_msg_id, direction)
+
     async def upsert_max_account_generation(
         self,
         *,
