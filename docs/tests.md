@@ -337,6 +337,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_duplicate_after_late_media_recovered_is_skipped` | Повторный duplicate после `delivery_log status=delivered/error=late_media_recovered` не досылает media повторно. |
 | `test_delivered_duplicate_with_media_is_skipped` | Обычный delivered duplicate с media остаётся dedup-skipped и не меняет прежнее поведение. |
 | `test_pending_media_worker_delivers_video_and_maps_reply` | Retry worker скачивает отложенное видео, отправляет `send_video`, закрывает job и сохраняет reply mapping на исходный MAX message. |
+| `test_pending_media_worker_skips_send_when_late_recovery_wins_race` | Если late duplicate успел доставить видео, пока retry worker уже скачивал тот же файл, worker закрывает job без повторного `send_video`. |
 | `test_pending_media_worker_falls_back_from_zero_media_chat` | Pending media retry для старых jobs с `media_chat_id=0` использует исходный MAX chat id, а при `not.found` пробует wrapper message id. |
 | `test_pending_media_worker_reschedules_download_failure` | Временный сбой скачивания переводит job в `retry` с увеличенным attempts и будущим `next_attempt_at`. |
 | `test_pending_media_worker_marks_missing_reference_terminal` | Job без стабильного `video_id` становится terminal failure, отправляет финальное предупреждение и не крутится бесконечно. |

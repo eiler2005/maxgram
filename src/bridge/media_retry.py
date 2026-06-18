@@ -86,6 +86,37 @@ def is_late_duplicate_resolved_delivery(latest_delivery: Optional[dict]) -> bool
     }
 
 
+async def mark_pending_media_delivered_if_late_recovered(
+    *,
+    repo: Repository,
+    job: PendingMediaDownload,
+    flow_id: str,
+) -> bool:
+    if not job.id:
+        return False
+    latest_delivery = await repo.get_latest_delivery(job.max_chat_id, job.max_msg_id, "inbound")
+    if not is_late_duplicate_resolved_delivery(latest_delivery):
+        return False
+    await repo.mark_pending_media_delivered(job.id, tg_msg_id=0)
+    log_event(
+        logger,
+        logging.INFO,
+        "bridge.media_retry.resolved",
+        flow_id=flow_id,
+        direction="inbound",
+        stage="media_retry",
+        outcome="delivered",
+        reason="late_duplicate_media_already_delivered",
+        max_chat_id=job.max_chat_id,
+        max_msg_id=job.max_msg_id,
+        tg_topic_id=job.tg_topic_id,
+        pending_media_id=job.id,
+        attachment_index=job.attachment_index,
+        kind=job.kind,
+    )
+    return True
+
+
 def pending_media_retry_delay(attempts_after_failure: int) -> int:
     # Бесконечный retry с cap: 1m, 2m, 4m ... до 6h.
     return exponential_backoff_seconds(
@@ -346,27 +377,13 @@ async def process_pending_media_download(
     ) or "mx:pending-media"
     if not job.id:
         return
+    if await mark_pending_media_delivered_if_late_recovered(
+        repo=repo,
+        job=job,
+        flow_id=flow_id,
+    ):
+        return
     if is_late_duplicate_finalizer_job(job):
-        latest_delivery = await repo.get_latest_delivery(job.max_chat_id, job.max_msg_id, "inbound")
-        if is_late_duplicate_resolved_delivery(latest_delivery):
-            await repo.mark_pending_media_delivered(job.id, tg_msg_id=0)
-            log_event(
-                logger,
-                logging.INFO,
-                "bridge.media_retry.resolved",
-                flow_id=flow_id,
-                direction="inbound",
-                stage="media_retry",
-                outcome="delivered",
-                reason="late_duplicate_media_already_delivered",
-                max_chat_id=job.max_chat_id,
-                max_msg_id=job.max_msg_id,
-                tg_topic_id=job.tg_topic_id,
-                pending_media_id=job.id,
-                attachment_index=job.attachment_index,
-                kind=job.kind,
-            )
-            return
         await tg.send_text(
             job.tg_topic_id,
             compose_terminal_media_failure_text(
@@ -530,6 +547,12 @@ async def process_pending_media_download(
         return
 
     try:
+        if await mark_pending_media_delivered_if_late_recovered(
+            repo=repo,
+            job=job,
+            flow_id=flow_id,
+        ):
+            return
         if bridge_forwarding.is_file_too_large(cfg, attachment.local_path):
             placeholder = cfg.content.placeholder_file_too_large.format(
                 filename=attachment.filename or Path(attachment.local_path).name

@@ -1762,6 +1762,57 @@ async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pending_media_worker_skips_send_when_late_recovery_wins_race(tmp_path):
+    repo = DummyRepo()
+    video_path = Path(tmp_path) / "retry.mp4"
+    video_path.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+
+    class RacingVideoMax(DummyMax):
+        async def download_video_reference(self, **kwargs):
+            self.video_reference_calls.append(kwargs)
+            repo.latest_deliveries[("-70000000000003", "mx-video-1", "inbound")] = {
+                "status": "delivered",
+                "error": "late_media_recovered",
+            }
+            return MaxAttachment(
+                "video",
+                str(video_path),
+                "retry.mp4",
+                10,
+                640,
+                360,
+                "VIDEO",
+            )
+
+    max_adapter = RacingVideoMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-video-1",
+        tg_topic_id=99,
+        attachment_index=2,
+        kind="video",
+        source_type="VIDEO",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-video-1",
+        reference_kind="video_id",
+        reference_id="555",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert max_adapter.video_reference_calls
+    assert tg_adapter.calls == []
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 0
+    assert not video_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_pending_media_worker_falls_back_from_zero_media_chat(tmp_path):
     repo = DummyRepo()
 
