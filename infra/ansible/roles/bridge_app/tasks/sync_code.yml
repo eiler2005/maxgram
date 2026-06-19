@@ -34,7 +34,7 @@
           '--exclude=.mypy_cache',
           '--exclude=.DS_Store'
         ]
-        + (sync_excludes | map('regex_replace', '^(.*)$', '--exclude=\\1') | list)
+        + (sync_excludes | map('regex_replace', '^', '--exclude=') | list)
       }}
   loop: "{{ sync_paths }}"
   loop_control:
