@@ -45,12 +45,19 @@
       -C {{ project_root }}
       {{ env_file }} {{ env_secrets_file }} {{ env_host_file }} {{ config_local_file }} {{ data_dir }}
   changed_when: true
+  register: backup_tar_result
+  failed_when: backup_tar_result.rc not in [0, 1]
 
 - name: Compute checksum of remote archive
   ansible.builtin.stat:
     path: "{{ backup_remote_path }}"
     checksum_algorithm: sha256
   register: backup_remote_stat
+
+- name: Fail if backup archive is missing or empty
+  ansible.builtin.fail:
+    msg: "Backup archive was not created or is empty."
+  when: not backup_remote_stat.stat.exists or (backup_remote_stat.stat.size | int) == 0
 
 - name: Fetch backup archive to local machine
   ansible.builtin.fetch:

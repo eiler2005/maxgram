@@ -208,4 +208,5 @@ class RecoveryScheduler:
             build_report=self.build_report_message,
             format_freshness=self.format_freshness,
             parse_set_fields=self.parse_set_fields,
+            max_adapter=self._max,
         )

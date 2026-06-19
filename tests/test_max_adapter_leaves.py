@@ -747,6 +747,45 @@ def test_pymax2_snapshots_use_profile_users_and_chat_types():
 
 
 @pytest.mark.asyncio
+async def test_pymax2_adapter_imports_contacts_and_resolves_dm_chat_id():
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+    from src.adapters.max.ports import MaxContactImportEntry
+
+    class FakeClient:
+        logger = None
+        me = SimpleNamespace(id=100)
+
+        def __init__(self):
+            self.imported = []
+
+        async def import_contacts(self, contacts):
+            self.imported = contacts
+            return [SimpleNamespace(id=300, names=[SimpleNamespace(first_name="Ada")])]
+
+        def get_chat_id(self, *, first_user_id: int, second_user_id: int):
+            return f"{first_user_id}:{second_user_id}"
+
+    client = FakeClient()
+    adapter = PymaxClientAdapter(client)
+
+    users = await adapter.import_contacts(
+        [
+            MaxContactImportEntry(
+                phone="+79990000000",
+                first_name="Ada",
+                last_name="Lovelace",
+            )
+        ]
+    )
+
+    assert users[0].id == 300
+    assert adapter.dm_chat_id_for_user(300) == "100:300"
+    assert client.imported[0].phone == "+79990000000"
+    assert client.imported[0].first_name == "Ada"
+    assert client.imported[0].last_name == "Lovelace"
+
+
+@pytest.mark.asyncio
 async def test_pymax2_egress_transport_uses_configured_socket_connector(monkeypatch):
     from src.adapters.max.backends.pymax.transport import EgressTCPTransport
 

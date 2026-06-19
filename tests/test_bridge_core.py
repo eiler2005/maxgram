@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -447,6 +448,24 @@ class DummyMax:
             session_fingerprint_hash=None,
         )
 
+    def recovery_contacts_snapshot_status(self) -> dict[str, object]:
+        return {"exists": False, "key_configured": False}
+
+    async def create_recovery_contacts_snapshot(self, *, force: bool = False):
+        return {
+            "contact_count": 0,
+            "total_seen": 0,
+            "skipped_without_phone": 0,
+            "path": "recovery_contacts.enc.json",
+        }
+
+    async def import_recovery_contacts_snapshot(self, *, dry_run: bool):
+        return {
+            "snapshot_contact_count": 0,
+            "imported_count": 0,
+            "contacts": [],
+        }
+
     def get_pending_empty_recovery_stats(self):
         return self.empty_stats
 
@@ -478,6 +497,20 @@ class DummyRecoveryMax(DummyMax):
         self.snapshot = snapshot
         self.snapshot_delay = snapshot_delay
         self.snapshot_calls = 0
+        self.contacts_status = {"exists": False, "key_configured": False}
+        self.contacts_snapshot_result = {
+            "contact_count": 0,
+            "total_seen": 0,
+            "skipped_without_phone": 0,
+            "path": "recovery_contacts.enc.json",
+        }
+        self.contacts_import_result = {
+            "snapshot_contact_count": 0,
+            "imported_count": 0,
+            "contacts": [],
+        }
+        self.contacts_snapshot_force = None
+        self.contacts_import_dry_run = None
         self.start_handlers = []
 
     def on_start(self, handler):
@@ -488,6 +521,17 @@ class DummyRecoveryMax(DummyMax):
         if self.snapshot_delay:
             await asyncio.sleep(self.snapshot_delay)
         return self.snapshot
+
+    def recovery_contacts_snapshot_status(self) -> dict[str, object]:
+        return self.contacts_status
+
+    async def create_recovery_contacts_snapshot(self, *, force: bool = False):
+        self.contacts_snapshot_force = force
+        return self.contacts_snapshot_result
+
+    async def import_recovery_contacts_snapshot(self, *, dry_run: bool):
+        self.contacts_import_dry_run = dry_run
+        return self.contacts_import_result
 
 
 class DummyTelegram:
@@ -3620,6 +3664,89 @@ async def test_recovery_scan_updates_dm_contact_registry_and_report(tmp_path):
                 "last_scan_at": export["dm_contacts"][0]["last_scan_at"],
             }
         ]
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_contacts_commands_keep_phone_out_of_db_reports_and_exports(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    await repo.save_binding(ChatBinding("777777", 77, "Imported DM", "active", 1))
+    secret_phone = "+79990000000"
+    snapshot = MaxRecoverySnapshot(
+        max_user_id="100",
+        masked_phone="+7******1234",
+        session_fingerprint_hash="hash",
+    )
+    max_adapter = DummyRecoveryMax(snapshot)
+    max_adapter.contacts_status = {
+        "exists": True,
+        "key_configured": True,
+        "decryptable": True,
+        "created_at": 1770000000,
+        "contact_count": 1,
+        "total_seen": 2,
+        "skipped_without_phone": 1,
+        "source_account_hash": "account-hash",
+        "mode": "0o600",
+    }
+    max_adapter.contacts_snapshot_result = {
+        "contact_count": 1,
+        "total_seen": 2,
+        "skipped_without_phone": 1,
+        "path": "recovery_contacts.enc.json",
+    }
+    max_adapter.contacts_import_result = {
+        "snapshot_contact_count": 1,
+        "imported_count": 1,
+        "contacts": [
+            MaxRecoveryContactSnapshot(
+                max_user_id="300",
+                display_name="Imported MAX User",
+                current_dm_chat_id="777777",
+                source="import_contacts",
+            )
+        ],
+    }
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=DummyTelegram())
+
+    try:
+        status = await bridge._recovery.handle_command("contacts status")
+        snapshot_result = await bridge._recovery.handle_command("contacts snapshot --force")
+        dry_run = await bridge._recovery.handle_command("contacts import dry-run")
+
+        assert max_adapter.contacts_snapshot_force is True
+        assert max_adapter.contacts_import_dry_run is True
+        assert await repo.list_dm_contact_recovery_entries() == []
+        assert "pymax_call: no" in dry_run
+        assert "db_write: no" in dry_run
+
+        apply = await bridge._recovery.handle_command("contacts import apply")
+        entries = await repo.list_dm_contact_recovery_entries()
+        export = await repo.export_recovery_registry()
+        report = await bridge._recovery.handle_command("report")
+
+        assert max_adapter.contacts_import_dry_run is False
+        assert len(entries) == 1
+        assert entries[0].max_user_id == "300"
+        assert entries[0].current_dm_chat_id == "777777"
+        assert entries[0].tg_topic_id == 77
+        assert entries[0].recovery_status == "visible"
+        assert "pymax_imported: 1" in apply
+
+        visible_text = "\n".join(
+            [
+                status,
+                snapshot_result,
+                dry_run,
+                apply,
+                report,
+                json.dumps(export, ensure_ascii=False),
+            ]
+        )
+        assert secret_phone not in visible_text
+        assert secret_phone.encode() not in (tmp_path / "bridge.db").read_bytes()
     finally:
         await repo.close()
 

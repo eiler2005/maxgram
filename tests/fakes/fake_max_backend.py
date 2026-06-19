@@ -10,6 +10,7 @@ from typing import Any
 from src.adapters.max.ports import (
     MaxChatView,
     MaxClientMessage,
+    MaxContactImportEntry,
     MaxRawInterceptorResult,
     MaxSendResult,
     MaxUserView,
@@ -29,9 +30,11 @@ class FakeMaxClient:
         self._message_read_handlers = []
         self._presence_handlers = []
         self._reaction_update_handlers = []
+        self._disconnect_handlers = []
         self._raw_receive_handlers = []
         self._raw_interceptor = None
         self.sent_messages: list[dict[str, Any]] = []
+        self.imported_contacts: list[MaxContactImportEntry] = []
         self.users = {
             101: MaxUserView(id=101, display_name="Fake Sender"),
             9000: MaxUserView(id=9000, display_name="Bridge Account"),
@@ -82,6 +85,9 @@ class FakeMaxClient:
     def register_reaction_update_handler(self, handler):
         self._reaction_update_handlers.append(handler)
 
+    def register_disconnect_handler(self, handler):
+        self._disconnect_handlers.append(handler)
+
     async def get_message(self, *, chat_id: int, message_id: int):
         return None
 
@@ -113,6 +119,19 @@ class FakeMaxClient:
 
     def users_cache_snapshot(self) -> dict[object, MaxUserView]:
         return dict(self.users)
+
+    async def import_contacts(
+        self,
+        contacts: list[MaxContactImportEntry],
+    ) -> list[MaxUserView]:
+        self.imported_contacts.extend(contacts)
+        return [
+            MaxUserView(id=9100 + index, display_name=contact.first_name)
+            for index, contact in enumerate(contacts)
+        ]
+
+    def dm_chat_id_for_user(self, user_id: int) -> str | None:
+        return str(user_id)
 
     def dialogs_snapshot(self) -> list:
         return []

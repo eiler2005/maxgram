@@ -12,6 +12,7 @@ pip install -r requirements.txt
 cp .env.example .env
 cp .env.secrets.example .env.secrets
 # Заполнить TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE в .env.secrets
+# Опционально для /recovery contacts snapshot: MAX_RECOVERY_CONTACTS_KEY
 
 # При необходимости локально описать конкретные MAX-чаты
 cp config.local.yaml.example config.local.yaml

@@ -47,6 +47,7 @@
 - `config.local.yaml`
 - `data/session.db*`
 - `data/bridge.db`
+- `data/recovery_contacts.enc.json`, если создан encrypted contacts snapshot для переноса на новый номер
 
 Сделай бэкап:
 
@@ -170,6 +171,8 @@ chmod 700 data
 - содержимое `data/`
 
 Для production MAX через домашний РФ egress в `.env.secrets` также должен быть `MAX_EGRESS_PROXY_URL`. Для reverse Channel M в `.env.host` должны быть `MAX_EGRESS_PROXY_HOST` и `MAX_EGRESS_PROXY_GATEWAY`, чтобы Docker Compose направлял proxy host на VPS docker bridge listener. В `config.local.yaml`:
+
+Для encrypted contacts snapshot в `.env.secrets` должен быть `MAX_RECOVERY_CONTACTS_KEY`. Без этого ключа `data/recovery_contacts.enc.json` нельзя расшифровать после переноса на новый номер.
 
 ```yaml
 max:
@@ -296,6 +299,7 @@ sudo ufw status numbered
 - `config.local.yaml`
 - `data/session.db*`
 - `data/bridge.db`
+- `data/recovery_contacts.enc.json` вместе с `MAX_RECOVERY_CONTACTS_KEY`, если используется `/recovery contacts snapshot`
 
 При компрометации:
 

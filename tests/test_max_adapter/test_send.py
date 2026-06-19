@@ -294,6 +294,21 @@ class StartClient:
     def register_message_delete_handler(self, handler):
         self.message_delete_handler = handler
 
+    def register_typing_handler(self, handler):
+        self.typing_handler = handler
+
+    def register_message_read_handler(self, handler):
+        self.message_read_handler = handler
+
+    def register_presence_handler(self, handler):
+        self.presence_handler = handler
+
+    def register_reaction_update_handler(self, handler):
+        self.reaction_update_handler = handler
+
+    def register_disconnect_handler(self, handler):
+        self.disconnect_handler = handler
+
     def own_user_id(self):
         return None
 
@@ -332,6 +347,43 @@ async def test_start_path_logs_masked_phone_without_name_error(tmp_path, monkeyp
             await adapter.start()
 
     assert "mask_phone" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_on_disconnect_marks_adapter_disconnected_and_sanitizes_log(tmp_path, caplog):
+    class DisconnectingStartClient(StartClient):
+        async def start(self):
+            await self.start_handler()
+            await self.disconnect_handler(
+                RuntimeError("socket closed for +79990000000"),
+                True,
+                2.7,
+            )
+            raise asyncio.CancelledError()
+
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+        backend=LifecycleBackend(DisconnectingStartClient()),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="src.adapters.max_adapter"):
+        with pytest.raises(asyncio.CancelledError):
+            await adapter.start()
+
+    assert adapter._started is False
+    event_fields = [
+        getattr(record, "event_fields", {})
+        for record in caplog.records
+        if getattr(record, "event_fields", {}).get("event") == "max.adapter.disconnected"
+    ]
+    assert event_fields
+    assert event_fields[0]["error_type"] == "RuntimeError"
+    assert event_fields[0]["upstream_reconnect"] is True
+    assert event_fields[0]["reconnect_delay_seconds"] == 2
+    assert "+79990000000" not in str(event_fields[0])
 
 
 @pytest.mark.asyncio

@@ -10,14 +10,25 @@ pytestmark = pytest.mark.architecture
 
 
 def test_pymax_runtime_version_is_pinned():
-    assert pymax.__version__ == "2.2.0"
+    assert pymax.__version__ == "2.3.0"
 
 
 PINS = {
     "pymax": (
-        "Client", "ExtraConfig", "SyncOverrides", "File", "Message", "Photo", "Video",
-        "TypingEvent", "PresenceEvent", "MessageReadEvent", "ReactionUpdateEvent", "MessageDeleteEvent",
+        "Client",
+        "ExtraConfig",
+        "SyncOverrides",
+        "File",
+        "Message",
+        "Photo",
+        "Video",
+        "TypingEvent",
+        "PresenceEvent",
+        "MessageReadEvent",
+        "ReactionUpdateEvent",
+        "MessageDeleteEvent",
     ),
+    "pymax.types": ("ContactInfo",),
     "pymax.client": ("Client",),
     "pymax.connection": ("ConnectionManager",),
     "pymax.connection.readers": ("TCPReader",),
@@ -48,3 +59,20 @@ def test_pymax_backend_surface_is_pinned(module_name: str, names: tuple[str, ...
         f"{module_name} no longer exports {missing}. "
         "This is an upstream PyMax surface change; adjust the MAX backend before deploy."
     )
+
+
+def test_pymax_230_client_methods_are_pinned():
+    for name in (
+        "import_contacts",
+        "on_disconnect",
+        "on_error",
+        "relogin",
+        "delete_chat",
+    ):
+        assert hasattr(pymax.Client, name), f"pymax.Client.{name} is missing"
+
+
+def test_pymax_230_session_store_delete_all_sessions_is_pinned():
+    from pymax.session import SessionStore
+
+    assert hasattr(SessionStore, "delete_all_sessions")

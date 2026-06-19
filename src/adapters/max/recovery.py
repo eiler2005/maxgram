@@ -8,6 +8,14 @@ from typing import Optional
 
 from . import users as max_users
 from .deps import RecoveryDeps
+from .recovery_contacts import (
+    contacts_from_payload,
+    contacts_from_users,
+    read_encrypted_snapshot,
+    snapshot_path,
+    snapshot_status,
+    write_encrypted_snapshot,
+)
 from ...bridge.contracts import (
     MaxRecoveryChatSnapshot,
     MaxRecoveryContactSnapshot,
@@ -62,6 +70,104 @@ class MaxRecoveryService:
         except OSError:
             return None
         return digest.hexdigest()
+
+    def recovery_contacts_snapshot_status(self) -> dict[str, object]:
+        return snapshot_status(snapshot_path(self._data_dir))
+
+    async def create_recovery_contacts_snapshot(
+        self,
+        *,
+        force: bool = False,
+    ) -> dict[str, object]:
+        if not self._client:
+            raise RuntimeError("MAX client is not initialized")
+        users = [
+            *self._client.contacts_snapshot(),
+            *self._client.users_cache_snapshot().values(),
+        ]
+        contacts, total_seen, skipped_without_phone = contacts_from_users(users)
+        wrapper = write_encrypted_snapshot(
+            path=snapshot_path(self._data_dir),
+            contacts=contacts,
+            source_account_id=self._client.own_user_id() or self._own_id,
+            total_seen=total_seen,
+            skipped_without_phone=skipped_without_phone,
+            force=force,
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "max.recovery_contacts.snapshot_saved",
+            stage="recovery",
+            outcome="saved",
+            contacts_with_phone=len(contacts),
+            total_seen=total_seen,
+            skipped_without_phone=skipped_without_phone,
+        )
+        return {
+            "created_at": wrapper.get("created_at"),
+            "contact_count": len(contacts),
+            "total_seen": total_seen,
+            "skipped_without_phone": skipped_without_phone,
+            "path": str(snapshot_path(self._data_dir).name),
+        }
+
+    async def import_recovery_contacts_snapshot(
+        self,
+        *,
+        dry_run: bool,
+    ) -> dict[str, object]:
+        if not self._client:
+            raise RuntimeError("MAX client is not initialized")
+        payload = read_encrypted_snapshot(snapshot_path(self._data_dir))
+        contacts = contacts_from_payload(payload)
+        result: dict[str, object] = {
+            "snapshot_created_at": payload.get("created_at"),
+            "snapshot_contact_count": len(contacts),
+            "imported_count": 0,
+            "contacts": [],
+        }
+        if dry_run:
+            return result
+
+        imported_users = await self._client.import_contacts(contacts)
+        snapshots: list[MaxRecoveryContactSnapshot] = []
+        for user in imported_users:
+            if user.id is None:
+                continue
+            user_id = str(user.id)
+            display_name = (
+                user.display_name
+                or user.first_name
+                or user.name
+                or user_id
+            )
+            current_dm_chat_id = None
+            try:
+                current_dm_chat_id = self._client.dm_chat_id_for_user(int(user_id))
+            except (TypeError, ValueError):
+                current_dm_chat_id = None
+            snapshots.append(
+                MaxRecoveryContactSnapshot(
+                    max_user_id=user_id,
+                    display_name=str(display_name),
+                    current_dm_chat_id=current_dm_chat_id,
+                    source="import_contacts",
+                    recovery_status="visible" if current_dm_chat_id else "needs_contact",
+                )
+            )
+        result["imported_count"] = len(snapshots)
+        result["contacts"] = snapshots
+        log_event(
+            logger,
+            logging.INFO,
+            "max.recovery_contacts.imported",
+            stage="recovery",
+            outcome="completed",
+            snapshot_contact_count=len(contacts),
+            imported_count=len(snapshots),
+        )
+        return result
 
     def _enum_value(self, value) -> Optional[str]:
         return max_users.enum_value(value)

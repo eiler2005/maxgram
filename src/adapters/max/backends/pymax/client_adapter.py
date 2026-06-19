@@ -7,6 +7,7 @@ from typing import Any
 from ...ports import (
     MaxChatView,
     MaxClientMessage,
+    MaxContactImportEntry,
     MaxDialogView,
     MaxRawInterceptorResult,
     MaxSendResult,
@@ -109,6 +110,9 @@ class PymaxClientAdapter:
     def register_reaction_update_handler(self, handler) -> None:
         self._events.register_reaction_update_handler(handler)
 
+    def register_disconnect_handler(self, handler) -> None:
+        self._events.register_disconnect_handler(handler)
+
     async def get_message(self, *, chat_id: int, message_id: int):
         result = await self._client.get_message(chat_id, message_id)
         if result is None:
@@ -143,6 +147,36 @@ class PymaxClientAdapter:
 
     def users_cache_snapshot(self) -> dict[object, MaxUserView]:
         return users_cache(self._client)
+
+    async def import_contacts(
+        self,
+        contacts: list[MaxContactImportEntry],
+    ) -> list[MaxUserView]:
+        from pymax.types import ContactInfo
+
+        pymax_contacts = [
+            ContactInfo(
+                phone=contact.phone,
+                first_name=contact.first_name,
+                last_name=contact.last_name,
+            )
+            for contact in contacts
+        ]
+        result = await self._client.import_contacts(pymax_contacts)
+        return [
+            item
+            for user in (result or [])
+            if (item := MaxUserView.from_object(user)) is not None
+        ]
+
+    def dm_chat_id_for_user(self, user_id: int) -> str | None:
+        own_id = self.own_user_id()
+        if not own_id:
+            return None
+        get_chat_id = getattr(self._client, "get_chat_id", None)
+        if not callable(get_chat_id):
+            return None
+        return str(get_chat_id(first_user_id=int(own_id), second_user_id=int(user_id)))
 
     def dialogs_snapshot(self) -> list[MaxDialogView]:
         return dialogs_snapshot(self._client)

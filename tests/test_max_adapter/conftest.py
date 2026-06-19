@@ -21,6 +21,7 @@ from src.adapters.max_adapter import (
 from src.adapters.max.ports import (
     MaxChatView,
     MaxClientMessage,
+    MaxContactImportEntry,
     MaxDialogView,
     MaxRawInterceptorResult,
     MaxSendResult,
@@ -76,6 +77,19 @@ class LookupClient:
             for key, user in self._users.items()
             if (item := MaxUserView.from_object(user))
         }
+
+    def register_disconnect_handler(self, handler):
+        self.disconnect_handler = handler
+
+    async def import_contacts(self, contacts: list[MaxContactImportEntry]):
+        self.imported_contacts = list(contacts)
+        return [
+            MaxUserView(id=7000 + index, display_name=contact.first_name)
+            for index, contact in enumerate(contacts)
+        ]
+
+    def dm_chat_id_for_user(self, user_id: int):
+        return str(user_id)
 
     def dialogs_snapshot(self):
         return [
@@ -318,6 +332,15 @@ class AdapterHarness:
 
     async def collect_recovery_snapshot(self):
         return await self._adapter.collect_recovery_snapshot()
+
+    def recovery_contacts_snapshot_status(self):
+        return self._adapter.recovery_contacts_snapshot_status()
+
+    async def create_recovery_contacts_snapshot(self, *args, **kwargs):
+        return await self._adapter.create_recovery_contacts_snapshot(*args, **kwargs)
+
+    async def import_recovery_contacts_snapshot(self, *args, **kwargs):
+        return await self._adapter.import_recovery_contacts_snapshot(*args, **kwargs)
 
     async def download_video_reference(self, *args, **kwargs):
         return await self._adapter.download_video_reference(*args, **kwargs)

@@ -5,7 +5,7 @@ import logging
 import time
 
 from .deps import LifecycleDeps
-from ...logging_utils import log_event, mask_phone, sanitize_path
+from ...logging_utils import log_event, mask_phone, sanitize_path, sanitize_preview
 
 logger = logging.getLogger("src.adapters.max_adapter")
 
@@ -263,6 +263,25 @@ class MaxLifecycleService:
                 self._client.register_message_read_handler(self._deps.events._handle_message_read)
                 self._client.register_presence_handler(self._deps.events._handle_presence)
                 self._client.register_reaction_update_handler(self._deps.events._handle_reaction_update)
+
+                async def _on_disconnect(error: BaseException, reconnect: bool, delay: float):
+                    self._started = False
+                    error_text = str(error).strip() or error.__class__.__name__
+                    safe_error = sanitize_preview(error_text, limit=200)
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "max.adapter.disconnected",
+                        stage="runtime",
+                        outcome="disconnected",
+                        reason="pymax_on_disconnect",
+                        error_type=error.__class__.__name__,
+                        error=safe_error,
+                        upstream_reconnect=reconnect,
+                        reconnect_delay_seconds=int(delay),
+                    )
+
+                self._client.register_disconnect_handler(_on_disconnect)
 
                 log_event(
                     logger,

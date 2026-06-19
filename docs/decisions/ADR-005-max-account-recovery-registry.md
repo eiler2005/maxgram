@@ -28,6 +28,13 @@ Persist:
 - `dm_contact_recovery_registry`: personal contacts only from real MAX DM dialogs or already bound DM topics, with `max_user_id`, display name, old/current DM chat id, linked topic, source, recovery status, and `last_scan_at`. Do not copy the full MAX address book (`client.contacts`) or group writers from `known_users`.
 - `chat_recovery_events`: append-only scan/set/remap/account-change audit with compact metadata only.
 
+Add a separate encrypted contact snapshot for new-number migration:
+
+- `data/recovery_contacts.enc.json` contains a Fernet-encrypted phonebook input for PyMax `import_contacts()`.
+- The clear wrapper contains only schema/cipher metadata, creation timestamp, source account hash, aggregate counts, and ciphertext.
+- Raw phone numbers are never written to SQLite, normal logs, health state, `/status`, `/recovery report`, or `/recovery export`.
+- The encryption key is `MAX_RECOVERY_CONTACTS_KEY` in `.env.secrets`; backup safety requires both `.env.secrets` and `data/recovery_contacts.enc.json`.
+
 Add `MaxAdapter.collect_recovery_snapshot()` to collect metadata from typed chat/channel/dialog snapshots and `get_chat()`. `MaxRecoverySnapshot.contacts` is derived from dialog snapshots only and filters out the current account id.
 
 Add owner-only Telegram commands:
@@ -35,6 +42,9 @@ Add owner-only Telegram commands:
 - `/recovery scan`
 - `/recovery report`
 - `/recovery export`
+- `/recovery contacts status`
+- `/recovery contacts snapshot [--force]`
+- `/recovery contacts import dry-run|apply`
 - `/recovery set <topic_id> key=value ...`
 - `/recovery remap <topic_id> <new_max_chat_id>`
 
@@ -59,8 +69,9 @@ Benefits:
 - The operator has a complete recovery checklist before losing the old account.
 - Private/admin-only chats can be described with admin contacts, notes, and invite links.
 - Personal DM contacts with real conversation history can be found after a phone/account change without copying the whole address book.
+- Address-book contacts with PyMax-exposed phone numbers can be reintroduced to a new MAX account via `import_contacts()` without storing phones in SQLite.
 - Existing Telegram topics survive MAX account migration.
-- Backups of `data/` include recovery metadata automatically.
+- Backups of `data/` include recovery metadata and encrypted contact snapshot automatically when the key is also backed up from `.env.secrets`.
 
 Tradeoffs:
 
@@ -68,6 +79,7 @@ Tradeoffs:
 - V1 does not auto-join chats or mass-invite the new account. Human/admin action is still required.
 - V1 does not auto-DM, auto-remap, or guess matches from title/name similarity. The operator still decides using `/recovery report`, invites/links, contact search/first message, and `/recovery remap`.
 - Recovery export is owner-DM only and should not be pasted into group chats.
+- Contacts without phone returned by PyMax cannot be imported automatically and remain manual recovery cases.
 
 ## Verification
 
@@ -77,6 +89,7 @@ Covered by tests for:
 - DM contact recovery upsert/export/privacy and snapshot collection from fake group/channel/DM/dialog objects.
 - Event-driven scheduler: new bindings do not delay forwarding, CONTROL events debounce into one scan, routine deltas are summarized in status, and migration alerts are redacted/deduplicated.
 - Owner-only `/recovery` command flow.
+- Encrypted contact snapshot round-trip, missing key/corrupt ciphertext handling, file mode `0600`, dry-run no-write behavior, apply import upsert, and phone privacy.
 - Telegram command allowlist: `/dm` public in General, `/recovery` owner-only.
 - Stale reply mapping after remap.
 - Privacy: reports/logs do not include invite links, notes, phone numbers, DM contact names, message text, or raw MAX payloads.

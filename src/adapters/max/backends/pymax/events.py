@@ -45,6 +45,16 @@ class PymaxEventRouter:
     def register_reaction_update_handler(self, handler) -> None:
         self._client.on_reaction_update()(self._wrap_event_handler(handler))
 
+    def register_disconnect_handler(self, handler) -> None:
+        on_disconnect = getattr(self._client, "on_disconnect", None)
+        if not callable(on_disconnect):
+            return
+
+        async def wrapped(error, reconnect, delay):
+            return await _maybe_await(handler(error, bool(reconnect), float(delay or 0)))
+
+        on_disconnect()(wrapped)
+
     def _wrap_message_handler(self, handler: ClientMessageHandler):
         async def wrapped(message, _client):
             return await handler(client_message(message))

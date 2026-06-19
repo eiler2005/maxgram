@@ -307,6 +307,15 @@ class MaxAdapter:
     async def collect_recovery_snapshot(self):
         return await self._recovery.collect_recovery_snapshot()
 
+    def recovery_contacts_snapshot_status(self) -> dict[str, object]:
+        return self._recovery.recovery_contacts_snapshot_status()
+
+    async def create_recovery_contacts_snapshot(self, *, force: bool = False):
+        return await self._recovery.create_recovery_contacts_snapshot(force=force)
+
+    async def import_recovery_contacts_snapshot(self, *, dry_run: bool):
+        return await self._recovery.import_recovery_contacts_snapshot(dry_run=dry_run)
+
     async def download_video_reference(self, *args, **kwargs):
         return await self._media.download_video_reference(*args, **kwargs)
 

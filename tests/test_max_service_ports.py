@@ -9,6 +9,7 @@ from src.adapters.max.events import MaxEventsService
 from src.adapters.max.media.attachments import MaxMediaService
 from src.adapters.max.ports import (
     MaxClientAttachment,
+    MaxContactImportEntry,
     MaxRawInterceptorResult,
     MaxSendResult,
     MaxUserView,
@@ -36,6 +37,15 @@ class PortOnlyResolveClient:
 
     def users_cache_snapshot(self):
         return dict(self.user_cache)
+
+    async def import_contacts(self, contacts: list[MaxContactImportEntry]):
+        return [
+            MaxUserView(id=index, display_name=contact.first_name)
+            for index, contact in enumerate(contacts)
+        ]
+
+    def dm_chat_id_for_user(self, user_id: int):
+        return str(user_id)
 
     def dialogs_snapshot(self):
         return []

@@ -181,6 +181,8 @@ cp .env.example .env
 cp .env.secrets.example .env.secrets
 # Секреты заполняй в .env.secrets:
 # TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE
+# Опционально для encrypted recovery contacts snapshot:
+# MAX_RECOVERY_CONTACTS_KEY
 
 # 3. (опционально) Локальные привязки чатов
 cp config.local.yaml.example config.local.yaml
@@ -213,6 +215,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 | `TG_FORUM_GROUP_ID` | ID форум-супергруппы | Из URL или @userinfobot |
 | `MAX_PHONE` | Номер телефона MAX | Твой номер `+79...` |
 | `MAX_EGRESS_PROXY_URL` | Production URL для `home_ru_proxy` MAX egress; хранится в `.env.secrets` | Секрет роутера/Vault |
+| `MAX_RECOVERY_CONTACTS_KEY` | Fernet key для encrypted `/recovery contacts snapshot`; хранится в `.env.secrets` | `python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"` |
 | `MAX_EGRESS_PROXY_HOST`, `MAX_EGRESS_PROXY_GATEWAY` | Reverse Channel M host mapping для Docker Compose; хранится в `.env.host` | Не секрет, но local-only |
 
 ---

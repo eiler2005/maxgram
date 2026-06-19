@@ -209,6 +209,8 @@ cp .env.example .env
 cp .env.secrets.example .env.secrets
 # Fill in secrets in .env.secrets:
 # TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE
+# Optional for encrypted new-number recovery contacts snapshot:
+# MAX_RECOVERY_CONTACTS_KEY
 # Optional for production MAX home-router egress:
 # .env.secrets: MAX_EGRESS_PROXY_URL
 # .env.host: MAX_EGRESS_PROXY_HOST, MAX_EGRESS_PROXY_GATEWAY

@@ -11,15 +11,15 @@ PYTHONPATH=. .venv/bin/pytest -q -m architecture        # service-boundary/refac
 PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/ruff check .
 .venv/bin/ruff check src/bridge --select E9,F63,F7,F82,F401,F841,B,C4,SIM,RET
-.venv/bin/mypy src/bridge/errors.py src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/ports.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
-.venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py
+.venv/bin/mypy src/bridge/errors.py src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/ports.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/recovery_contacts.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
+.venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **306 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **327 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
-Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.1.2"`. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
+Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.3.0"`. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
 
 ```text
                          pytest -q
@@ -226,6 +226,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_send_message_exposes_final_error_after_retries` | После исчерпания retry `send_message()` возвращает `None`, а адаптер сохраняет последнюю ошибку и реальное число попыток для последующей записи в `delivery_log`. |
 | `test_send_message_sanitizes_pymax_sequence_overflow_error` | PyMax TCP seq overflow нормализуется в безопасный `pymax_tcp_sequence_overflow` без логирования текста исходящего сообщения. |
 | `test_start_path_logs_masked_phone_without_name_error` | Start/reconnect path логирует masked phone без production-only `NameError` после split lifecycle module. |
+| `test_on_disconnect_marks_adapter_disconnected_and_sanitizes_log` | PyMax `on_disconnect()` сбрасывает readiness, логирует только safe metadata и маскирует длинные digit runs. |
 | `test_is_ready_tracks_underlying_transport_state` | `MaxAdapter.is_ready()` остаётся true только пока `_started=True` и реальный PyMax transport `client.is_connected=True`; закрытый socket виден watchdog/self-heal. |
 
 ### Резолв имён пользователей
@@ -259,7 +260,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (27 тестов)
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (28 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -289,6 +290,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pymax2_raw_gateway_converts_frames_and_invokes_app` | Native `on_raw` конвертируется в bridge raw dict, а raw requests изолированы через `_app.invoke`. |
 | `test_pymax2_send_uses_attachments_list` | Outbound media отправляется через PyMax 2 `attachments=[...]`, не старый `attachment=`. |
 | `test_pymax2_snapshots_use_profile_users_and_chat_types` | Own id берётся из `client.me.contact.id`, users/chats snapshots нормализуются через PyMax 2 shape. |
+| `test_pymax2_adapter_imports_contacts_and_resolves_dm_chat_id` | `PymaxClientAdapter.import_contacts()` строит PyMax `ContactInfo`, возвращает typed users и вычисляет DM chat id через backend boundary. |
 | `test_pymax2_egress_transport_uses_configured_socket_connector` | Custom PyMax 2 transport использует `MaxEgressProfile.socket_connector` и сохраняет TLS server hostname. |
 | `test_pymax2_egress_client_uses_bridge_connection_manager` | Egress PyMax client строит guarded `BridgeConnectionManager` с bridge egress transport и PyMax 2.1 16-bit seq. |
 | `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |
@@ -305,6 +307,16 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_events_service_installs_raw_interceptor_through_port` | `MaxEventsService` ставит raw interceptor через client port, без доступа к pymax notification handler. |
 | `test_max_client_attachment_preserves_pydantic_extra_fields` | Pydantic/pymax attachment extra fields сохраняются в `MaxClientAttachment`, чтобы CONTROL target data не терялась. |
 | `test_max_client_attachment_preserves_pydantic_snake_case_photo_fields` | Pydantic/pymax `PhotoAttachment` сохраняет snake_case `base_url` вместе с alias `baseUrl`, чтобы inbound фото не теряло download reference. |
+
+---
+
+## test_recovery_contacts.py — encrypted contacts snapshot (4 теста)
+
+| Тест | Что проверяет |
+| `test_recovery_contacts_snapshot_encrypts_payload_and_uses_0600` | Fernet snapshot round-trip, `0600` mode, clear wrapper без phone/name, status decryptable. |
+| `test_recovery_contacts_snapshot_requires_key` | Без `MAX_RECOVERY_CONTACTS_KEY` snapshot не создаётся. |
+| `test_recovery_contacts_snapshot_rejects_corrupt_ciphertext` | Corrupt ciphertext не расшифровывается и status показывает `decryptable=False`. |
+| `test_recovery_contacts_from_users_filters_missing_phone_and_deduplicates` | Snapshot берёт только `User.phone`, пропускает contacts без phone и dedup по нормализованному номеру. |
 
 ---
 
@@ -396,6 +408,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_control_events_debounce_into_one_recovery_scan` | Повторные MAX `CONTROL` события схлопываются в один recovery scan. |
 | `test_recovery_account_migration_notification_is_redacted_and_deduped` | Срочный recovery alert остаётся только для MAX account migration-required, не раскрывает phone/session hash и дедупится в памяти. |
 | `test_recovery_scan_updates_dm_contact_registry_and_report` | `/recovery scan` обновляет chat registry и DM contact registry вместе; `/recovery report` показывает только агрегаты DM contacts, а owner-only export содержит контактный snapshot. |
+| `test_recovery_contacts_commands_keep_phone_out_of_db_reports_and_exports` | `/recovery contacts status/snapshot/import` показывает только counts, dry-run не пишет БД, apply upsert-ит MAX metadata, phone не попадает в DB/report/export/output. |
 
 ### Персистирование пользователей
 

@@ -64,7 +64,8 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - Safe recovery scan запускается после MAX connect/reconnect, раз в неделю и event-driven при `new_binding`, `title_changed`, MAX `CONTROL`.
 - Event-driven scans ставятся через `asyncio.create_task`, debounce/cooldown и не должны задерживать forwarding, topic creation или rename.
 - Auto recovery scans не шлют отдельный Telegram-spam по обычным дельтам (`unmapped`, `needs_invite`, DM contact changes): агрегированная выжимка попадает в 4-часовой `/status`. Срочный owner/ops alert остаётся только для смены MAX account / migration-required. Без invite links, notes, phones, contact names, message text, titles или raw MAX fields.
-- Команды владельца: `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set <topic_id> key=value ...`, `/recovery remap <topic_id> <new_max_chat_id>`.
+- Команды владельца: `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery contacts status`, `/recovery contacts snapshot [--force]`, `/recovery contacts import dry-run|apply`, `/recovery set <topic_id> key=value ...`, `/recovery remap <topic_id> <new_max_chat_id>`.
+- `data/recovery_contacts.enc.json` — отдельный encrypted phonebook snapshot для переноса на новый номер через PyMax `import_contacts()`. Открытая часть файла содержит только schema/cipher/timestamp/source account hash/counts/ciphertext; телефоны остаются только внутри Fernet payload. Ключ `MAX_RECOVERY_CONTACTS_KEY` хранится в `.env.secrets`. Raw phones не пишутся в SQLite, logs, health, `/status`, `/recovery report` или обычный `/recovery export`.
 - `/recovery export` уходит только owner DM и может содержать invite links/admin notes.
 - После remap reply на старое TG сообщение отправляется без `reply_to_msg_id`, если mapped MAX message принадлежит старому `max_chat_id`.
 
@@ -92,6 +93,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `Opcode.SESSIONS_CLOSE` нельзя использовать как точечное закрытие одной старой сессии: live-проверка показала, что вызов с `{"time": ...}` привёл к `FAIL_LOGOUT_ALL` и инвалидировал desktop tokens. Старые MAX sessions закрывать только вручную в телефоне, пока не будет подтверждённого безопасного payload/API.
 - MAX initial sync может вернуть `lastMessage.attaches.type=UNSUPPORTED`; upstream PyMax 2 `LoginResponse` strict union падает. `src/adapters/max/backends/pymax/login.py` ставит backend-local `BridgeAuthService`, который удаляет только unknown attachments до validation.
 - PyMax 2.1.2 `LoginResponse.token` optional: MAX может не вернуть новый token при логине с уже существующей session, а upstream `App.start()` должен сохранить текущий session token. `BridgeAuthService` больше не подставляет `session.token` в response; он остаётся только для unsupported attachments / non-critical initial-sync payload drift.
+- PyMax 2.3.0 добавил `ContactInfo`, `Client.import_contacts()`, `on_disconnect()`, `on_error()`, `relogin()`, `delete_chat()` и `SessionStore.delete_all_sessions()`. Bridge использует `import_contacts()` только для encrypted recovery contacts import, `on_disconnect()` только для безопасной диагностики/disconnected-state, не использует `on_error()` как passive logging и не заменяет guarded reauth flow на `relogin()`.
 - PyMax 2 может отдать `message.text` как `bytes`; для SHARE/сложных payload это может быть msgpack-like binary, а не plain UTF-8. `MaxEventsService` сначала пробует извлечь `text` через msgpack, затем strict UTF-8, и не форвардит binary garbage с `�`.
 - MAX forwarded/channel events могут приходить как wrapper без прямого `text/attaches`, но с nested `message` или `link.message`; raw receive и empty recovery должны unwrap-ать `CHANNEL/FORWARD` до проверки content. Симптом старого бага: `max.inbound.empty_recovery ... reason=*_without_content` при safe fields `link`/`_forward_source_*`, либо `max.raw.message_skipped reason=missing_chat_id` для прямого `CHANNEL` с media.
 - PyMax 2 TCP msgpack decoder может падать на raw `CHAT_HISTORY`, если MAX отдаёт map с array-like key (`TypeError: unhashable type: 'list'`). `src/adapters/max/backends/pymax/transport.py` ставит backend-local `BridgeMsgpackPayloadCodec`, который конвертирует такие keys в hashable форму до нормализации payload.
@@ -144,7 +146,7 @@ kill $(ps aux | grep 'python -m src.main' | grep -v grep | awk '{print $2}')
 Секреты — только в `.env.secrets` (не в git):
 ```
 TG_BOT_TOKEN, TG_OWNER_ID, TG_FORUM_GROUP_ID, MAX_PHONE,
-MAX_EGRESS_PROXY_URL
+MAX_EGRESS_PROXY_URL, MAX_RECOVERY_CONTACTS_KEY
 MAX_EGRESS_PROXY_HOST, MAX_EGRESS_PROXY_GATEWAY   # .env.host для docker compose extra_hosts reverse Channel M
 ```
 

@@ -7,6 +7,7 @@ All notable changes to Maxgram are documented here.
 ## Unreleased
 
 ### Added
+- **Encrypted contacts snapshot for new-number recovery** — owner-only `/recovery contacts status`, `/recovery contacts snapshot [--force]`, and `/recovery contacts import dry-run|apply` support PyMax `import_contacts()` migration without writing raw phone numbers to SQLite, logs, health, reports, or normal exports.
 - **Durable text outbox in both directions** — failed text-only TG→MAX and MAX→TG deliveries now use SQLite-backed queues with lease/backoff/TTL. Plaintext is kept only while pending and is cleared after delivery or expiration.
 - **Shared retry policy module** — bridge retry workers share one lease/backoff/TTL policy, while media remains reference-based and heavy files are not stored in SQLite.
 - **MAX account migration recovery registry** — new-phone/new-account recovery is now a first-class subsystem. SQLite stores MAX account generations, topic recovery registry rows, snapshot freshness (`last_scan_at`), and append-only recovery events without message text or raw MAX payloads.
@@ -23,6 +24,7 @@ All notable changes to Maxgram are documented here.
 - **Precise message recovery via `get_message()`** — empty-event voice/forward recovery now attempts the new PyMax 2.2.0 `get_message(chat_id, message_id)` API first, bypassing the time-window history sweep when a precise fetch succeeds. The full fallback chain (cache → raw history payload → `history_messages`) is preserved.
 
 ### Changed
+- **PyMax 2.3.0 upgrade** — `maxapi-python` is pinned to 2.3.0. The bridge pins the new PyMax surface (`ContactInfo`, `import_contacts()`, `on_disconnect()`, `on_error()`, `relogin()`, `delete_chat()`, `SessionStore.delete_all_sessions()`), uses `on_disconnect()` only for safe diagnostics, and keeps guarded reauth unchanged.
 - **PyMax 2.2.0 upgrade** — `maxapi-python` is pinned to 2.2.0 (from 2.1.2). The 2.2.0 breaking change for `MessageDeleteEvent` (`chat` and `message` fields now optional; `chat_id` always present) is tolerated by the existing defensive `MaxClientMessage.from_object` extraction. Spurious empty-event recovery sweeps for delete events are prevented by an early exit when `raw_msg_id` is absent.
 - **PyMax 2.1.2 upgrade** — `maxapi-python` is pinned to 2.1.2. Bridge login validation now accepts tokenless `LOGIN` responses without re-injecting the saved session token, while keeping backend-local sanitizers for unsupported initial-sync payload drift.
 - **Telegram command access model** — `/dm` remains public only in General via an explicit allowlist; `/recovery ...` and other arg commands remain owner-only even in General.
@@ -42,6 +44,7 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added PyMax 2.3.0 surface pinning and coverage for encrypted recovery contact snapshot round-trip, missing/corrupt key handling, `0600` file mode, phone filtering/privacy, import dry-run no-write, import apply registry upsert, and safe `on_disconnect()` diagnostics.
 - Added PyMax 2.1.2 runtime version pinning and a regression test for tokenless `LoginResponse` validation.
 - Added coverage for durable inbound/outbound text queues, plaintext clearing after delivery, stale MAX transport readiness, non-queued ambiguous ack timeouts, and non-persisted TG→MAX media failures.
 - Added coverage for DM title resolution order, cached contact name lookup, raw message interceptor, duplicate suppression, top-level raw audio payloads, and recent-history recovery of typed-empty MAX voice events.
