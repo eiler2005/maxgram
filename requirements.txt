@@ -2,8 +2,9 @@
 aiogram==3.26.0
 
 # MAX userbot
-maxapi-python==2.3.0
+maxapi-python==2.3.1
 requests>=2.31,<3
+zstandard>=0.25,<1
 
 # Database
 aiosqlite==0.22.1

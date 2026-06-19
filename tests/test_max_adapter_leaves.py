@@ -226,6 +226,20 @@ def test_pymax_sequence_guard_uses_pymax_2_1_word_range():
         )
 
 
+def test_bridge_tcp_protocol_keeps_pymax_231_zstd_payload_decoder():
+    from pymax.protocol.tcp.compression import ZstdCompression
+
+    from src.adapters.max.backends.pymax.transport import (
+        BridgeMsgpackPayloadCodec,
+        bridge_tcp_protocol,
+    )
+
+    protocol = bridge_tcp_protocol()
+
+    assert isinstance(protocol.payload_decoder.serializer, BridgeMsgpackPayloadCodec)
+    assert isinstance(protocol.payload_decoder.zstd_compression, ZstdCompression)
+
+
 def test_client_factory_installs_bridge_protocol_guards(monkeypatch, tmp_path):
     from src.adapters.max.backends.pymax import client_factory as pymax_factory
     from src.adapters.max.backends.pymax.transport import BridgeMsgpackPayloadCodec

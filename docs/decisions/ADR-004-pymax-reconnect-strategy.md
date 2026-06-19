@@ -2,7 +2,7 @@
 
 **Статус:** Принято  
 **Дата:** 2026-04  
-**Обновлено:** 2026-06-19 для PyMax 2.3.0
+**Обновлено:** 2026-06-19 для PyMax 2.3.1
 **Контекст:** Обнаружен баг при отладке production
 
 ## Проблема
@@ -55,3 +55,4 @@ async def _make_client(self):
 - PyMax 2.1.1 исправил upstream TLS `server_hostname` при TCP proxy и сохранение обновлённого session token после login/`close_all_sessions()`. Bridge сохраняет свой `EgressTCPTransport` как MAX-only egress boundary и проверяет `server_hostname` regression-тестом.
 - PyMax 2.1.2 сделал `LoginResponse.token` optional и сохраняет текущий session token, когда `LOGIN` не возвращает новый token. Bridge больше не подставляет token в login response; backend-local `BridgeAuthService` остаётся только для tolerant validation initial-sync payload drift.
 - PyMax 2.3.0 добавил `on_disconnect()`, `on_error()`, `relogin()`, `delete_chat()`, `SessionStore.delete_all_sessions()` и `import_contacts()`. Bridge использует `on_disconnect()` только как безопасную диагностику и ранний disconnected-state; `on_error()` не используется как passive logging, потому что handled errors могут быть swallowed upstream. Guarded reauth flow не заменяется на `relogin()` в этом изменении.
+- PyMax 2.3.1 добавил `forward_message()` / `Message.forward()` и исправил compressed TCP payload decoding: Zstandard flag `0xFF` и LZ4 handling. Bridge не переносит этот API в `BridgeCore`, пока нет MAX→MAX forwarding use-case, но surface pin-ится; `BridgeMsgpackPayloadCodec` остаётся serializer-only guard и не заменяет upstream `TcpPayloadDecoder`/`ZstdCompression`.

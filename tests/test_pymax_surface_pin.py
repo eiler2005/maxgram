@@ -10,7 +10,7 @@ pytestmark = pytest.mark.architecture
 
 
 def test_pymax_runtime_version_is_pinned():
-    assert pymax.__version__ == "2.3.0"
+    assert pymax.__version__ == "2.3.1"
 
 
 PINS = {
@@ -34,8 +34,9 @@ PINS = {
     "pymax.connection.readers": ("TCPReader",),
     "pymax.protocol": ("Command", "Opcode"),
     "pymax.protocol.tcp": ("TcpProtocol",),
+    "pymax.protocol.tcp.compression": ("Lz4BlockCompression", "ZstdCompression"),
     "pymax.protocol.tcp.framing": ("TcpPacketFramer",),
-    "pymax.protocol.tcp.payload": ("MsgpackPayloadCodec",),
+    "pymax.protocol.tcp.payload": ("MsgpackPayloadCodec", "TcpPayloadDecoder"),
     "pymax.transport.tcp": ("TCPTransport",),
     "pymax.session": ("SessionStore",),
     "pymax.session.models": ("SessionInfo",),
@@ -43,7 +44,11 @@ PINS = {
     "pymax.api.auth.service": ("AuthService",),
     "pymax.api.session.enums": ("DeviceType",),
     "pymax.api.session.payloads": ("MobileUserAgentPayload",),
-    "pymax.api.messages.payloads": ("ChatHistoryPayload", "GetVideoPayload"),
+    "pymax.api.messages.payloads": (
+        "ChatHistoryPayload",
+        "ForwardMessagePayload",
+        "GetVideoPayload",
+    ),
     "pymax.auth": ("AuthFlow", "SmsAuthFlow", "ConsoleSmsCodeProvider"),
     "pymax.types.domain.attachments.enums": ("AttachmentType",),
     "pymax.types.domain.login": ("LoginResponse",),
@@ -61,8 +66,9 @@ def test_pymax_backend_surface_is_pinned(module_name: str, names: tuple[str, ...
     )
 
 
-def test_pymax_230_client_methods_are_pinned():
+def test_pymax_231_client_methods_are_pinned():
     for name in (
+        "forward_message",
         "import_contacts",
         "on_disconnect",
         "on_error",
@@ -72,7 +78,11 @@ def test_pymax_230_client_methods_are_pinned():
         assert hasattr(pymax.Client, name), f"pymax.Client.{name} is missing"
 
 
-def test_pymax_230_session_store_delete_all_sessions_is_pinned():
+def test_pymax_231_message_forward_bound_method_is_pinned():
+    assert hasattr(pymax.Message, "forward")
+
+
+def test_pymax_231_session_store_delete_all_sessions_is_pinned():
     from pymax.session import SessionStore
 
     assert hasattr(SessionStore, "delete_all_sessions")

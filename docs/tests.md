@@ -15,11 +15,11 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **327 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **330 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
-Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.3.0"`. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
+Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.3.1"`. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
 
 ```text
                          pytest -q
@@ -260,7 +260,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (28 тестов)
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (29 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -274,6 +274,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_client_factory_can_disable_legacy_session_import` | Reauth path может отключить legacy PyMax 1 `auth` import, чтобы stale token не импортировался обратно. |
 | `test_pymax_msgpack_codec_tolerates_array_map_keys` | Backend-local PyMax codec не падает на raw msgpack map с array-like key, который встречается в некоторых `CHAT_HISTORY` ответах. |
 | `test_pymax_sequence_guard_uses_pymax_2_1_word_range` | Backend-local PyMax connection guard использует 16-bit TCP `seq` диапазон PyMax 2.1 и не возвращает legacy one-byte overflow. |
+| `test_bridge_tcp_protocol_keeps_pymax_231_zstd_payload_decoder` | Bridge protocol guard в PyMax 2.3.1 заменяет только msgpack serializer и сохраняет upstream `ZstdCompression` для compressed TCP payload decoding. |
 | `test_client_factory_installs_bridge_protocol_guards` | `client_factory.py` ставит bridge msgpack и sequence guards на PyMax connection/protocol при создании клиента. |
 | `test_pymax2_session_store_imports_legacy_pymax1_auth_table` | `session_store.py` импортирует legacy PyMax 1 `auth(token, device_id)` в PyMax 2 `sessions`, чтобы сохранить existing session без SMS-auth. |
 | `test_pymax2_session_store_can_skip_legacy_pymax1_auth_import` | `session_store.py` по явному флагу не импортирует stale legacy token и позволяет начать SMS-flow. |
