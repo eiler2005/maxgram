@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **330 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **332 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -129,7 +129,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (103 теста)
+## tests/test_max_adapter/ — MAX adapter behavior split (105 тестов)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -198,6 +198,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_download_audio_reference_falls_back_to_file_download_after_audio_get_miss` | Если `audioGetSources` не вернул URL, bridge пробует только безопасный `FILE_DOWNLOAD fileId`; `FILE_DOWNLOAD audioId` не используется. |
 | `test_download_audio_reference_stops_protocol_after_socket_error` | Socket-level ошибка на protocol audio probe останавливает текущую попытку, не пробует рискованные payload shapes и не запускает legacy fallback на уже отвалившемся socket. |
 | `test_download_audio_attachment_logs_safe_diagnostic_without_reference` | Voice-вложение без `url/audio_id/id` даёт безопасный diagnostic без раскрытия token/text. |
+| `test_download_video_attachment_normalizes_millisecond_duration` | MAX video duration в миллисекундах нормализуется в секунды перед отправкой в Telegram, чтобы не появлялись часы вместо минут/секунд. |
+| `test_download_video_reference_uses_mp4_duration_when_max_duration_missing` | Durable video retry добирает duration из MP4 `mvhd`, если MAX metadata отсутствует или непригодна. |
 
 ### Медиавложения без файла
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import struct
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,9 +72,10 @@ class MaxMediaService:
     def _duration_seconds(self, duration, *, kind: Optional[str] = None) -> Optional[int]:
         """Normalize MAX media duration to Telegram seconds.
 
-        MAX audio payloads observed in prod use milliseconds (for example
+        MAX media payloads observed in prod can use milliseconds (for example
         38360 for a 38 second voice note), while Telegram expects seconds.
-        Keep plausible second values intact.
+        Keep plausible second values intact and convert clearly impossible
+        values when no file-level metadata is available.
         """
         if duration is None:
             return None
@@ -86,7 +88,100 @@ class MaxMediaService:
         normalized_kind = (kind or "").lower()
         if normalized_kind == "audio" and value > 10 * 60:
             value = value / 1000
+        elif normalized_kind == "video" and value > 6 * 60 * 60:
+            value = value / 1000
         return max(1, int(round(value)))
+
+    def _mp4_duration_seconds(self, path: str) -> Optional[int]:
+        try:
+            file_size = Path(path).stat().st_size
+        except OSError:
+            return None
+        if file_size <= 0:
+            return None
+
+        def read_box_header(handle, end_pos: int):
+            start = handle.tell()
+            if start + 8 > end_pos:
+                return None
+            header = handle.read(8)
+            if len(header) != 8:
+                return None
+            size, box_type = struct.unpack(">I4s", header)
+            header_size = 8
+            if size == 1:
+                large_size = handle.read(8)
+                if len(large_size) != 8:
+                    return None
+                size = struct.unpack(">Q", large_size)[0]
+                header_size = 16
+            elif size == 0:
+                size = end_pos - start
+            if size < header_size:
+                return None
+            box_end = min(start + int(size), end_pos)
+            if box_end <= handle.tell():
+                return None
+            return box_type.decode("latin1"), start, box_end, header_size
+
+        def read_mvhd_duration(handle, box_end: int) -> Optional[int]:
+            payload = handle.read(min(32, box_end - handle.tell()))
+            if len(payload) < 20:
+                return None
+            version = payload[0]
+            try:
+                if version == 1:
+                    if len(payload) < 32:
+                        return None
+                    timescale = struct.unpack(">I", payload[20:24])[0]
+                    duration = struct.unpack(">Q", payload[24:32])[0]
+                else:
+                    timescale = struct.unpack(">I", payload[12:16])[0]
+                    duration = struct.unpack(">I", payload[16:20])[0]
+            except struct.error:
+                return None
+            if timescale <= 0 or duration <= 0:
+                return None
+            return max(1, int(round(duration / timescale)))
+
+        def walk_boxes(handle, end_pos: int, depth: int = 0) -> Optional[int]:
+            if depth > 4:
+                return None
+            container_boxes = {"moov", "trak", "mdia", "minf", "stbl", "edts", "udta"}
+            while handle.tell() < end_pos:
+                header = read_box_header(handle, end_pos)
+                if header is None:
+                    return None
+                box_type, _start, box_end, _header_size = header
+                if box_type == "mvhd":
+                    duration = read_mvhd_duration(handle, box_end)
+                    if duration is not None:
+                        return duration
+                elif box_type in container_boxes:
+                    duration = walk_boxes(handle, box_end, depth + 1)
+                    if duration is not None:
+                        return duration
+                handle.seek(box_end)
+            return None
+
+        try:
+            with Path(path).open("rb") as handle:
+                return walk_boxes(handle, file_size)
+        except OSError:
+            return None
+
+    def _video_duration_seconds(self, duration, local_path: Optional[str]) -> Optional[int]:
+        normalized = self._duration_seconds(duration, kind="video")
+        file_duration = self._mp4_duration_seconds(local_path) if local_path else None
+        if file_duration is None:
+            return normalized
+        if normalized is None:
+            return file_duration
+        if normalized > 6 * 60 * 60:
+            return file_duration
+        if normalized > file_duration * 10:
+            return file_duration
+        return normalized
 
     def _safe_attachment_field_names(self, attach) -> list[str]:
         try:
@@ -570,11 +665,12 @@ class MaxMediaService:
         )
         if not local_path:
             return None
+        normalized_duration = self._video_duration_seconds(duration, local_path)
         return MaxAttachment(
             kind="video",
             local_path=local_path,
             filename=filename,
-            duration=duration,
+            duration=normalized_duration,
             width=width,
             height=height,
             source_type=source_type,
@@ -858,11 +954,15 @@ class MaxMediaService:
             if not local_path:
                 return None
             if local_path:
+                duration = self._video_duration_seconds(
+                    getattr(attach, "duration", None),
+                    local_path,
+                )
                 return MaxAttachment(
                     kind="video",
                     local_path=local_path,
                     filename=filename,
-                    duration=self._duration_seconds(getattr(attach, "duration", None), kind="video"),
+                    duration=duration,
                     width=getattr(attach, "width", None),
                     height=getattr(attach, "height", None),
                     source_type=raw_type,

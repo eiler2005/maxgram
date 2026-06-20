@@ -36,6 +36,7 @@ All notable changes to Maxgram are documented here.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
 
 ### Fixed
+- **MAX video duration metadata** — delayed and direct MAX video forwarding now normalizes millisecond video durations and falls back to MP4 `mvhd` metadata when MAX omits duration, preventing Telegram videos from showing `00:00` or multi-hour bogus durations.
 - **Stale MAX TCP readiness** — `PymaxClientAdapter.is_connected()` now checks `ConnectionManager.is_open()` and `transport.connected`, so a closed TCP socket no longer looks healthy and `Not connected to the server` send failures can trigger reconnect recovery.
 - **New DM topic names** — incoming DM topics now prefer the sender name / sender id over the chat id when resolving titles, so dialog ids are less likely to appear as `Чат <id>` for new users.
 - **MAX→TG voice delivery for pymax-empty DM events** — raw MAX notifications are now intercepted on the pymax message-notification path as well as `on_raw_receive`, so `AUDIO` voice payloads can be forwarded before upstream parsing drops them.
@@ -45,6 +46,7 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added regressions for MAX video duration normalization and MP4 metadata fallback on durable video retry.
 - Added PyMax 2.3.1 surface pinning for `forward_message()`, `Message.forward()`, `ForwardMessagePayload`, `TcpPayloadDecoder`, and `ZstdCompression`, plus a bridge protocol regression that keeps upstream Zstandard decoding while installing the bridge msgpack guard.
 - Added PyMax 2.3.0 surface pinning and coverage for encrypted recovery contact snapshot round-trip, missing/corrupt key handling, `0600` file mode, phone filtering/privacy, import dry-run no-write, import apply registry upsert, and safe `on_disconnect()` diagnostics.
 - Added PyMax 2.1.2 runtime version pinning and a regression test for tokenless `LoginResponse` validation.

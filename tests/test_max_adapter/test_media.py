@@ -1,6 +1,22 @@
 from .conftest import *  # noqa: F403
 
 
+def write_minimal_mp4_with_duration(path, *, seconds: int, timescale: int = 1000):
+    def box(box_type: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I4s", len(payload) + 8, box_type) + payload
+
+    mvhd_payload = (
+        b"\x00\x00\x00\x00"
+        + struct.pack(">II", 0, 0)
+        + struct.pack(">II", timescale, seconds * timescale)
+        + b"\x00" * 80
+    )
+    path.write_bytes(
+        box(b"ftyp", b"isom\x00\x00\x02\x00isommp42")
+        + box(b"moov", box(b"mvhd", mvhd_payload))
+    )
+
+
 @pytest.mark.asyncio
 async def test_download_audio_reference_refreshes_raw_history_url(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
@@ -427,6 +443,65 @@ async def test_download_audio_attachment_normalizes_millisecond_duration(tmp_pat
     )
 
     assert attachment == MaxAttachment("audio", local_path, "voice.ogg", 38, None, None, "AUDIO")
+
+
+@pytest.mark.asyncio
+async def test_download_video_attachment_normalizes_millisecond_duration(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = tmp_path / "tmp" / "clip.mp4"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    write_minimal_mp4_with_duration(local_path, seconds=71)
+    adapter.url_result = (str(local_path), "clip.mp4")
+
+    attachment = await adapter._download_attachment(
+        "28093080",
+        "116562825769007612",
+        SimpleNamespace(
+            type="VIDEO",
+            video_id=42,
+            url="https://video.example.test/clip.mp4",
+            duration=71000,
+            width=640,
+            height=360,
+        ),
+    )
+
+    assert attachment == MaxAttachment("video", str(local_path), "clip.mp4", 71, 640, 360, "VIDEO")
+
+
+@pytest.mark.asyncio
+async def test_download_video_reference_uses_mp4_duration_when_max_duration_missing(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = tmp_path / "tmp" / "retry.mp4"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    write_minimal_mp4_with_duration(local_path, seconds=12)
+
+    async def fake_download_video_by_id(*args, **kwargs):
+        return str(local_path), "retry.mp4"
+
+    adapter._download_video_by_id = fake_download_video_by_id
+
+    attachment = await adapter.download_video_reference(
+        chat_id="-75100771505615",
+        msg_id="116562825769007612",
+        video_id="42",
+        duration=None,
+        width=640,
+        height=360,
+        source_type="VIDEO",
+    )
+
+    assert attachment == MaxAttachment("video", str(local_path), "retry.mp4", 12, 640, 360, "VIDEO")
 
 
 @pytest.mark.asyncio
