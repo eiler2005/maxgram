@@ -37,6 +37,9 @@ class FakeTelegramBridge:
     def on_arg_command(self, cmd: str, handler, *, allow_group_general: bool = False):
         self.arg_commands[cmd] = (handler, allow_group_general)
 
+    def on_callback_action(self, handler):
+        self.callback_handler = handler
+
     async def create_topic(self, title: str, *, flow_id=None) -> int:
         topic_id = self._next_topic_id
         self._next_topic_id += 1
@@ -52,7 +55,14 @@ class FakeTelegramBridge:
     async def close_topic(self, topic_id: int, *, flow_id=None) -> bool:
         return True
 
-    async def send_text(self, topic_id: int, text: str, reply_to_msg_id=None, flow_id=None):
+    async def send_text(
+        self,
+        topic_id: int,
+        text: str,
+        reply_to_msg_id=None,
+        flow_id=None,
+        buttons=None,
+    ):
         self._next_message_id += 1
         self.sent_texts.append(
             {
@@ -60,6 +70,7 @@ class FakeTelegramBridge:
                 "text": text,
                 "reply_to_msg_id": reply_to_msg_id,
                 "flow_id": flow_id,
+                "buttons": buttons,
                 "message_id": self._next_message_id,
             }
         )

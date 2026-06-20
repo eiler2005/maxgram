@@ -187,6 +187,13 @@ class PymaxClientAdapter:
     def channels_snapshot(self) -> list[MaxChatView]:
         return channels_snapshot(self._client)
 
+    async def join_chat_by_link(self, link: str) -> MaxChatView | None:
+        try:
+            result = await self._client.join_group(link)
+        except Exception:
+            result = await self._client.join_channel(link)
+        return MaxChatView.from_object(result)
+
     async def chat(self, chat_id: int) -> MaxChatView | None:
         return MaxChatView.from_object(await self._client.get_chat(chat_id))
 

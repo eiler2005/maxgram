@@ -15,11 +15,14 @@ from src.bridge import replies as bridge_replies
 from src.bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
+    MaxJoinedChat,
     MaxMessage,
+    MaxMessageAction,
     MaxRecoveryChatSnapshot,
     MaxRecoveryContactSnapshot,
     MaxRecoverySnapshot,
     MaxReactionUpdate,
+    TelegramCallbackAction,
 )
 from src.bridge.core import BridgeCore
 from src.db.repository import (
@@ -50,6 +53,9 @@ class DummyRepo:
         self.pending_stats = {"pending_count": 0, "oldest_created_at": None}
         self.duplicates: set[tuple[str, str]] = set()
         self.phantom_bindings = []
+        self.callback_actions = {}
+        self.callback_action_messages = {}
+        self.callback_next_id = 1
 
     async def get_binding_by_topic(self, tg_topic_id: int):
         return SimpleNamespace(max_chat_id="-70000000000003", tg_topic_id=tg_topic_id, mode="active")
@@ -203,6 +209,49 @@ class DummyRepo:
                                     tg_topic_id: int | None, *, source: str, commit: bool = True):
         self.reply_mappings[tg_msg_id] = max_msg_id
         self.saved_reply_mappings.append((tg_msg_id, max_chat_id, max_msg_id, tg_topic_id, source))
+
+    async def create_callback_action(
+        self,
+        *,
+        action_type: str,
+        max_chat_id: str,
+        max_msg_id: str,
+        payload: dict[str, object],
+        tg_topic_id: int | None = None,
+        tg_msg_id: int | None = None,
+        source_type: str | None = None,
+    ):
+        action_id = f"cb{self.callback_next_id}"
+        self.callback_next_id += 1
+        self.callback_actions[action_id] = SimpleNamespace(
+            id=action_id,
+            action_type=action_type,
+            max_chat_id=max_chat_id,
+            max_msg_id=max_msg_id,
+            tg_topic_id=tg_topic_id,
+            tg_msg_id=tg_msg_id,
+            source_type=source_type,
+            payload_json=json.dumps(payload),
+            status="pending",
+            created_at=1,
+            used_at=None,
+            last_error=None,
+        )
+        return action_id
+
+    async def get_callback_action(self, action_id: str):
+        return self.callback_actions.get(action_id)
+
+    async def attach_callback_action_message(self, action_id: str, *, tg_msg_id: int):
+        record = self.callback_actions[action_id]
+        record.tg_msg_id = tg_msg_id
+        self.callback_action_messages[action_id] = tg_msg_id
+
+    async def mark_callback_action_used(self, action_id: str, *, error: str | None = None, now=None):
+        record = self.callback_actions[action_id]
+        record.status = "failed" if error else "used"
+        record.last_error = error
+        record.used_at = now or 2
 
     async def count_pending_media(self):
         return self.pending_stats
@@ -382,6 +431,13 @@ class DummyMax:
         self.egress_status = None
         self.last_egress_probe = None
         self.ready = True
+        self.join_calls = []
+        self.join_result = MaxJoinedChat(
+            chat_id="-90000000000001",
+            title="Новый MAX чат",
+            chat_kind="GROUP",
+        )
+        self.join_error = None
 
     def on_message(self, handler):
         self.handler = handler
@@ -466,6 +522,12 @@ class DummyMax:
             "contacts": [],
         }
 
+    async def join_chat_by_link(self, link: str) -> MaxJoinedChat:
+        self.join_calls.append(link)
+        if self.join_error:
+            raise self.join_error
+        return self.join_result
+
     def get_pending_empty_recovery_stats(self):
         return self.empty_stats
 
@@ -549,6 +611,9 @@ class DummyTelegram:
     def on_reply(self, handler):
         self.handler = handler
 
+    def on_callback_action(self, handler):
+        self.callback_handler = handler
+
     def on_command(self, cmd: str, handler):
         self.commands[cmd] = handler
 
@@ -578,8 +643,8 @@ class DummyTelegram:
             return None
         return 6
 
-    async def send_text(self, topic_id, text, reply_to_msg_id=None, flow_id=None):
-        self.calls.append(("text", text))
+    async def send_text(self, topic_id, text, reply_to_msg_id=None, flow_id=None, buttons=None):
+        self.calls.append(("text", text, buttons) if buttons else ("text", text))
         if self.fail_text:
             self.last_send_error = "TelegramNetworkError: connection reset"
             return None
@@ -967,6 +1032,161 @@ async def test_forward_to_telegram_sends_media_then_rendered_system_text(tmp_pat
         ("video", "[Тестовый Пользователь]", "clip.mp4", 7, 640, 360),
         ("text", "Участник вышел из чата"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_forward_to_telegram_passes_external_url_buttons(tmp_path):
+    repo = DummyRepo()
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, tg_adapter=tg_adapter)
+    url = "https://example.test/page"
+    msg = MaxMessage(
+        msg_id="m1",
+        chat_id="123",
+        chat_title=None,
+        sender_id="7001",
+        sender_name=None,
+        text="Ссылка",
+        attachments=[],
+        attachment_types=["SHARE"],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=True,
+        is_own=False,
+        raw=None,
+        actions=[
+            MaxMessageAction(
+                kind="open_url",
+                label="Открыть сайт",
+                url=url,
+                source_type="SHARE",
+            )
+        ],
+    )
+
+    result = await bridge._forward_to_telegram(msg, topic_id=99)
+
+    assert result == 5
+    assert len(tg_adapter.calls) == 1
+    kind, text, buttons = tg_adapter.calls[0]
+    assert (kind, text) == ("text", "Ссылка")
+    assert len(buttons) == 1
+    assert buttons[0].text == "Открыть сайт"
+    assert buttons[0].url == url
+    assert buttons[0].callback_data is None
+    assert repo.callback_actions == {}
+
+
+@pytest.mark.asyncio
+async def test_forward_to_telegram_stores_short_max_join_callback(tmp_path):
+    repo = DummyRepo()
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, tg_adapter=tg_adapter)
+    invite = "https://max.ru/join/abc123"
+    msg = MaxMessage(
+        msg_id="m1",
+        chat_id="-70000000000003",
+        chat_title="Group",
+        sender_id="7001",
+        sender_name=None,
+        text=None,
+        attachments=[],
+        attachment_types=["SHARE"],
+        rendered_texts=[],
+        message_type="USER",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+        actions=[
+            MaxMessageAction(
+                kind="max_join",
+                label="Вступить в MAX",
+                url=invite,
+                source_type="SHARE",
+            )
+        ],
+    )
+
+    result = await bridge._forward_to_telegram(msg, topic_id=99)
+
+    assert result == 5
+    assert list(repo.callback_actions) == ["cb1"]
+    record = repo.callback_actions["cb1"]
+    assert json.loads(record.payload_json) == {"url": invite}
+    assert repo.callback_action_messages == {"cb1": 5}
+    kind, text, buttons = tg_adapter.calls[0]
+    assert (kind, text) == ("text", "Доступны действия MAX")
+    assert buttons[0].text == "Вступить в MAX"
+    assert buttons[0].url is None
+    assert buttons[0].callback_data == "max_join:cb1"
+    assert len(buttons[0].callback_data.encode("utf-8")) <= 64
+
+
+@pytest.mark.asyncio
+async def test_tg_callback_max_join_calls_max_and_marks_used(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter)
+    reasons = []
+    bridge._recovery.schedule_event_scan = reasons.append
+    invite = "https://max.ru/join/abc123"
+    action_id = await repo.create_callback_action(
+        action_type="max_join",
+        max_chat_id="-70000000000003",
+        max_msg_id="m1",
+        payload={"url": invite},
+        tg_topic_id=99,
+    )
+
+    result = await bridge._on_tg_callback_action(
+        TelegramCallbackAction(
+            action="max_join",
+            action_id=action_id,
+            user_id=1,
+            topic_id=99,
+            tg_msg_id=5,
+        )
+    )
+
+    assert max_adapter.join_calls == [invite]
+    assert repo.callback_actions[action_id].status == "used"
+    assert repo.callback_actions[action_id].last_error is None
+    assert reasons == ["max_join_button"]
+    assert "Новый MAX чат" in result
+
+
+@pytest.mark.asyncio
+async def test_tg_callback_max_join_marks_failed_with_safe_error(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    max_adapter.join_error = RuntimeError("token expired https://max.ru/join/secret")
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter)
+    invite = "https://max.ru/join/abc123"
+    action_id = await repo.create_callback_action(
+        action_type="max_join",
+        max_chat_id="-70000000000003",
+        max_msg_id="m1",
+        payload={"url": invite},
+        tg_topic_id=99,
+    )
+
+    result = await bridge._on_tg_callback_action(
+        TelegramCallbackAction(
+            action="max_join",
+            action_id=action_id,
+            user_id=1,
+            topic_id=99,
+            tg_msg_id=5,
+        )
+    )
+
+    assert max_adapter.join_calls == [invite]
+    assert repo.callback_actions[action_id].status == "failed"
+    assert repo.callback_actions[action_id].last_error == "RuntimeError: join_failed"
+    assert "secret" not in repo.callback_actions[action_id].last_error
+    assert result == "Не удалось вступить в MAX чат"
 
 
 @pytest.mark.asyncio

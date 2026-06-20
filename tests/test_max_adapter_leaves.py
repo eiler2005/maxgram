@@ -800,6 +800,37 @@ async def test_pymax2_adapter_imports_contacts_and_resolves_dm_chat_id():
 
 
 @pytest.mark.asyncio
+async def test_pymax2_adapter_joins_by_group_link_then_channel_fallback():
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+
+    class FakeClient:
+        logger = None
+
+        def __init__(self):
+            self.calls = []
+
+        async def join_group(self, link: str):
+            self.calls.append(("group", link))
+            raise ValueError("not a group invite")
+
+        async def join_channel(self, link: str):
+            self.calls.append(("channel", link))
+            return SimpleNamespace(id=-90000000000001, title="Joined", type="CHANNEL")
+
+    client = FakeClient()
+    adapter = PymaxClientAdapter(client)
+
+    chat = await adapter.join_chat_by_link("https://max.ru/join/abc123")
+
+    assert client.calls == [
+        ("group", "https://max.ru/join/abc123"),
+        ("channel", "https://max.ru/join/abc123"),
+    ]
+    assert chat.id == -90000000000001
+    assert chat.title == "Joined"
+
+
+@pytest.mark.asyncio
 async def test_pymax2_egress_transport_uses_configured_socket_connector(monkeypatch):
     from src.adapters.max.backends.pymax.transport import EgressTCPTransport
 

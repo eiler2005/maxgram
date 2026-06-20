@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import msgpack
 
@@ -12,6 +14,7 @@ from ...bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
     MaxMessage,
+    MaxMessageAction,
     MaxReactionUpdate,
     MaxTypingEvent,
     is_probable_client_cid,
@@ -116,6 +119,31 @@ _REACTION_ACTOR_ID_KEYS = (
     "participantId",
 )
 _REACTION_VALUE_KEYS = ("reaction", "emoji", "reaction_id", "reactionId")
+_ACTION_URL_RE = re.compile(r"https?://[^\s<>()\"']+", re.IGNORECASE)
+_ACTION_LINK_LIKE_TYPES = {
+    "SHARE",
+    "INLINE_KEYBOARD",
+    "KEYBOARD",
+    "BUTTONS",
+    "BUTTON",
+}
+_ACTION_LABEL_KEYS = {
+    "label",
+    "text",
+    "title",
+    "name",
+    "caption",
+    "button_text",
+    "buttonText",
+}
+_ACTION_URL_KEYS = {
+    "url",
+    "href",
+    "link",
+    "target",
+    "web_app_url",
+    "webAppUrl",
+}
 
 
 class MaxEventsService:
@@ -172,11 +200,19 @@ class MaxEventsService:
 
     @staticmethod
     def _extract_msgpack_text(value: bytes) -> str | None:
-        try:
-            payload = msgpack.unpackb(value, raw=False, strict_map_key=False)
-        except Exception:
+        payload = MaxEventsService._extract_msgpack_payload(value)
+        if payload is None:
             return None
         return MaxEventsService._find_text_value(payload)
+
+    @staticmethod
+    def _extract_msgpack_payload(value) -> object | None:
+        if not isinstance(value, bytes):
+            return None
+        try:
+            return msgpack.unpackb(value, raw=False, strict_map_key=False)
+        except Exception:
+            return None
 
     @staticmethod
     def _find_text_value(value) -> str | None:
@@ -189,6 +225,164 @@ class MaxEventsService:
                 if nested:
                     return nested
         return None
+
+    @staticmethod
+    def _clean_action_url(value: str) -> str | None:
+        url = value.strip().rstrip(".,;:!?)]}\u00bb\u201d'")
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return None
+        if not parsed.netloc:
+            return None
+        return url
+
+    @staticmethod
+    def _is_max_join_url(url: str) -> bool:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower().split("@")[-1].split(":")[0]
+        return host == "max.ru" and parsed.path.startswith("/join/")
+
+    @staticmethod
+    def _domain_label(url: str) -> str:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower().split("@")[-1].split(":")[0]
+        return f"Открыть {host}" if host else "Открыть сайт"
+
+    @staticmethod
+    def _sanitize_action_label(label: str | None, *, fallback: str) -> str:
+        text = (label or "").strip()
+        if not text or _ACTION_URL_RE.search(text):
+            return fallback
+        text = " ".join(text.split())
+        if len(text) > 40:
+            text = f"{text[:37].rstrip()}..."
+        return text
+
+    def _value_public_fields(self, value) -> dict[str, object]:
+        if isinstance(value, dict):
+            return {str(k): v for k, v in value.items() if not str(k).startswith("_")}
+        raw_fields = getattr(value, "__dict__", None)
+        if isinstance(raw_fields, dict):
+            return {str(k): v for k, v in raw_fields.items() if not str(k).startswith("_")}
+        return {}
+
+    def _text_label_from_fields(self, fields: dict[str, object]) -> str | None:
+        for key, value in fields.items():
+            if key not in _ACTION_LABEL_KEYS:
+                continue
+            if isinstance(value, str) and value.strip() and not _ACTION_URL_RE.search(value):
+                return value.strip()
+        return None
+
+    def _action_from_url(
+        self,
+        url: str,
+        *,
+        source_type: str | None,
+        label: str | None = None,
+    ) -> MaxMessageAction | None:
+        clean_url = self._clean_action_url(url)
+        if not clean_url:
+            return None
+        if self._is_max_join_url(clean_url):
+            return MaxMessageAction(
+                kind="max_join",
+                label="Вступить в MAX",
+                url=clean_url,
+                source_type=source_type,
+            )
+        fallback = self._domain_label(clean_url)
+        return MaxMessageAction(
+            kind="open_url",
+            label=self._sanitize_action_label(label, fallback=fallback),
+            url=clean_url,
+            source_type=source_type,
+        )
+
+    def _extract_actions_from_text(
+        self,
+        text: str | None,
+        *,
+        source_type: str | None,
+    ) -> list[MaxMessageAction]:
+        if not text:
+            return []
+        actions: list[MaxMessageAction] = []
+        for match in _ACTION_URL_RE.finditer(text):
+            action = self._action_from_url(
+                match.group(0),
+                source_type=source_type,
+            )
+            if action:
+                actions.append(action)
+        return actions
+
+    def _extract_actions_from_value(
+        self,
+        value,
+        *,
+        source_type: str | None,
+        inherited_label: str | None = None,
+        max_depth: int = 6,
+    ) -> list[MaxMessageAction]:
+        actions: list[MaxMessageAction] = []
+        stack: list[tuple[object, int, str | None]] = [(value, 0, inherited_label)]
+        seen: set[int] = set()
+        while stack:
+            current, depth, parent_label = stack.pop()
+            if current is None or depth > max_depth:
+                continue
+            if isinstance(current, str):
+                actions.extend(
+                    self._extract_actions_from_text(
+                        current,
+                        source_type=source_type,
+                    )
+                )
+                continue
+            if isinstance(current, bytes):
+                payload = self._extract_msgpack_payload(current)
+                if payload is not None:
+                    stack.append((payload, depth + 1, parent_label))
+                continue
+            if isinstance(current, (int, float, bool)):
+                continue
+            object_id = id(current)
+            if object_id in seen:
+                continue
+            seen.add(object_id)
+
+            if isinstance(current, (list, tuple, set)):
+                for item in current:
+                    stack.append((item, depth + 1, parent_label))
+                continue
+
+            fields = self._value_public_fields(current)
+            if not fields:
+                continue
+            label = self._text_label_from_fields(fields) or parent_label
+            for key, item in fields.items():
+                if key in _ACTION_URL_KEYS and isinstance(item, str):
+                    action = self._action_from_url(
+                        item,
+                        source_type=source_type,
+                        label=label,
+                    )
+                    if action:
+                        actions.append(action)
+                stack.append((item, depth + 1, label))
+        return actions
+
+    def _dedupe_actions(self, actions: list[MaxMessageAction]) -> list[MaxMessageAction]:
+        deduped: list[MaxMessageAction] = []
+        seen: set[tuple[str, str]] = set()
+        for action in actions:
+            key = (action.kind, action.url)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(action)
+        return deduped
 
     async def _handle_raw_receive(self, data: dict):
         """Перехватить channel wrappers до потери вложенного контента в pymax."""
@@ -700,10 +894,12 @@ class MaxEventsService:
         )
 
     def _should_skip_empty_event(self, message_type: Optional[str], text: Optional[str],
-                                 attachments: list["MaxAttachment"],
-                                 rendered_texts: list[str], reaction_info,
-                                 attachment_failures: list["MaxAttachmentFailure"] | None = None) -> bool:
-        if text or attachments or rendered_texts or attachment_failures:
+                                  attachments: list["MaxAttachment"],
+                                  rendered_texts: list[str],
+                                  actions: list["MaxMessageAction"],
+                                  reaction_info,
+                                  attachment_failures: list["MaxAttachmentFailure"] | None = None) -> bool:
+        if text or attachments or rendered_texts or actions or attachment_failures:
             return False
 
         normalized_type = str(message_type or "").upper()
@@ -977,11 +1173,13 @@ class MaxEventsService:
             forwarded = self._raw_payload._extract_forwarded_payload(message)
             content_message = forwarded.message if forwarded else message
 
-            text = self._normalize_text(
+            raw_text_value = (
                 getattr(content_message, "text", None)
                 or getattr(message, "text", None)
                 or None
             )
+            msgpack_payload = self._extract_msgpack_payload(raw_text_value)
+            text = self._normalize_text(raw_text_value)
             message_type = str(
                 getattr(content_message, "type", None)
                 or getattr(message, "type", None)
@@ -1224,11 +1422,21 @@ class MaxEventsService:
             attachments: list[MaxAttachment] = []
             attachment_failures: list[MaxAttachmentFailure] = []
             rendered_texts: list[str] = []
+            actions: list[MaxMessageAction] = []
+            actions.extend(self._extract_actions_from_text(text, source_type="text"))
+            if msgpack_payload is not None:
+                actions.extend(
+                    self._extract_actions_from_value(
+                        msgpack_payload,
+                        source_type="msgpack_text",
+                    )
+                )
             media_index = 0
             for attach in attach_list:
                 if attach is None:
                     continue
                 raw_type = self._media._attachment_type_name(attach)
+                raw_type_upper = str(raw_type or "").upper()
                 atype = self._media._normalize_attachment_type(raw_type)
                 if atype in {"PHOTO", "VIDEO", "AUDIO", "FILE"}:
                     filename_hint = self._media._attachment_filename(attach)
@@ -1256,6 +1464,20 @@ class MaxEventsService:
                         )
                     continue
 
+                attach_actions = self._extract_actions_from_value(
+                    attach,
+                    source_type=raw_type,
+                )
+                if attach_actions:
+                    actions.extend(attach_actions)
+
+                link_like = (
+                    atype in _ACTION_LINK_LIKE_TYPES
+                    or raw_type_upper in _ACTION_LINK_LIKE_TYPES
+                )
+                if link_like and actions:
+                    continue
+
                 rendered = await self._safe_render_non_media_attach(
                     attach,
                     atype=atype,
@@ -1274,6 +1496,8 @@ class MaxEventsService:
                 rendered_texts.insert(0, "[Сообщение отредактировано]")
             elif status == "REMOVED":
                 rendered_texts = ["[Сообщение удалено]"]
+                actions = []
+            actions = self._dedupe_actions(actions)
 
             if self._is_degraded_channel_media_event(
                 message_type=message_type,
@@ -1294,6 +1518,7 @@ class MaxEventsService:
                 text,
                 attachments,
                 rendered_texts,
+                actions,
                 reaction_info,
                 attachment_failures,
             ):
@@ -1338,6 +1563,7 @@ class MaxEventsService:
                 not text
                 and not attachments
                 and not rendered_texts
+                and not actions
                 and not attachment_failures
                 and self._is_channel_metadata_only_event(message_type, message, content_message)
             ):
@@ -1362,7 +1588,7 @@ class MaxEventsService:
                 return
 
             if not text and not attachments and not rendered_texts and message_type:
-                if message_type.upper() not in {"TEXT", "USER"}:
+                if not actions and message_type.upper() not in {"TEXT", "USER"}:
                     rendered_texts.append(
                         self._raw_payload._render_unknown_message_details(
                             message=message,
@@ -1389,6 +1615,7 @@ class MaxEventsService:
                 failed_attachment_count=len(attachment_failures),
                 attachment_types=attachment_types,
                 rendered_count=len(rendered_texts),
+                action_count=len(actions),
                 has_text=bool(text),
             )
             if text:
@@ -1421,6 +1648,7 @@ class MaxEventsService:
                 is_own=is_own,
                 raw=message,
                 attachment_failures=attachment_failures,
+                actions=actions,
             )
 
             for handler in self._handlers:

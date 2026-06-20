@@ -67,6 +67,16 @@ class MaxAttachmentFailure:
 
 
 @dataclass
+class MaxMessageAction:
+    """Transport-neutral user action extracted from a MAX message."""
+
+    kind: str                     # open_url | max_join
+    label: str
+    url: str
+    source_type: Optional[str] = None
+
+
+@dataclass
 class MaxMessage:
     """Нормализованное сообщение из MAX."""
 
@@ -85,6 +95,7 @@ class MaxMessage:
     is_own: bool                    # True если сообщение отправлено нашим аккаунтом
     raw: object                     # оригинальный объект библиотеки
     attachment_failures: list[MaxAttachmentFailure] = field(default_factory=list)
+    actions: list[MaxMessageAction] = field(default_factory=list)
 
 
 @dataclass
@@ -156,6 +167,35 @@ class MaxReactionUpdate:
     reaction: Optional[str] = None
 
 
+@dataclass
+class MaxJoinedChat:
+    """Safe MAX chat metadata returned after joining by invite link."""
+
+    chat_id: Optional[str]
+    title: Optional[str]
+    chat_kind: Optional[str] = None
+
+
+@dataclass
+class TelegramInlineButton:
+    """Transport-neutral Telegram inline button request."""
+
+    text: str
+    url: Optional[str] = None
+    callback_data: Optional[str] = None
+
+
+@dataclass
+class TelegramCallbackAction:
+    """Telegram callback routed into bridge core."""
+
+    action: str
+    action_id: str
+    user_id: int
+    topic_id: Optional[int] = None
+    tg_msg_id: Optional[int] = None
+
+
 MessageHandler = Callable[[MaxMessage], Awaitable[None]]
 StartHandler = Callable[[], object]
 IssueHandler = Callable[[MaxIssue], Optional[Awaitable[None]]]
@@ -167,6 +207,7 @@ ReplyHandler = Callable[
 ]
 CommandHandler = Callable[..., Awaitable[str]]
 ArgCommandHandler = Callable[[str], Awaitable[str]]
+CallbackActionHandler = Callable[[TelegramCallbackAction], Awaitable[str]]
 
 
 class MaxBridgePort(Protocol):
@@ -205,6 +246,7 @@ class MaxBridgePort(Protocol):
     def recovery_contacts_snapshot_status(self) -> dict[str, object]: ...
     async def create_recovery_contacts_snapshot(self, *, force: bool = False) -> dict[str, object]: ...
     async def import_recovery_contacts_snapshot(self, *, dry_run: bool) -> dict[str, object]: ...
+    async def join_chat_by_link(self, link: str) -> MaxJoinedChat: ...
     async def download_video_reference(self, **kwargs) -> Optional[MaxAttachment]: ...
     async def download_audio_reference(self, **kwargs) -> Optional[MaxAttachment]: ...
     async def replay_recent_history(
@@ -224,6 +266,7 @@ class TelegramBridgePort(Protocol):
 
     def on_reply(self, handler: ReplyHandler) -> None: ...
     def on_command(self, cmd: str, handler: CommandHandler) -> None: ...
+    def on_callback_action(self, handler: CallbackActionHandler) -> None: ...
     def on_arg_command(
         self,
         cmd: str,
@@ -242,6 +285,7 @@ class TelegramBridgePort(Protocol):
         text: str,
         reply_to_msg_id: Optional[int] = None,
         flow_id: Optional[str] = None,
+        buttons: Optional[list[TelegramInlineButton]] = None,
     ) -> Optional[int]: ...
     async def send_photo(self, topic_id: int, path: str, caption: str = "", flow_id: Optional[str] = None) -> Optional[int]: ...
     async def send_document(

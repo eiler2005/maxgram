@@ -38,6 +38,7 @@ async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
             (1, "baseline_schema"),
             (2, "pending_outbound_messages"),
             (3, "pending_inbound_messages"),
+            (4, "telegram_callback_actions"),
         ]
 
         async with db.execute(
@@ -57,6 +58,12 @@ async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
         ) as cur:
             row = await cur.fetchone()
         assert row["name"] == "pending_inbound_messages"
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'telegram_callback_actions'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["name"] == "telegram_callback_actions"
     finally:
         await db.close()
 
@@ -136,6 +143,43 @@ async def test_save_message_upserts_tg_fields(tmp_path):
         assert row["tg_msg_id"] == 777
         assert row["tg_topic_id"] == 12
         assert row["direction"] == "inbound"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_callback_actions_roundtrip_and_mark_used(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        action_id = await repo.create_callback_action(
+            action_type="max_join",
+            max_chat_id="-70000000000003",
+            max_msg_id="m1",
+            tg_topic_id=99,
+            source_type="SHARE",
+            payload={"url": "https://max.ru/join/abc123"},
+        )
+
+        record = await repo.get_callback_action(action_id)
+        assert record is not None
+        assert record.action_type == "max_join"
+        assert record.status == "pending"
+        assert record.tg_topic_id == 99
+        assert json.loads(record.payload_json) == {"url": "https://max.ru/join/abc123"}
+
+        await repo.attach_callback_action_message(action_id, tg_msg_id=555)
+        record = await repo.get_callback_action(action_id)
+        assert record is not None
+        assert record.tg_msg_id == 555
+
+        await repo.mark_callback_action_used(action_id)
+        record = await repo.get_callback_action(action_id)
+        assert record is not None
+        assert record.status == "used"
+        assert record.used_at is not None
+        assert record.last_error is None
     finally:
         await repo.close()
 

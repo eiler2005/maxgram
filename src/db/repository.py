@@ -13,6 +13,7 @@ import aiosqlite
 
 from .migrations import apply_migrations
 from .repos.bindings import BindingsRepo
+from .repos.callback_actions import CallbackActionsRepo
 from .repos.delivery import DeliveryRepo
 from .repos.generations import GenerationsRepo
 from .repos.pending_inbound import PendingInboundRepo
@@ -30,6 +31,7 @@ from .types import (
     PendingInboundMessage,
     PendingMediaDownload,
     PendingOutboundMessage,
+    TelegramCallbackActionRecord,
     TgReplyMapping,
 )
 
@@ -56,6 +58,7 @@ class Repository:
         self._pending_media = PendingMediaRepo(get_db, should_autocommit)
         self._pending_inbound = PendingInboundRepo(get_db, should_autocommit)
         self._pending_outbound = PendingOutboundRepo(get_db, should_autocommit)
+        self._callback_actions = CallbackActionsRepo(get_db, should_autocommit)
         self._delivery = DeliveryRepo(get_db, should_autocommit)
         self._users = UsersRepo(get_db, should_autocommit)
 
@@ -148,6 +151,57 @@ class Repository:
             tg_topic_id,
             source=source,
             commit=commit,
+        )
+
+    async def create_callback_action(
+        self,
+        *,
+        action_type: str,
+        max_chat_id: str,
+        max_msg_id: str,
+        payload: dict[str, object],
+        tg_topic_id: Optional[int] = None,
+        tg_msg_id: Optional[int] = None,
+        source_type: Optional[str] = None,
+    ) -> str:
+        return await self._callback_actions.create_callback_action(
+            action_type=action_type,
+            max_chat_id=max_chat_id,
+            max_msg_id=max_msg_id,
+            payload=payload,
+            tg_topic_id=tg_topic_id,
+            tg_msg_id=tg_msg_id,
+            source_type=source_type,
+        )
+
+    async def get_callback_action(
+        self,
+        action_id: str,
+    ) -> Optional[TelegramCallbackActionRecord]:
+        return await self._callback_actions.get_callback_action(action_id)
+
+    async def attach_callback_action_message(
+        self,
+        action_id: str,
+        *,
+        tg_msg_id: int,
+    ) -> None:
+        await self._callback_actions.attach_callback_action_message(
+            action_id,
+            tg_msg_id=tg_msg_id,
+        )
+
+    async def mark_callback_action_used(
+        self,
+        action_id: str,
+        *,
+        error: Optional[str] = None,
+        now: Optional[int] = None,
+    ) -> None:
+        await self._callback_actions.mark_callback_action_used(
+            action_id,
+            error=error,
+            now=now,
         )
 
     # ── MAX account recovery registry ──────────────────────────────────────

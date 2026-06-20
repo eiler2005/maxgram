@@ -78,6 +78,31 @@ MIGRATIONS = [
           ON pending_inbound_messages(created_at);
         """,
     ),
+    Migration(
+        4,
+        "telegram_callback_actions",
+        """
+        CREATE TABLE IF NOT EXISTS telegram_callback_actions (
+            id              TEXT PRIMARY KEY,
+            action_type     TEXT NOT NULL,
+            max_chat_id     TEXT NOT NULL,
+            max_msg_id      TEXT NOT NULL,
+            tg_topic_id     INTEGER,
+            tg_msg_id       INTEGER,
+            source_type     TEXT,
+            payload_json    TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            created_at      INTEGER NOT NULL,
+            used_at         INTEGER,
+            last_error      TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tg_callback_actions_status
+          ON telegram_callback_actions(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_tg_callback_actions_source
+          ON telegram_callback_actions(max_chat_id, max_msg_id);
+        """,
+    ),
 ]
 
 

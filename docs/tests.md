@@ -11,11 +11,11 @@ PYTHONPATH=. .venv/bin/pytest -q -m architecture        # service-boundary/refac
 PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/ruff check .
 .venv/bin/ruff check src/bridge --select E9,F63,F7,F82,F401,F841,B,C4,SIM,RET
-.venv/bin/mypy src/bridge/errors.py src/bridge/contracts.py src/db/migrations.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/ports.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/recovery_contacts.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
-.venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
+.venv/bin/mypy src/bridge/errors.py src/bridge/contracts.py src/db/migrations.py src/db/types.py src/db/repos/callback_actions.py src/adapters/max/backends/base.py src/adapters/max/deps.py src/adapters/max/state.py src/adapters/max/ports.py src/adapters/max/payload.py src/adapters/max/users.py src/adapters/max/errors.py src/adapters/max/recovery_contacts.py src/adapters/max/media/ua.py src/adapters/max/media/downloader.py
+.venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **332 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **345 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -86,13 +86,14 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_repository.py — работа с SQLite (19 тестов)
+## test_repository.py — работа с SQLite (20 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
 | `test_schema_migrations_apply_fresh_and_are_idempotent` | Fresh SQLite DB получает baseline schema через `schema_migrations`; повторный запуск миграций безопасен. |
 | `test_schema_migrations_baseline_existing_db` | Уже существующая DB с таблицами до runner-а получает baseline marker без изменения семантики схемы. |
 | `test_save_message_upserts_tg_fields` | При двойном `save_message` с одним `max_msg_id` второй вызов дополняет запись: `tg_msg_id` и `tg_topic_id` обновляются через `ON CONFLICT DO UPDATE SET ... = COALESCE(excluded, existing)`. Проверяет что `get_max_msg_id_by_tg` находит запись по `tg_msg_id`. |
+| `test_callback_actions_roundtrip_and_mark_used` | Durable `telegram_callback_actions` создаёт короткий callback id для `max_join`, хранит только invite payload, привязывает TG message id и помечает action used без внешних URL. |
 | `test_tg_reply_mapping_resolves_delayed_media_message` | Поздно досланное media-сообщение в Telegram мапится обратно к исходному MAX message для корректных replies. |
 | `test_get_chat_activity_map_since_groups_by_chat` | SQL-агрегация активности по чатам: корректно считает `inbound`, `outbound`, `total` для `/chats`. |
 | `test_save_and_find_user_by_name` | `save_user()` сохраняет запись в `known_users`; `find_user_by_name()` возвращает корректный `max_user_id`. |
@@ -129,7 +130,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (105 тестов)
+## tests/test_max_adapter/ — MAX adapter behavior split (109 тестов)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -147,6 +148,10 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_handle_raw_message_renders_control_leave` | `CONTROL/leave` → `rendered_texts == ["Имя Фамилия вышел(а) из чата"]`; `attachment_types == ["CONTROL"]`; `chat_title` подставляется из `client.chats`. |
 | `test_handle_raw_message_decodes_bytes_text_before_preview` | PyMax 2 `message.text` в bytes декодируется до UTF-8 string до logging preview и dispatch. |
 | `test_handle_raw_message_extracts_text_from_msgpack_bytes` | SHARE/msgpack-like `message.text` bytes распаковываются до настоящего text без `�` и raw field names. |
+| `test_handle_raw_message_extracts_max_join_action_from_share` | `SHARE` с `https://max.ru/join/...` становится `max_join` action и больше не деградирует в один `[Вложение MAX: share]`. |
+| `test_handle_raw_message_extracts_external_action_from_inline_keyboard` | `inline_keyboard` / nested `web_app.url` превращается в `open_url` action с безопасной label. |
+| `test_handle_raw_message_extracts_msgpack_text_url_and_deduplicates` | URL из msgpack text/buttons и `SHARE` дедуплицируются в один action. |
+| `test_handle_raw_message_ignores_unsafe_share_url` | Не-HTTP(S) URL игнорируется, а generic MAX attachment fallback остаётся. |
 | `test_classify_runtime_error_uses_exception_context_for_logout_all` | Если PyMax перекрывает `FAIL_LOGOUT_ALL/login.token` SSL close exception, классификация всё равно требует reauth. |
 | `test_handle_raw_message_renders_control_add_with_partial_name_resolution` | `CONTROL/add` с двумя `userIds` — один известен в кеше, другой нет → `"Добавлены участники: Имя Фамилия, ещё 1"`. Проверяет частичное разрешение имён. |
 | `test_handle_raw_message_renders_control_remove_with_target_user_id` | `CONTROL/remove` берёт удалённого участника из target-полей, а не из sender-админа. |
@@ -262,7 +267,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (29 тестов)
+## test_max_adapter_leaves.py — pymax-free MAX helper leaves + PyMax backend contracts (30 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -294,6 +299,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pymax2_send_uses_attachments_list` | Outbound media отправляется через PyMax 2 `attachments=[...]`, не старый `attachment=`. |
 | `test_pymax2_snapshots_use_profile_users_and_chat_types` | Own id берётся из `client.me.contact.id`, users/chats snapshots нормализуются через PyMax 2 shape. |
 | `test_pymax2_adapter_imports_contacts_and_resolves_dm_chat_id` | `PymaxClientAdapter.import_contacts()` строит PyMax `ContactInfo`, возвращает typed users и вычисляет DM chat id через backend boundary. |
+| `test_pymax2_adapter_joins_by_group_link_then_channel_fallback` | `PymaxClientAdapter.join_chat_by_link()` сначала вызывает `join_group(link)`, затем fallback `join_channel(link)` и возвращает safe `MaxChatView`. |
 | `test_pymax2_egress_transport_uses_configured_socket_connector` | Custom PyMax 2 transport использует `MaxEgressProfile.socket_connector` и сохраняет TLS server hostname. |
 | `test_pymax2_egress_client_uses_bridge_connection_manager` | Egress PyMax client строит guarded `BridgeConnectionManager` с bridge egress transport и PyMax 2.1 16-bit seq. |
 | `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |
@@ -332,6 +338,10 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | Тест | Что проверяет |
 |------|--------------|
 | `test_forward_to_telegram_sends_media_then_rendered_system_text` | Сообщение с видео-вложением и `rendered_texts`: сначала отправляется видео (`send_video` с caption `[Имя]`), затем текст системного события (`send_text`). Возвращает `message_id` медиа. |
+| `test_forward_to_telegram_passes_external_url_buttons` | `open_url` actions становятся Telegram URL buttons и не создают SQLite callback rows. |
+| `test_forward_to_telegram_stores_short_max_join_callback` | `max_join` action создаёт короткий `max_join:<id>` callback_data, сохраняет только MAX invite payload и привязывает row к отправленному TG message. |
+| `test_tg_callback_max_join_calls_max_and_marks_used` | Owner callback загружает durable action, вызывает `max.join_chat_by_link()`, помечает row `used` и планирует recovery scan. |
+| `test_tg_callback_max_join_marks_failed_with_safe_error` | Ошибка PyMax join помечает row `failed` безопасной причиной без invite/raw URL и отдаёт короткий ответ. |
 | `test_forward_to_telegram_sends_voice_note_for_voice_source` | Вложение с `source_type=VOICE` отправляется как нативный `send_voice` (voice bubble), а не как обычное аудио. |
 | `test_forward_to_telegram_uses_rendered_text_without_media` | Сообщение типа `CONTROL` без вложений: отправляется только текст из `rendered_texts`. Файловые методы не вызываются. |
 | `test_on_max_reaction_update_edits_footer_with_actor_name` | Reaction footer редактируется с агрегатами и строкой `Последняя реакция: Имя — emoji`, если actor известен. |
@@ -445,7 +455,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_tg_adapter.py — входящие сообщения Telegram и system notifications (7 тестов)
+## test_tg_adapter.py — входящие сообщения Telegram и system notifications (10 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -454,6 +464,9 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_dispatch_incoming_message_allows_public_dm_only_in_general` | `/dm` доступна участникам группы только в General (`message_thread_id=None`) через explicit allowlist. |
 | `test_dispatch_incoming_message_keeps_recovery_owner_only_in_general` | `/recovery` остаётся owner-only даже в General, чтобы export/invite/admin metadata не раскрывались группе. |
 | `test_tg_retry_logs_retry_and_success` | `_tg_retry` делает повторную попытку при `TelegramRetryAfter` и логирует событие retry; после успеха возвращает корректный результат. |
+| `test_send_text_attaches_inline_url_buttons` | `send_text(..., buttons=...)` конвертирует neutral buttons в aiogram `InlineKeyboardMarkup`. |
+| `test_callback_query_owner_dispatches_handler` | Owner click по `max_join:<id>` превращается в `TelegramCallbackAction` и dispatch-ится в bridge handler. |
+| `test_callback_query_non_owner_is_rejected` | Не-владелец получает короткий callback answer, handler не вызывается. |
 | `test_send_system_notification_fans_out_to_dm_and_ops_topic` | Системное уведомление уходит и в owner DM, и в ops topic, если `ops_topic_id` задан. |
 | `test_send_system_notification_queues_failed_target_and_flushes_outbox` | Неотправленный ops-alert попадает в `alert_outbox.jsonl`, а после восстановления Telegram досылается из outbox. |
 

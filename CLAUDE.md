@@ -50,6 +50,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `delivery_log` — статусы доставки (meta only)
 - `pending_media_downloads` — durable retry meta для MAX media
 - `pending_inbound_messages` / `pending_outbound_messages` — durable retry для MAX→TG и TG→MAX текстов; хранит plaintext только для недоставленных текстов до доставки/TTL, медиа не сохраняет
+- `telegram_callback_actions` — owner-only Telegram callback actions; хранит только MAX invite payload для `max_join`, внешние URL не сохраняет
 - `known_users` — справочник имён MAX для `/dm`
 - `max_account_generations` — поколения MAX account; новый телефон = новый account
 - `chat_recovery_registry` — recovery metadata для переноса Telegram topics на новый MAX account (`last_scan_at`, invite/admin/DM metadata, manual notes)
@@ -68,6 +69,13 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `data/recovery_contacts.enc.json` — отдельный encrypted phonebook snapshot для переноса на новый номер через PyMax `import_contacts()`. Открытая часть файла содержит только schema/cipher/timestamp/source account hash/counts/ciphertext; телефоны остаются только внутри Fernet payload. Ключ `MAX_RECOVERY_CONTACTS_KEY` хранится в `.env.secrets`. Raw phones не пишутся в SQLite, logs, health, `/status`, `/recovery report` или обычный `/recovery export`.
 - `/recovery export` уходит только owner DM и может содержать invite links/admin notes.
 - После remap reply на старое TG сообщение отправляется без `reply_to_msg_id`, если mapped MAX message принадлежит старому `max_chat_id`.
+
+## MAX invite/link buttons в Telegram
+
+- `SHARE`, `inline_keyboard`, nested `web_app.url` / `buttons[].url` и URL из msgpack text payload нормализуются в transport-neutral `MaxMessage.actions`.
+- `max.ru/join/...` становится owner-only callback-кнопкой `Вступить в MAX`; bridge MAX account вступает через PyMax API, не через открытие MAX на телефоне.
+- Внешние `http(s)` ссылки становятся обычными Telegram URL-кнопками и не пишутся в SQLite.
+- В SQLite сохраняется только `telegram_callback_actions.payload_json` для MAX invite join callback. Raw SHARE/keyboard payloads, arbitrary external URLs, message text/media и signed URLs не писать в логи, health, reports или exports.
 
 ## Критические особенности pymax
 
@@ -95,6 +103,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - PyMax 2.1.2 `LoginResponse.token` optional: MAX может не вернуть новый token при логине с уже существующей session, а upstream `App.start()` должен сохранить текущий session token. `BridgeAuthService` больше не подставляет `session.token` в response; он остаётся только для unsupported attachments / non-critical initial-sync payload drift.
 - PyMax 2.3.0 добавил `ContactInfo`, `Client.import_contacts()`, `on_disconnect()`, `on_error()`, `relogin()`, `delete_chat()` и `SessionStore.delete_all_sessions()`. Bridge использует `import_contacts()` только для encrypted recovery contacts import, `on_disconnect()` только для безопасной диагностики/disconnected-state, не использует `on_error()` как passive logging и не заменяет guarded reauth flow на `relogin()`.
 - PyMax 2.3.1 добавил `Client.forward_message()` / `Message.forward()`, исправил compressed TCP payload decoding (`Zstandard` flag `0xFF`, LZ4 handling) и bot profile parsing. Bridge пока не exposes MAX→MAX forwarding в core, но pin-ит surface; backend-local msgpack guard должен заменять только serializer и сохранять upstream `TcpPayloadDecoder`/`ZstdCompression`.
+- PyMax `join_group(link)` / `join_channel(link)` используются только внутри `src/adapters/max/backends/pymax/`; bridge core видит transport-neutral `join_chat_by_link(link)` port и safe `MaxJoinedChat`.
 - PyMax 2 может отдать `message.text` как `bytes`; для SHARE/сложных payload это может быть msgpack-like binary, а не plain UTF-8. `MaxEventsService` сначала пробует извлечь `text` через msgpack, затем strict UTF-8, и не форвардит binary garbage с `�`.
 - MAX forwarded/channel events могут приходить как wrapper без прямого `text/attaches`, но с nested `message` или `link.message`; raw receive и empty recovery должны unwrap-ать `CHANNEL/FORWARD` до проверки content. Симптом старого бага: `max.inbound.empty_recovery ... reason=*_without_content` при safe fields `link`/`_forward_source_*`, либо `max.raw.message_skipped reason=missing_chat_id` для прямого `CHANNEL` с media.
 - PyMax 2 TCP msgpack decoder может падать на raw `CHAT_HISTORY`, если MAX отдаёт map с array-like key (`TypeError: unhashable type: 'list'`). `src/adapters/max/backends/pymax/transport.py` ставит backend-local `BridgeMsgpackPayloadCodec`, который конвертирует такие keys в hashable форму до нормализации payload.

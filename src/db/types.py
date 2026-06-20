@@ -55,6 +55,22 @@ class TgReplyMapping:
 
 
 @dataclass
+class TelegramCallbackActionRecord:
+    id: str
+    action_type: str
+    max_chat_id: str
+    max_msg_id: str
+    payload_json: str
+    status: str
+    created_at: int
+    tg_topic_id: Optional[int] = None
+    tg_msg_id: Optional[int] = None
+    source_type: Optional[str] = None
+    used_at: Optional[int] = None
+    last_error: Optional[str] = None
+
+
+@dataclass
 class ChatRecoveryEntry:
     registry_key: str
     tg_topic_id: Optional[int]

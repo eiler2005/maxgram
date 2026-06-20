@@ -5,6 +5,7 @@ import pytest
 from aiogram.exceptions import TelegramAPIError
 
 from src.adapters.tg_adapter import TelegramAdapter
+from src.bridge.contracts import TelegramInlineButton
 from src.runtime.health import RuntimeHealthStore
 
 
@@ -154,6 +155,17 @@ class FakeSystemBot:
         return SimpleNamespace(message_id=outcome)
 
 
+class FakeCallbackQuery:
+    def __init__(self, *, user_id: int, data: str = "max_join:cb1"):
+        self.data = data
+        self.from_user = SimpleNamespace(id=user_id)
+        self.message = SimpleNamespace(message_id=456, message_thread_id=555)
+        self.answers = []
+
+    async def answer(self, text: str = "", show_alert: bool | None = None):
+        self.answers.append((text, show_alert))
+
+
 @pytest.mark.asyncio
 async def test_tg_retry_logs_retry_and_success(caplog):
     adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
@@ -166,6 +178,69 @@ async def test_tg_retry_logs_retry_and_success(caplog):
     events = [getattr(record, "event_fields", {}) for record in caplog.records]
     assert any(event.get("event") == "tg.outbound.retry" for event in events)
     assert any(event.get("event") == "tg.outbound.sent" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_send_text_attaches_inline_url_buttons():
+    adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
+    adapter._bot = FakeSystemBot([88])
+
+    msg_id = await adapter.send_text(
+        555,
+        "Ссылка",
+        buttons=[
+            TelegramInlineButton(
+                text="Открыть сайт",
+                url="https://example.test/page",
+            )
+        ],
+    )
+
+    assert msg_id == 88
+    markup = adapter._bot.calls[0]["reply_markup"]
+    button = markup.inline_keyboard[0][0]
+    assert button.text == "Открыть сайт"
+    assert button.url == "https://example.test/page"
+
+
+@pytest.mark.asyncio
+async def test_callback_query_owner_dispatches_handler():
+    adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
+    calls = []
+
+    async def handler(action):
+        calls.append(action)
+        return "joined"
+
+    adapter.on_callback_action(handler)
+    callback = FakeCallbackQuery(user_id=1)
+
+    await adapter._dispatch_callback_query(callback)
+
+    assert len(calls) == 1
+    assert calls[0].action == "max_join"
+    assert calls[0].action_id == "cb1"
+    assert calls[0].topic_id == 555
+    assert calls[0].tg_msg_id == 456
+    assert callback.answers == [("joined", False)]
+
+
+@pytest.mark.asyncio
+async def test_callback_query_non_owner_is_rejected():
+    adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
+    calls = []
+
+    async def handler(action):
+        calls.append(action)
+        return "joined"
+
+    adapter.on_callback_action(handler)
+    callback = FakeCallbackQuery(user_id=2)
+
+    await adapter._dispatch_callback_query(callback)
+
+    assert calls == []
+    assert callback.answers == [("Только владелец bridge", False)]
 
 
 @pytest.mark.asyncio

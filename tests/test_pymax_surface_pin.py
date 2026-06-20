@@ -74,6 +74,8 @@ def test_pymax_231_client_methods_are_pinned():
         "on_error",
         "relogin",
         "delete_chat",
+        "join_group",
+        "join_channel",
     ):
         assert hasattr(pymax.Client, name), f"pymax.Client.{name} is missing"
 

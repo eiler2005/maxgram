@@ -179,6 +179,23 @@ Reaction updates не создают отдельное сообщение: brid
 получает строку `Последняя реакция: <имя> — <emoji>`; иначе остаются только
 агрегированные счётчики.
 
+MAX `SHARE`, `inline_keyboard` и похожие non-media payloads могут давать
+Telegram inline buttons:
+
+- `https://max.ru/join/...` становится callback-кнопкой `Вступить в MAX`;
+- callback owner-only: если кнопку нажимает не владелец bridge, MAX join не
+  вызывается;
+- владелец нажимает кнопку в Telegram, bridge вызывает PyMax
+  `join_group(link)` с fallback на `join_channel(link)` и затем ставит
+  recovery scan, чтобы новый чат/топик обнаружился штатным registry flow;
+- внешние `http(s)` ссылки становятся обычными Telegram URL-кнопками
+  `Открыть сайт`/по label из payload.
+
+Privacy boundary: SQLite `telegram_callback_actions` хранит только payload для
+MAX invite callback (`max.ru/join/...`). Обычные внешние ссылки не пишутся в
+SQLite, `/status`, `/recovery report`, `/recovery export`, health files или
+normal logs. Raw `SHARE`/keyboard payloads не логируются.
+
 Prometheus textfile metrics пишутся атомарно в `data/maxtg_bridge.prom` по
 умолчанию. Если позже появится node_exporter textfile collector, укажи абсолютный
 путь через config/env:

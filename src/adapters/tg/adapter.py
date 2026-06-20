@@ -16,10 +16,21 @@ from pathlib import Path
 from typing import Callable, Optional, Awaitable
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message, FSInputFile
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from .notifier import TelegramNotifier
+from ...bridge.contracts import (
+    CallbackActionHandler,
+    TelegramCallbackAction,
+    TelegramInlineButton,
+)
 from ...logging_utils import build_tg_flow_id, log_event, sanitize_path
 from ...runtime.health import (
     AlertOutboxStore,
@@ -70,6 +81,7 @@ class TelegramAdapter:
         self._bot: Optional[Bot] = None
         self._dp: Optional[Dispatcher] = None
         self._reply_handlers: list[ReplyHandler] = []
+        self._callback_handlers: list[CallbackActionHandler] = []
         self._command_handlers: dict[str, Callable] = {}
         self._arg_command_handlers: dict[str, Callable] = {}
         self._public_group_arg_commands: set[str] = set()
@@ -91,6 +103,9 @@ class TelegramAdapter:
 
     def on_reply(self, handler: ReplyHandler):
         self._reply_handlers.append(handler)
+
+    def on_callback_action(self, handler: CallbackActionHandler):
+        self._callback_handlers.append(handler)
 
     # ── Топики ────────────────────────────────────────────────────────────
 
@@ -350,10 +365,30 @@ class TelegramAdapter:
         return None
 
     # ── Отправка сообщений ────────────────────────────────────────────────
+    def _build_inline_markup(
+        self,
+        buttons: Optional[list[TelegramInlineButton]],
+    ) -> InlineKeyboardMarkup | None:
+        if not buttons:
+            return None
+        rows: list[list[InlineKeyboardButton]] = []
+        for button in buttons[:8]:
+            text = (button.text or "").strip()[:64] or "Открыть"
+            if button.url:
+                rows.append([InlineKeyboardButton(text=text, url=button.url)])
+            elif button.callback_data:
+                rows.append([InlineKeyboardButton(text=text, callback_data=button.callback_data)])
+        return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
-    async def send_text(self, topic_id: int, text: str,
-                        reply_to_msg_id: Optional[int] = None,
-                        *, flow_id: Optional[str] = None) -> Optional[int]:
+    async def send_text(
+        self,
+        topic_id: int,
+        text: str,
+        reply_to_msg_id: Optional[int] = None,
+        *,
+        flow_id: Optional[str] = None,
+        buttons: Optional[list[TelegramInlineButton]] = None,
+    ) -> Optional[int]:
         """Отправить текст в топик. Возвращает message_id."""
         kwargs: dict = dict(
             chat_id=self._group_id,
@@ -362,6 +397,9 @@ class TelegramAdapter:
         )
         if reply_to_msg_id:
             kwargs["reply_to_message_id"] = reply_to_msg_id
+        markup = self._build_inline_markup(buttons)
+        if markup:
+            kwargs["reply_markup"] = markup
         return await self._tg_retry(
             lambda: self._bot.send_message(**kwargs),
             f"send_text topic={topic_id}",
@@ -751,9 +789,54 @@ class TelegramAdapter:
                 )
 
     def _setup_handlers(self):
+        @self._dp.callback_query()
+        async def handle_callback(callback: CallbackQuery):
+            await self._dispatch_callback_query(callback)
+
         @self._dp.message()
         async def handle_message(message: Message):
             await self._dispatch_incoming_message(message)
+
+    async def _dispatch_callback_query(self, callback: CallbackQuery):
+        data = callback.data or ""
+        if not data.startswith("max_join:"):
+            await callback.answer()
+            return
+        if not callback.from_user or callback.from_user.id != self._owner_id:
+            await callback.answer("Только владелец bridge", show_alert=False)
+            return
+        action_id = data.split(":", 1)[1].strip()
+        if not action_id:
+            await callback.answer("Действие не найдено", show_alert=False)
+            return
+        message = getattr(callback, "message", None)
+        topic_id = getattr(message, "message_thread_id", None)
+        tg_msg_id = getattr(message, "message_id", None)
+        action = TelegramCallbackAction(
+            action="max_join",
+            action_id=action_id,
+            user_id=callback.from_user.id,
+            topic_id=topic_id,
+            tg_msg_id=tg_msg_id,
+        )
+        answer = "Действие не обработано"
+        try:
+            for handler in self._callback_handlers:
+                answer = await handler(action)
+                break
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.ERROR,
+                "tg.callback.handler_failed",
+                direction="callback",
+                stage="dispatch",
+                outcome="failed",
+                action="max_join",
+                error_type=type(exc).__name__,
+            )
+            answer = "Ошибка при выполнении действия"
+        await callback.answer(answer[:200], show_alert=False)
 
     async def _handle_command(self, message: Message):
         parts = message.text.split()
@@ -791,7 +874,7 @@ class TelegramAdapter:
             group_id=self._group_id,
             owner_id=self._owner_id,
         )
-        await self._dp.start_polling(self._bot, allowed_updates=["message"])
+        await self._dp.start_polling(self._bot, allowed_updates=["message", "callback_query"])
 
     async def setup(self) -> Bot:
         """Инициализировать бота без запуска polling (для использования в bridge)."""

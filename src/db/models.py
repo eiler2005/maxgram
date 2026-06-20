@@ -133,6 +133,23 @@ CREATE TABLE IF NOT EXISTS known_users (
     updated_at   INTEGER NOT NULL
 );
 
+-- Durable Telegram callback actions.
+-- Хранит только callback payload для MAX invite join; внешние URL не пишутся в SQLite.
+CREATE TABLE IF NOT EXISTS telegram_callback_actions (
+    id              TEXT PRIMARY KEY,
+    action_type     TEXT NOT NULL,
+    max_chat_id     TEXT NOT NULL,
+    max_msg_id      TEXT NOT NULL,
+    tg_topic_id     INTEGER,
+    tg_msg_id       INTEGER,
+    source_type     TEXT,
+    payload_json    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    created_at      INTEGER NOT NULL,
+    used_at         INTEGER,
+    last_error      TEXT
+);
+
 -- Поколения MAX-аккаунтов. Новый телефон = новый MAX account.
 CREATE TABLE IF NOT EXISTS max_account_generations (
     generation_id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,6 +231,10 @@ CREATE INDEX IF NOT EXISTS idx_pending_inbound_status_due
   ON pending_inbound_messages(status, next_attempt_at, lease_until);
 CREATE INDEX IF NOT EXISTS idx_pending_inbound_created
   ON pending_inbound_messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_tg_callback_actions_status
+  ON telegram_callback_actions(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_tg_callback_actions_source
+  ON telegram_callback_actions(max_chat_id, max_msg_id);
 CREATE INDEX IF NOT EXISTS idx_chat_recovery_status ON chat_recovery_registry(recovery_status);
 CREATE INDEX IF NOT EXISTS idx_chat_recovery_current ON chat_recovery_registry(current_max_chat_id);
 CREATE INDEX IF NOT EXISTS idx_chat_recovery_events_topic ON chat_recovery_events(tg_topic_id, created_at);

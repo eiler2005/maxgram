@@ -7,6 +7,7 @@ All notable changes to Maxgram are documented here.
 ## Unreleased
 
 ### Added
+- **MAX join and link buttons in Telegram** — `SHARE`, `inline_keyboard`, nested `web_app.url` / `buttons[].url`, and msgpack text URLs now become Telegram inline buttons. `max.ru/join/...` links create an owner-only `Вступить в MAX` callback that joins through PyMax; external sites use normal URL buttons and are not persisted in SQLite.
 - **Encrypted contacts snapshot for new-number recovery** — owner-only `/recovery contacts status`, `/recovery contacts snapshot [--force]`, and `/recovery contacts import dry-run|apply` support PyMax `import_contacts()` migration without writing raw phone numbers to SQLite, logs, health, reports, or normal exports.
 - **Durable text outbox in both directions** — failed text-only TG→MAX and MAX→TG deliveries now use SQLite-backed queues with lease/backoff/TTL. Plaintext is kept only while pending and is cleared after delivery or expiration.
 - **Shared retry policy module** — bridge retry workers share one lease/backoff/TTL policy, while media remains reference-based and heavy files are not stored in SQLite.
@@ -46,6 +47,7 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added coverage for MAX share/inline-keyboard URL extraction, Telegram URL buttons, owner-only MAX join callbacks, callback action SQLite lifecycle, and PyMax join group/channel fallback.
 - Added regressions for MAX video duration normalization and MP4 metadata fallback on durable video retry.
 - Added PyMax 2.3.1 surface pinning for `forward_message()`, `Message.forward()`, `ForwardMessagePayload`, `TcpPayloadDecoder`, and `ZstdCompression`, plus a bridge protocol regression that keeps upstream Zstandard decoding while installing the bridge msgpack guard.
 - Added PyMax 2.3.0 surface pinning and coverage for encrypted recovery contact snapshot round-trip, missing/corrupt key handling, `0600` file mode, phone filtering/privacy, import dry-run no-write, import apply registry upsert, and safe `on_disconnect()` diagnostics.

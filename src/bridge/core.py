@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import background as bridge_background
+from . import actions as bridge_actions
 from . import delivery as bridge_delivery
 from . import forwarding as bridge_forwarding
 from . import inbound_retry as bridge_inbound_retry
@@ -29,6 +30,7 @@ from .contracts import (
     MaxReactionUpdate,
     MaxTypingEvent,
     OpsNotifierPort,
+    TelegramCallbackAction,
     TelegramBridgePort,
 )
 from .recovery.scheduler import RecoveryScheduler
@@ -95,6 +97,7 @@ class BridgeCore:
         self._max.on_typing(self._on_max_typing)
         self._max.on_reaction_update(self._on_max_reaction_update)
         self._tg.on_reply(self._on_tg_reply)
+        self._tg.on_callback_action(self._on_tg_callback_action)
         self._commands.register()
 
         self._max.on_start(self._recovery.schedule_scan_after_connect)
@@ -135,6 +138,14 @@ class BridgeCore:
                 actor_footer = f"{actor_footer} — {event.reaction}"
             footer = f"{footer}\n{actor_footer}"
         await self._tg.edit_message_text(tg_msg_id, footer)
+
+    async def _on_tg_callback_action(self, callback: TelegramCallbackAction) -> str:
+        return await bridge_actions.handle_telegram_callback_action(
+            repo=self._repo,
+            max_adapter=self._max,
+            callback=callback,
+            schedule_recovery_event_scan=self._recovery.schedule_event_scan,
+        )
 
     async def _on_max_message(self, msg: MaxMessage):
         """Входящее сообщение из MAX → форвардим в Telegram."""
@@ -250,6 +261,7 @@ class BridgeCore:
         return await bridge_forwarding.forward_to_telegram(
             cfg=self._cfg,
             tg=self._tg,
+            repo=self._repo,
             msg=msg,
             topic_id=topic_id,
             flow_id=flow_id,

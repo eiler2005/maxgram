@@ -109,6 +109,159 @@ async def test_handle_raw_message_extracts_text_from_msgpack_bytes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_extracts_max_join_action_from_share(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=1,
+        chat_id=123,
+        sender=7001,
+        text=None,
+        type="USER",
+        status=None,
+        attaches=[SimpleNamespace(type="SHARE", url="https://max.ru/join/abc123")],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].rendered_texts == []
+    assert [(action.kind, action.label, action.url) for action in received[0].actions] == [
+        ("max_join", "Вступить в MAX", "https://max.ru/join/abc123")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_extracts_external_action_from_inline_keyboard(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=1,
+        chat_id=123,
+        sender=7001,
+        text="Оплата",
+        type="USER",
+        status=None,
+        attaches=[
+            SimpleNamespace(
+                type="INLINE_KEYBOARD",
+                buttons=[
+                    {
+                        "text": "Открыть квитанцию",
+                        "web_app": {"url": "https://pay.example.test/invoice/1"},
+                    }
+                ],
+            )
+        ],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].rendered_texts == []
+    assert [(action.kind, action.label, action.url) for action in received[0].actions] == [
+        ("open_url", "Открыть квитанцию", "https://pay.example.test/invoice/1")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_extracts_msgpack_text_url_and_deduplicates(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    url = "https://example.test/page"
+    message = SimpleNamespace(
+        id=1,
+        chat_id=123,
+        sender=7001,
+        text=msgpack.packb(
+            {"text": f"Подробнее: {url}", "buttons": [{"text": "Сайт", "url": url}]},
+            use_bin_type=True,
+        ),
+        type="USER",
+        status=None,
+        attaches=[SimpleNamespace(type="SHARE", url=url)],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].text == f"Подробнее: {url}"
+    assert received[0].rendered_texts == []
+    assert [(action.kind, action.url) for action in received[0].actions] == [
+        ("open_url", url)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_ignores_unsafe_share_url(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=1,
+        chat_id=123,
+        sender=7001,
+        text=None,
+        type="USER",
+        status=None,
+        attaches=[SimpleNamespace(type="SHARE", url="javascript:alert(1)")],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].actions == []
+    assert received[0].rendered_texts == ["[Вложение MAX: share]"]
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
     adapter = CapturingDownloadAdapter(
         phone="+7",

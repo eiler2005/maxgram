@@ -6,6 +6,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 
+from . import actions as bridge_actions
 from . import mapping
 from . import inbound_retry
 from . import media_retry
@@ -305,6 +306,7 @@ async def forward_to_telegram(
     *,
     cfg: AppConfig,
     tg: TelegramBridgePort,
+    repo: Repository,
     msg: MaxMessage,
     topic_id: int,
     flow_id: Optional[str] = None,
@@ -320,6 +322,11 @@ async def forward_to_telegram(
     body_text = f"{sender_prefix}{msg.text}".strip() if msg.text else ""
     media_caption = body_text or (sender_prefix.strip() if msg.attachments else "")
     extra_text = "\n".join(part for part in msg.rendered_texts if part).strip()
+    prepared_buttons = await bridge_actions.prepare_telegram_buttons(
+        repo=repo,
+        msg=msg,
+        topic_id=topic_id,
+    )
     tg_msg_id = None
     emitted_anything = False
 
@@ -352,7 +359,34 @@ async def forward_to_telegram(
 
     if extra_text:
         text = compose_message_text("" if emitted_anything else body_text, extra_text)
-        sent_id = await tg.send_text(topic_id, text, flow_id=flow_id)
+        sent_id = await tg.send_text(
+            topic_id,
+            text,
+            flow_id=flow_id,
+            buttons=prepared_buttons.buttons or None,
+        )
+        await bridge_actions.attach_callback_actions_to_message(
+            repo=repo,
+            action_ids=prepared_buttons.callback_action_ids,
+            tg_msg_id=sent_id,
+        )
+        if sent_id:
+            emitted_anything = True
+            if tg_msg_id is None:
+                tg_msg_id = sent_id
+    elif prepared_buttons.buttons:
+        text = body_text if not emitted_anything and body_text else "Доступны действия MAX"
+        sent_id = await tg.send_text(
+            topic_id,
+            text,
+            flow_id=flow_id,
+            buttons=prepared_buttons.buttons,
+        )
+        await bridge_actions.attach_callback_actions_to_message(
+            repo=repo,
+            action_ids=prepared_buttons.callback_action_ids,
+            tg_msg_id=sent_id,
+        )
         if sent_id:
             emitted_anything = True
             if tg_msg_id is None:
@@ -569,6 +603,7 @@ async def handle_max_message(
         not msg.text
         and not msg.attachments
         and not msg.rendered_texts
+        and not msg.actions
         and msg.attachment_failures
         and not display_failures
     ):

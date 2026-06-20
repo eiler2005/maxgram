@@ -65,6 +65,7 @@ from ...bridge.contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
     MaxIssue,
+    MaxJoinedChat,
     MaxMessage,
     MaxRecoveryChatSnapshot,
     MaxRecoveryContactSnapshot,
@@ -315,6 +316,17 @@ class MaxAdapter:
 
     async def import_recovery_contacts_snapshot(self, *, dry_run: bool):
         return await self._recovery.import_recovery_contacts_snapshot(dry_run=dry_run)
+
+    async def join_chat_by_link(self, link: str) -> MaxJoinedChat:
+        client = self._state.connection.client
+        if client is None:
+            raise RuntimeError("MAX client is not connected")
+        chat = await client.join_chat_by_link(link)
+        return MaxJoinedChat(
+            chat_id=str(getattr(chat, "id", "") or "") or None,
+            title=getattr(chat, "title", None),
+            chat_kind=str(getattr(chat, "type", "") or "") or None,
+        )
 
     async def download_video_reference(self, *args, **kwargs):
         return await self._media.download_video_reference(*args, **kwargs)
