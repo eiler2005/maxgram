@@ -639,7 +639,12 @@ async def handle_max_message(
     )
 
     if tg_msg_id:
-        if msg.attachment_failures:
+        attachment_failures_resolved = (
+            bool(msg.attachment_failures)
+            and not display_failures
+            and await media_retry.is_edit_media_resolved_by_base_delivery(repo=repo, msg=msg)
+        )
+        if msg.attachment_failures and not attachment_failures_resolved:
             delivery_status = "partial"
             delivery_error = f"attachment_download_failed:{len(msg.attachment_failures)}"
             log_level = logging.WARNING

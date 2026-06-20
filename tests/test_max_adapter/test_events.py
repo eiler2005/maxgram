@@ -109,6 +109,44 @@ async def test_handle_raw_message_extracts_text_from_msgpack_bytes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_normalizes_pymax_enum_edit_status(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    received = []
+
+    class EnumStringStatus:
+        def __str__(self):
+            return "MessageStatus.EDITED"
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    message = SimpleNamespace(
+        id=1,
+        chat_id=123,
+        sender=7001,
+        text="Обновленный текст",
+        type="USER",
+        status=EnumStringStatus(),
+        attaches=[],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].status == "EDITED"
+    assert received[0].msg_id == "1:EDITED"
+    assert received[0].rendered_texts == ["[Сообщение отредактировано]"]
+
+
+@pytest.mark.asyncio
 async def test_handle_raw_message_extracts_max_join_action_from_share(tmp_path):
     adapter = AdapterHarness(
         phone="+7",

@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **345 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **347 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -148,6 +148,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_handle_raw_message_renders_control_leave` | `CONTROL/leave` → `rendered_texts == ["Имя Фамилия вышел(а) из чата"]`; `attachment_types == ["CONTROL"]`; `chat_title` подставляется из `client.chats`. |
 | `test_handle_raw_message_decodes_bytes_text_before_preview` | PyMax 2 `message.text` в bytes декодируется до UTF-8 string до logging preview и dispatch. |
 | `test_handle_raw_message_extracts_text_from_msgpack_bytes` | SHARE/msgpack-like `message.text` bytes распаковываются до настоящего text без `�` и raw field names. |
+| `test_handle_raw_message_normalizes_pymax_enum_edit_status` | PyMax enum/string status вроде `MessageStatus.EDITED` нормализуется в `EDITED`, чтобы edit-события не создавали разные `max_msg_id` variants. |
 | `test_handle_raw_message_extracts_max_join_action_from_share` | `SHARE` с `https://max.ru/join/...` становится `max_join` action и больше не деградирует в один `[Вложение MAX: share]`. |
 | `test_handle_raw_message_extracts_external_action_from_inline_keyboard` | `inline_keyboard` / nested `web_app.url` превращается в `open_url` action с безопасной label. |
 | `test_handle_raw_message_extracts_msgpack_text_url_and_deduplicates` | URL из msgpack text/buttons и `SHARE` дедуплицируются в один action. |
@@ -357,6 +358,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_on_tg_reply_does_not_persist_failed_media_for_retry` | TG→MAX media failure не сохраняет файл/текст в outbox и просит переотправить вручную. |
 | `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает pending-placeholder и создаёт `pending_media_downloads` job. |
 | `test_on_max_message_enqueues_photo_failure_for_delayed_final_notice` | Фото без stable refs сначала показывает pending-placeholder и создаёт delayed-finalizer job, чтобы late duplicate мог дослать media до terminal warning. |
+| `test_edit_photo_failure_after_delivered_base_does_not_enqueue_finalizer` | Edit-event с failed photo не создаёт новый delayed-finalizer и логируется как delivered, если базовое MAX-сообщение уже доставило media. |
 | `test_existing_pending_audio_failure_does_not_duplicate_placeholder` | Повторный replay того же voice по `media_msg_id/reference_id` переиспользует активный pending job и не отправляет второй queued-placeholder. |
 | `test_duplicate_after_partial_delivery_sends_late_media` | Если первый inbound delivery был `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные media, core досылает только вложения, пишет `late_media_recovered` и гасит delayed-finalizer job. |
 | `test_duplicate_after_late_media_recovered_is_skipped` | Повторный duplicate после `delivery_log status=delivered/error=late_media_recovered` не досылает media повторно. |

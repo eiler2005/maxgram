@@ -613,6 +613,7 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
 - если медиа не скачалось сразу, bridge отправляет остальные части сообщения, показывает `⏳ Фото/Видео/Аудио/Файл MAX #N загружается и будет дослано через пару минут` и кладёт meta-only job в `pending_media_downloads`;
 - для фото/файлов без стабильного download reference этот job служит delayed-finalizer: если late duplicate/raw recovery не доставил media за несколько минут, bridge отправит terminal warning `⚠️ ... так и не удалось загрузить автоматически`;
+- edit-events из PyMax могут приходить как `MessageStatus.EDITED` или `EDITED`; bridge нормализует их в один статус и не создаёт отдельный delayed-finalizer для edit-media failure, если базовое MAX-сообщение уже доставило media. В логах это видно как `bridge.media_retry.suppressed reason=edit_base_media_already_delivered`;
 - для ретриабельных видео/аудио job продолжает retry/resume без terminal warning, пока есть шанс докачать; terminal warning отправляется только при окончательных причинах вроде missing stable reference или oversized file;
 - повторный sweep той же voice/media-reference не отправляет второй queued-placeholder: существующий pending job переиспользуется по `media_chat_id/media_msg_id/attachment_index/kind/reference_*`;
 - для degraded `CHANNEL/FORWARD` wrappers bridge принимает recovery только если payload содержит usable media refs; low-quality `PHOTO`/`VIDEO` без refs не занимает dedup partial сразу, а ждёт raw/history cache до короткого timeout;
@@ -623,6 +624,7 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 
 ```bash
 rg 'flow_id=mx:<chat_id>:<msg_id>' data/bridge.log
+rg 'event=bridge\.media_retry\.suppressed .*edit_base_media_already_delivered' data/bridge.log
 rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback|audio_fallback|audio_protocol_probe|voice_reference_missing)' data/bridge.log
 rg 'event=bridge\.media_retry\.(enqueued|attempt_started|retry_scheduled|delivered|failed)' data/bridge.log
 rg 'event=bridge\.inbound\.late_media_recovery|event=max\.inbound\.degraded_media_recovery' data/bridge.log

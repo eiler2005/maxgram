@@ -199,6 +199,16 @@ class MaxEventsService:
         return str(value)
 
     @staticmethod
+    def _normalize_status(value) -> str | None:
+        if value is None or value == "":
+            return None
+        raw = getattr(value, "name", None) or getattr(value, "value", None) or value
+        text = str(raw).strip().upper()
+        if "." in text:
+            text = text.rsplit(".", 1)[-1]
+        return text or None
+
+    @staticmethod
     def _extract_msgpack_text(value: bytes) -> str | None:
         payload = MaxEventsService._extract_msgpack_payload(value)
         if payload is None:
@@ -1185,7 +1195,7 @@ class MaxEventsService:
                 or getattr(message, "type", None)
                 or ""
             ) or None
-            status = str(getattr(message, "status", None) or "").upper() or None
+            status = self._normalize_status(getattr(message, "status", None))
             reaction_info = (
                 getattr(message, "reactionInfo", None)
                 or getattr(message, "reaction_info", None)

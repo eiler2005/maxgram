@@ -27,6 +27,7 @@ logger = logging.getLogger("src.bridge.core")
 SendAttachment = Callable[[int, MaxAttachment, str], Awaitable[Optional[int]]]
 LATE_DUPLICATE_REFERENCE_KIND = "late_duplicate"
 LATE_DUPLICATE_FINAL_DELAY_SECONDS = 180
+_EDIT_STATUS_SUFFIXES = (":EDITED", ":MESSAGESTATUS.EDITED")
 
 
 def media_kind_label(kind: str | None, *, source_type: str | None = None) -> str:
@@ -86,6 +87,28 @@ def is_late_duplicate_resolved_delivery(latest_delivery: Optional[dict]) -> bool
     }
 
 
+def edit_base_max_msg_id(max_msg_id: object, status: object | None = None) -> str | None:
+    text = str(max_msg_id or "").strip()
+    if not text:
+        return None
+    status_text = str(status or "").strip().upper()
+    if "." in status_text:
+        status_text = status_text.rsplit(".", 1)[-1]
+    upper_text = text.upper()
+    for suffix in _EDIT_STATUS_SUFFIXES:
+        if upper_text.endswith(suffix):
+            return text[: -len(suffix)] or None
+    return text if status_text == "EDITED" else None
+
+
+async def is_edit_media_resolved_by_base_delivery(*, repo: Repository, msg) -> bool:
+    base_msg_id = edit_base_max_msg_id(msg.msg_id, getattr(msg, "status", None))
+    if not base_msg_id or base_msg_id == msg.msg_id:
+        return False
+    latest_delivery = await repo.get_latest_delivery(msg.chat_id, base_msg_id, "inbound")
+    return is_late_duplicate_resolved_delivery(latest_delivery)
+
+
 async def mark_pending_media_delivered_if_late_recovered(
     *,
     repo: Repository,
@@ -95,6 +118,10 @@ async def mark_pending_media_delivered_if_late_recovered(
     if not job.id:
         return False
     latest_delivery = await repo.get_latest_delivery(job.max_chat_id, job.max_msg_id, "inbound")
+    if not is_late_duplicate_resolved_delivery(latest_delivery):
+        base_msg_id = edit_base_max_msg_id(job.max_msg_id)
+        if base_msg_id:
+            latest_delivery = await repo.get_latest_delivery(job.max_chat_id, base_msg_id, "inbound")
     if not is_late_duplicate_resolved_delivery(latest_delivery):
         return False
     await repo.mark_pending_media_delivered(job.id, tg_msg_id=0)
@@ -150,7 +177,25 @@ async def enqueue_retryable_media_failures(
     display_failures: list[MaxAttachmentFailure] = []
     now = int(time.time())
     first_retry_at = now + 60
+    edit_media_resolved = await is_edit_media_resolved_by_base_delivery(repo=repo, msg=msg)
     for failure in msg.attachment_failures:
+        if edit_media_resolved:
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.media_retry.suppressed",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="media_retry",
+                outcome="skipped",
+                reason="edit_base_media_already_delivered",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+                attachment_index=failure.index,
+                kind=failure.kind,
+            )
+            continue
         if not is_retryable_media_failure(failure):
             existing = await find_existing_pending_media_for_failure(repo=repo, msg=msg, failure=failure)
             if existing is not None:

@@ -1890,6 +1890,63 @@ async def test_on_max_message_enqueues_photo_failure_for_delayed_final_notice():
 
 
 @pytest.mark.asyncio
+async def test_edit_photo_failure_after_delivered_base_does_not_enqueue_finalizer():
+    repo = DummyRepo()
+    chat_id = "-70000000000003"
+    repo.binding_by_chat[chat_id] = SimpleNamespace(
+        max_chat_id=chat_id,
+        tg_topic_id=99,
+        title="Тестовая группа",
+        mode="active",
+    )
+    repo.latest_deliveries[(chat_id, "mx-photo-1", "inbound")] = {
+        "status": "delivered",
+        "error": "late_media_recovered",
+    }
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+    msg = MaxMessage(
+        msg_id="mx-photo-1:EDITED",
+        chat_id=chat_id,
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text="Обновленный текст",
+        attachments=[],
+        attachment_types=["PHOTO"],
+        rendered_texts=["[Сообщение отредактировано]"],
+        message_type="CHANNEL",
+        status="EDITED",
+        is_dm=False,
+        is_own=False,
+        raw=None,
+        attachment_failures=[
+            MaxAttachmentFailure(
+                kind="photo",
+                source_type="PHOTO",
+                filename=None,
+                index=0,
+                reason="download_failed",
+            )
+        ],
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert repo.pending_media == []
+    assert tg_adapter.calls == [
+        ("text", "[Тестовый Пользователь] Обновленный текст\n[Сообщение отредактировано]"),
+    ]
+    assert repo.delivery_logs[-1][0][:4] == (
+        "mx-photo-1:EDITED",
+        chat_id,
+        "inbound",
+        "delivered",
+    )
+    assert repo.delivery_logs[-1][0][4] is None
+
+
+@pytest.mark.asyncio
 async def test_existing_pending_audio_failure_does_not_duplicate_placeholder():
     repo = DummyRepo()
     repo.binding_by_chat["200056208"] = SimpleNamespace(
