@@ -197,8 +197,26 @@ async def recover_late_duplicate_media(
         return False
 
     latest_delivery = await repo.get_latest_delivery(msg.chat_id, msg.msg_id, "inbound")
-    if not _is_late_media_recovery_candidate(latest_delivery):
+    undelivered = await media_retry.undelivered_attachments(
+        repo=repo,
+        msg=msg,
+        attachments=msg.attachments,
+    )
+    if not undelivered:
         return False
+    if not _is_late_media_recovery_candidate(latest_delivery):
+        has_pending_part = False
+        for part_index, attachment in undelivered:
+            if await media_retry.has_active_pending_media_part(
+                repo=repo,
+                msg=msg,
+                attachment_index=part_index,
+                kind=attachment.kind,
+            ):
+                has_pending_part = True
+                break
+        if not has_pending_part:
+            return False
 
     binding = await repo.get_binding(msg.chat_id)
     if binding and binding.mode == "disabled":
@@ -208,7 +226,7 @@ async def recover_late_duplicate_media(
         return False
 
     sent_records: list[tuple[int, MaxAttachment, int]] = []
-    for index, attachment in enumerate(msg.attachments):
+    for index, attachment in undelivered:
         attachment_path = Path(attachment.local_path)
         if not attachment_path.exists():
             continue
@@ -234,7 +252,7 @@ async def recover_late_duplicate_media(
         if sent_id:
             sent_records.append((index, attachment, sent_id))
 
-    if len(sent_records) != len(msg.attachments):
+    if len(sent_records) != len(undelivered):
         log_event(
             logger,
             logging.WARNING,
@@ -248,7 +266,7 @@ async def recover_late_duplicate_media(
             max_msg_id=msg.msg_id,
             tg_topic_id=topic_id,
             sent_media_count=len(sent_records),
-            attachment_count=len(msg.attachments),
+            attachment_count=len(undelivered),
         )
         return False
 
@@ -257,26 +275,44 @@ async def recover_late_duplicate_media(
             Path(attachment.local_path).unlink(missing_ok=True)
 
     async with mapping.repo_transaction(repo):
+        reply_max_msg_id = (
+            media_retry.canonical_media_base_msg_id(msg.msg_id, msg.status)
+            or msg.msg_id
+        )
         for _index, _attachment, sent_id in sent_records:
             await repo.save_tg_reply_mapping(
                 sent_id,
                 msg.chat_id,
-                msg.msg_id,
+                reply_max_msg_id,
                 topic_id,
                 source="late_media_recovery",
+                commit=False,
+            )
+            await media_retry.save_delivered_attachment_part(
+                repo=repo,
+                msg=msg,
+                attachment=_attachment,
+                tg_msg_id=sent_id,
+                tg_topic_id=topic_id,
+                source="late_media_recovery",
+                fallback_index=_index,
                 commit=False,
             )
         find_pending = getattr(repo, "find_active_pending_media", None)
         if callable(find_pending):
             for index, attachment, sent_id in sent_records:
-                pending = await find_pending(
-                    max_chat_id=msg.chat_id,
-                    max_msg_id=msg.msg_id,
-                    attachment_index=index,
-                    kind=attachment.kind,
-                )
-                if pending and pending.id:
-                    await repo.mark_pending_media_delivered(pending.id, tg_msg_id=sent_id)
+                for candidate_id in dict.fromkeys((msg.msg_id, reply_max_msg_id)):
+                    pending = await find_pending(
+                        max_chat_id=msg.chat_id,
+                        max_msg_id=candidate_id,
+                        attachment_index=index,
+                        kind=media_retry.media_part_kind(attachment.kind),
+                    )
+                    if pending and pending.id:
+                        await repo.mark_pending_media_delivered(
+                            pending.id,
+                            tg_msg_id=sent_id,
+                        )
         await repo.log_delivery(
             msg.msg_id,
             msg.chat_id,
@@ -330,11 +366,17 @@ async def forward_to_telegram(
     tg_msg_id = None
     emitted_anything = False
 
-    for attachment in msg.attachments:
+    attachments_to_send = await media_retry.undelivered_attachments(
+        repo=repo,
+        msg=msg,
+        attachments=msg.attachments,
+    )
+    for attachment_index, attachment in attachments_to_send:
         attachment_path = Path(attachment.local_path)
         if not attachment_path.exists():
             continue
 
+        delivered_media = False
         if is_file_too_large(cfg, attachment.local_path):
             placeholder = cfg.content.placeholder_file_too_large.format(
                 filename=attachment.filename or attachment_path.name
@@ -351,11 +393,33 @@ async def forward_to_telegram(
                 caption=caption,
                 flow_id=flow_id,
             )
+            delivered_media = attachment.kind in {"photo", "video", "audio", "document"}
 
         if sent_id:
             emitted_anything = True
             if tg_msg_id is None:
                 tg_msg_id = sent_id
+            if delivered_media:
+                reply_max_msg_id = (
+                    media_retry.canonical_media_base_msg_id(msg.msg_id, msg.status)
+                    or msg.msg_id
+                )
+                await media_retry.save_delivered_attachment_part(
+                    repo=repo,
+                    msg=msg,
+                    attachment=attachment,
+                    tg_msg_id=sent_id,
+                    tg_topic_id=topic_id,
+                    source="media_part",
+                    fallback_index=attachment_index,
+                )
+                await repo.save_tg_reply_mapping(
+                    sent_id,
+                    msg.chat_id,
+                    reply_max_msg_id,
+                    topic_id,
+                    source="media_part",
+                )
 
     if extra_text:
         text = compose_message_text("" if emitted_anything else body_text, extra_text)
@@ -598,6 +662,15 @@ async def handle_max_message(
             topic_id,
             flow_id=flow_id,
         )
+    attachment_failures_resolved = (
+        bool(msg.attachment_failures)
+        and not display_failures
+        and await media_retry.are_failures_delivered_or_legacy_resolved(
+            repo=repo,
+            msg=msg,
+            failures=msg.attachment_failures,
+        )
+    )
 
     if (
         not msg.text
@@ -607,6 +680,30 @@ async def handle_max_message(
         and msg.attachment_failures
         and not display_failures
     ):
+        if attachment_failures_resolved:
+            await repo.log_delivery(
+                msg.msg_id,
+                msg.chat_id,
+                "inbound",
+                "delivered",
+                "media_parts_already_delivered",
+            )
+            log_event(
+                logger,
+                logging.INFO,
+                "bridge.inbound.forward_finished",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="forward",
+                outcome="delivered",
+                reason="media_parts_already_delivered",
+                max_chat_id=msg.chat_id,
+                max_msg_id=msg.msg_id,
+                tg_topic_id=topic_id,
+                failed_attachment_count=len(msg.attachment_failures),
+                enqueued_media_count=enqueued_media,
+            )
+            return
         await repo.log_delivery(
             msg.msg_id,
             msg.chat_id,
@@ -631,6 +728,43 @@ async def handle_max_message(
         )
         return
 
+    all_attachments_already_delivered = False
+    if (
+        msg.attachments
+        and not msg.text
+        and not msg.rendered_texts
+        and not msg.actions
+        and not msg.attachment_failures
+    ):
+        all_attachments_already_delivered = not await media_retry.undelivered_attachments(
+            repo=repo,
+            msg=msg,
+            attachments=msg.attachments,
+        )
+
+    if all_attachments_already_delivered:
+        await repo.log_delivery(
+            msg.msg_id,
+            msg.chat_id,
+            "inbound",
+            "delivered",
+            "media_parts_already_delivered",
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.inbound.forward_finished",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="forward",
+            outcome="delivered",
+            reason="media_parts_already_delivered",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            tg_topic_id=topic_id,
+        )
+        return
+
     tg_msg_id = await forward_to_telegram_fn(
         msg,
         topic_id,
@@ -639,11 +773,6 @@ async def handle_max_message(
     )
 
     if tg_msg_id:
-        attachment_failures_resolved = (
-            bool(msg.attachment_failures)
-            and not display_failures
-            and await media_retry.is_edit_media_resolved_by_base_delivery(repo=repo, msg=msg)
-        )
         if msg.attachment_failures and not attachment_failures_resolved:
             delivery_status = "partial"
             delivery_error = f"attachment_download_failed:{len(msg.attachment_failures)}"

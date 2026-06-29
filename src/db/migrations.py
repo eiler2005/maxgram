@@ -103,6 +103,34 @@ MIGRATIONS = [
           ON telegram_callback_actions(max_chat_id, max_msg_id);
         """,
     ),
+    Migration(
+        5,
+        "delivered_media_parts",
+        """
+        CREATE TABLE IF NOT EXISTS delivered_media_parts (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            max_chat_id      TEXT NOT NULL,
+            base_max_msg_id  TEXT NOT NULL,
+            attachment_index INTEGER NOT NULL,
+            kind             TEXT NOT NULL,
+            tg_msg_id        INTEGER NOT NULL,
+            tg_topic_id      INTEGER,
+            source           TEXT NOT NULL,
+            media_chat_id    TEXT,
+            media_msg_id     TEXT,
+            reference_kind   TEXT,
+            reference_id     TEXT,
+            created_at       INTEGER NOT NULL,
+            updated_at       INTEGER NOT NULL,
+            UNIQUE(max_chat_id, base_max_msg_id, attachment_index, kind)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_delivered_media_base
+          ON delivered_media_parts(max_chat_id, base_max_msg_id);
+        CREATE INDEX IF NOT EXISTS idx_delivered_media_reference
+          ON delivered_media_parts(max_chat_id, base_max_msg_id, kind, reference_kind, reference_id);
+        """,
+    ),
 ]
 
 

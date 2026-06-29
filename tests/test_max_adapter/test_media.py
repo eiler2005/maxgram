@@ -18,6 +18,75 @@ def write_minimal_mp4_with_duration(path, *, seconds: int, timescale: int = 1000
 
 
 @pytest.mark.asyncio
+async def test_download_attachment_populates_media_part_metadata(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    media = adapter._adapter._media
+    adapter.url_result = (str(tmp_path / "tmp" / "photo.jpg"), "photo.jpg")
+    adapter.file_result = (str(tmp_path / "tmp" / "doc.pdf"), "doc.pdf")
+
+    async def fake_download_video_by_id(*args, **kwargs):
+        return str(tmp_path / "tmp" / "video.mp4"), "video.mp4"
+
+    async def fake_download_audio_by_protocol(*args, **kwargs):
+        return str(tmp_path / "tmp" / "voice.ogg"), "voice.ogg", False
+
+    media._download_video_by_id = fake_download_video_by_id
+    media._download_audio_by_protocol = fake_download_audio_by_protocol
+
+    photo = await media._download_attachment(
+        "chat-1",
+        "msg-1",
+        SimpleNamespace(type="PHOTO", base_url="https://cdn.example/photo.jpg"),
+        index=0,
+    )
+    video = await media._download_attachment(
+        "chat-1",
+        "msg-1",
+        SimpleNamespace(type="VIDEO", video_id=555),
+        index=1,
+    )
+    audio = await media._download_attachment(
+        "chat-1",
+        "msg-1",
+        SimpleNamespace(type="AUDIO", audio_id=92),
+        index=2,
+    )
+    document = await media._download_attachment(
+        "chat-1",
+        "msg-1",
+        SimpleNamespace(type="FILE", file_id=77, filename="doc.pdf"),
+        index=3,
+    )
+
+    assert [(item.kind, item.attachment_index) for item in (photo, video, audio, document)] == [
+        ("photo", 0),
+        ("video", 1),
+        ("audio", 2),
+        ("document", 3),
+    ]
+    assert all(item.media_chat_id == "chat-1" for item in (photo, video, audio, document))
+    assert all(item.media_msg_id == "msg-1" for item in (photo, video, audio, document))
+    assert photo.reference_kind is None
+    assert photo.reference_id is None
+    assert media._attachment_reference(SimpleNamespace(type="PHOTO", id="opaque-photo-ref"), "PHOTO") == (
+        None,
+        None,
+    )
+    assert media._attachment_reference(SimpleNamespace(type="PHOTO", photo_id=11), "PHOTO") == (
+        "file_id",
+        "11",
+    )
+    assert (video.reference_kind, video.reference_id) == ("video_id", "555")
+    assert (audio.reference_kind, audio.reference_id) == ("audio_id", "92")
+    assert (document.reference_kind, document.reference_id) == ("file_id", "77")
+
+
+@pytest.mark.asyncio
 async def test_download_audio_reference_refreshes_raw_history_url(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

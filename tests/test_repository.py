@@ -39,6 +39,7 @@ async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
             (2, "pending_outbound_messages"),
             (3, "pending_inbound_messages"),
             (4, "telegram_callback_actions"),
+            (5, "delivered_media_parts"),
         ]
 
         async with db.execute(
@@ -64,6 +65,12 @@ async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
         ) as cur:
             row = await cur.fetchone()
         assert row["name"] == "telegram_callback_actions"
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'delivered_media_parts'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["name"] == "delivered_media_parts"
     finally:
         await db.close()
 
@@ -645,6 +652,70 @@ async def test_pending_media_queue_lifecycle_is_idempotent(tmp_path):
         await repo.mark_pending_media_delivered(first_id, tg_msg_id=999, now=80)
         stats = await repo.count_pending_media()
         assert stats == {"pending_count": 0, "oldest_created_at": None}
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_delivered_media_parts_are_idempotent_and_findable(tmp_path):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    try:
+        await repo.save_delivered_media_part(
+            max_chat_id="chat-1",
+            base_max_msg_id="m1",
+            attachment_index=2,
+            kind="photo",
+            tg_msg_id=101,
+            tg_topic_id=12,
+            source="late_media_recovery",
+            media_chat_id="chat-1",
+            media_msg_id="m1",
+            reference_kind="file_id",
+            reference_id="file-2",
+        )
+        await repo.save_delivered_media_part(
+            max_chat_id="chat-1",
+            base_max_msg_id="m1",
+            attachment_index=2,
+            kind="photo",
+            tg_msg_id=999,
+            tg_topic_id=12,
+            source="duplicate",
+            media_chat_id="chat-1",
+            media_msg_id="m1",
+            reference_kind="file_id",
+            reference_id="file-2",
+        )
+
+        assert await _count_rows(repo, "delivered_media_parts") == 1
+        exact = await repo.find_delivered_media_part(
+            max_chat_id="chat-1",
+            base_max_msg_id="m1",
+            attachment_index=2,
+            kind="photo",
+        )
+        assert exact is not None
+        assert exact.tg_msg_id == 101
+        assert exact.source == "late_media_recovery"
+        by_reference = await repo.find_delivered_media_part_by_reference(
+            max_chat_id="chat-1",
+            base_max_msg_id="m1",
+            kind="photo",
+            reference_kind="file_id",
+            reference_id="file-2",
+        )
+        assert by_reference is not None
+        assert by_reference.tg_msg_id == 101
+        assert await repo.has_delivered_media_parts(
+            max_chat_id="chat-1",
+            base_max_msg_id="m1",
+        ) is True
+        assert await repo.has_delivered_media_parts(
+            max_chat_id="chat-1",
+            base_max_msg_id="missing",
+        ) is False
     finally:
         await repo.close()
 

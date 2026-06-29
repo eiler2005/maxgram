@@ -79,6 +79,7 @@ src/
 │   └── repos/
 │       ├── bindings.py       chat_bindings
 │       ├── messages.py       message_map, tg_reply_map
+│       ├── delivered_media.py delivered_media_parts
 │       ├── delivery.py       delivery_log and activity counters
 │       ├── pending_media.py  durable media retry queue
 │       ├── pending_inbound.py durable MAX→TG text retry queue
@@ -221,6 +222,7 @@ MAX WebSocket event
               │     └─ если нет → _resolve_chat_title() → tg.create_topic()
               ├─ проверяет binding.mode (disabled → skip)
               └─► _forward_to_telegram()
+                    ├─ сверяет media parts через delivered_media_parts
                     ├─ фото → tg.send_photo()
                     ├─ видео → tg.send_video()
                     ├─ аудио → tg.send_audio()
@@ -435,6 +437,7 @@ Routine recovery deltas from auto scans are quiet: новые registry rows, unm
 
 - `bindings.py` — chat bindings and topic mappings
 - `messages.py` — `message_map`, `tg_reply_map`
+- `delivered_media.py` — `delivered_media_parts` per-attachment media idempotency
 - `delivery.py` — delivery log and activity counters
 - `pending_media.py` — durable media retry queue
 - `pending_inbound.py` — durable MAX→TG text retry queue
@@ -564,6 +567,7 @@ SQLite остаётся источником состояния и delivery meta
 
 - `message_map` — дедупликация и reply routing
 - `tg_reply_map` — дополнительные TG message ids для reply routing поздно досланных медиа
+- `delivered_media_parts` — per-index/per-kind идемпотентность MAX media после edit/late recovery; только metadata без текста, raw payload, signed URL или token
 - `delivery_log` — high-level статус доставки
 - `pending_inbound_messages` — durable retry для MAX→TG текстов
 - `pending_outbound_messages` — durable retry для TG→MAX текстов; медиа не сохраняются
@@ -593,6 +597,22 @@ message_map (
     direction   TEXT,   -- inbound | outbound
     created_at  INTEGER,
     UNIQUE(max_msg_id, max_chat_id)
+)
+
+-- Доставленные media parts (meta only)
+delivered_media_parts (
+    max_chat_id      TEXT,
+    base_max_msg_id  TEXT,
+    attachment_index INTEGER,
+    kind             TEXT,
+    tg_msg_id        INTEGER,
+    tg_topic_id      INTEGER,
+    source           TEXT,
+    media_chat_id    TEXT,
+    media_msg_id     TEXT,
+    reference_kind   TEXT,
+    reference_id     TEXT,
+    UNIQUE(max_chat_id, base_max_msg_id, attachment_index, kind)
 )
 
 -- Лог доставки (meta only, без текста)

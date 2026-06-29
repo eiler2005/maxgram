@@ -37,6 +37,7 @@ All notable changes to Maxgram are documented here.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
 
 ### Fixed
+- **Per-attachment MAX edit media delivery** — delivered MAX media parts are now tracked meta-only by canonical message id, attachment index, and kind. Edited messages only send newly added/missing photo/video/audio/file parts, late duplicates can recover remaining parts after partial recovery, and delayed finalizers no longer emit false terminal warnings for already delivered attachments.
 - **Edited MAX media events** — PyMax `MessageStatus.EDITED` and `EDITED` now normalize to one edit status, and edit-event media failures no longer create a separate delayed finalizer when the base MAX message was already delivered. This prevents false `Фото MAX #N так и не удалось загрузить автоматически` warnings after message edits.
 - **MAX video duration metadata** — delayed and direct MAX video forwarding now normalizes millisecond video durations and falls back to MP4 `mvhd` metadata when MAX omits duration, preventing Telegram videos from showing `00:00` or multi-hour bogus durations.
 - **Stale MAX TCP readiness** — `PymaxClientAdapter.is_connected()` now checks `ConnectionManager.is_open()` and `transport.connected`, so a closed TCP socket no longer looks healthy and `Not connected to the server` send failures can trigger reconnect recovery.
@@ -48,6 +49,7 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added regressions for `delivered_media_parts` SQLite idempotency, per-index edit-media dedupe, partial late-media recovery continuation, edit finalizer suppression by matching part, and successful attachment metadata propagation.
 - Added regressions for PyMax enum edit-status normalization and suppression of false edit-event media finalizers after the base message has already delivered.
 - Added coverage for MAX share/inline-keyboard URL extraction, Telegram URL buttons, owner-only MAX join callbacks, callback action SQLite lifecycle, and PyMax join group/channel fallback.
 - Added regressions for MAX video duration normalization and MP4 metadata fallback on durable video retry.

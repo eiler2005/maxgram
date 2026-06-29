@@ -69,6 +69,68 @@ class MaxMediaService:
         name = getattr(attach, "filename", None) or getattr(attach, "name", None)
         return self._fix_filename_encoding(name) if name else None
 
+    def _attachment_reference(
+        self,
+        attach,
+        atype: str,
+    ) -> tuple[Optional[str], Optional[str]]:
+        if atype == "VIDEO":
+            ref = (
+                getattr(attach, "video_id", None)
+                or getattr(attach, "videoId", None)
+                or getattr(attach, "id", None)
+            )
+            return ("video_id", str(ref)) if ref is not None else (None, None)
+        if atype == "AUDIO":
+            audio_id = getattr(attach, "audio_id", None) or getattr(attach, "audioId", None)
+            if audio_id is not None:
+                return "audio_id", str(audio_id)
+            file_id = (
+                getattr(attach, "file_id", None)
+                or getattr(attach, "fileId", None)
+                or getattr(attach, "id", None)
+            )
+            return ("file_id", str(file_id)) if file_id is not None else (None, None)
+        if atype == "PHOTO":
+            file_id = (
+                getattr(attach, "file_id", None)
+                or getattr(attach, "fileId", None)
+                or getattr(attach, "photo_id", None)
+                or getattr(attach, "photoId", None)
+            )
+            return ("file_id", str(file_id)) if file_id is not None else (None, None)
+        if atype == "FILE":
+            file_id = (
+                getattr(attach, "file_id", None)
+                or getattr(attach, "fileId", None)
+                or getattr(attach, "id", None)
+            )
+            return ("file_id", str(file_id)) if file_id is not None else (None, None)
+        return None, None
+
+    def _with_attachment_metadata(
+        self,
+        attachment: MaxAttachment,
+        *,
+        chat_id: str,
+        msg_id: str,
+        index: int,
+        attach=None,
+        reference_kind: Optional[str] = None,
+        reference_id: Optional[str] = None,
+    ) -> MaxAttachment:
+        if attach is not None and (not reference_kind or reference_id is None):
+            reference_kind, reference_id = self._attachment_reference(
+                attach,
+                self._normalize_attachment_type(self._attachment_type_name(attach)),
+            )
+        attachment.attachment_index = index
+        attachment.media_chat_id = str(chat_id) if chat_id is not None else None
+        attachment.media_msg_id = str(msg_id) if msg_id is not None else None
+        attachment.reference_kind = reference_kind
+        attachment.reference_id = str(reference_id) if reference_id is not None else None
+        return attachment
+
     def _duration_seconds(self, duration, *, kind: Optional[str] = None) -> Optional[int]:
         """Normalize MAX media duration to Telegram seconds.
 
@@ -198,6 +260,7 @@ class MaxMediaService:
             if max_payload.is_safe_field_name(name)
         )
 
+    @staticmethod
     def _fix_filename_encoding(name: str) -> str:
         """Fix cp1251-as-latin-1 mojibake in filenames from MAX.
 
@@ -666,14 +729,21 @@ class MaxMediaService:
         if not local_path:
             return None
         normalized_duration = self._video_duration_seconds(duration, local_path)
-        return MaxAttachment(
-            kind="video",
-            local_path=local_path,
-            filename=filename,
-            duration=normalized_duration,
-            width=width,
-            height=height,
-            source_type=source_type,
+        return self._with_attachment_metadata(
+            MaxAttachment(
+                kind="video",
+                local_path=local_path,
+                filename=filename,
+                duration=normalized_duration,
+                width=width,
+                height=height,
+                source_type=source_type,
+            ),
+            chat_id=chat_id,
+            msg_id=msg_id,
+            index=attachment_index,
+            reference_kind="video_id",
+            reference_id=str(video_id),
         )
 
     async def download_audio_reference(
@@ -852,14 +922,21 @@ class MaxMediaService:
             flow_id=flow_id,
         )
         if local_path:
-            return MaxAttachment(
-                kind="audio",
-                local_path=local_path,
-                filename=filename,
-                duration=normalized_duration,
-                width=None,
-                height=None,
-                source_type=source_type,
+            return self._with_attachment_metadata(
+                MaxAttachment(
+                    kind="audio",
+                    local_path=local_path,
+                    filename=filename,
+                    duration=normalized_duration,
+                    width=None,
+                    height=None,
+                    source_type=source_type,
+                ),
+                chat_id=chat_id,
+                msg_id=msg_id,
+                index=attachment_index,
+                reference_kind=reference_kind,
+                reference_id=str(reference_id),
             )
         if protocol_hard_stop:
             return None
@@ -875,14 +952,21 @@ class MaxMediaService:
         )
         if not local_path:
             return None
-        return MaxAttachment(
-            kind="audio",
-            local_path=local_path,
-            filename=filename,
-            duration=normalized_duration,
-            width=None,
-            height=None,
-            source_type=source_type,
+        return self._with_attachment_metadata(
+            MaxAttachment(
+                kind="audio",
+                local_path=local_path,
+                filename=filename,
+                duration=normalized_duration,
+                width=None,
+                height=None,
+                source_type=source_type,
+            ),
+            chat_id=chat_id,
+            msg_id=msg_id,
+            index=attachment_index,
+            reference_kind=reference_kind,
+            reference_id=str(reference_id),
         )
 
     async def _download_attachment(self, chat_id: str, msg_id: str,
@@ -910,14 +994,20 @@ class MaxMediaService:
                     filename_hint, ".jpg", expected_kind="photo", flow_id=flow_id,
                 )
             if local_path:
-                return MaxAttachment(
-                    kind="photo",
-                    local_path=local_path,
-                    filename=filename,
-                    duration=None,
-                    width=getattr(attach, "width", None),
-                    height=getattr(attach, "height", None),
-                    source_type=raw_type,
+                return self._with_attachment_metadata(
+                    MaxAttachment(
+                        kind="photo",
+                        local_path=local_path,
+                        filename=filename,
+                        duration=None,
+                        width=getattr(attach, "width", None),
+                        height=getattr(attach, "height", None),
+                        source_type=raw_type,
+                    ),
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                    index=index,
+                    attach=attach,
                 )
             return None
 
@@ -958,14 +1048,20 @@ class MaxMediaService:
                     getattr(attach, "duration", None),
                     local_path,
                 )
-                return MaxAttachment(
-                    kind="video",
-                    local_path=local_path,
-                    filename=filename,
-                    duration=duration,
-                    width=getattr(attach, "width", None),
-                    height=getattr(attach, "height", None),
-                    source_type=raw_type,
+                return self._with_attachment_metadata(
+                    MaxAttachment(
+                        kind="video",
+                        local_path=local_path,
+                        filename=filename,
+                        duration=duration,
+                        width=getattr(attach, "width", None),
+                        height=getattr(attach, "height", None),
+                        source_type=raw_type,
+                    ),
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                    index=index,
+                    attach=attach,
                 )
             return None
 
@@ -1035,14 +1131,23 @@ class MaxMediaService:
                 )
                 return None
             if local_path:
-                return MaxAttachment(
-                    kind="audio",
-                    local_path=local_path,
-                    filename=filename,
-                    duration=self._duration_seconds(getattr(attach, "duration", None), kind="audio"),
-                    width=None,
-                    height=None,
-                    source_type=raw_type,
+                return self._with_attachment_metadata(
+                    MaxAttachment(
+                        kind="audio",
+                        local_path=local_path,
+                        filename=filename,
+                        duration=self._duration_seconds(
+                            getattr(attach, "duration", None),
+                            kind="audio",
+                        ),
+                        width=None,
+                        height=None,
+                        source_type=raw_type,
+                    ),
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                    index=index,
+                    attach=attach,
                 )
             return None
 
@@ -1055,14 +1160,20 @@ class MaxMediaService:
                 filename_hint, expected_kind="document", flow_id=flow_id,
             )
             if local_path:
-                return MaxAttachment(
-                    kind="document",
-                    local_path=local_path,
-                    filename=filename,
-                    duration=None,
-                    width=None,
-                    height=None,
-                    source_type=raw_type,
+                return self._with_attachment_metadata(
+                    MaxAttachment(
+                        kind="document",
+                        local_path=local_path,
+                        filename=filename,
+                        duration=None,
+                        width=None,
+                        height=None,
+                        source_type=raw_type,
+                    ),
+                    chat_id=chat_id,
+                    msg_id=msg_id,
+                    index=index,
+                    attach=attach,
                 )
             return None
 

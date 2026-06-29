@@ -45,6 +45,11 @@ class MaxAttachment:
     width: Optional[int]
     height: Optional[int]
     source_type: Optional[str]    # исходный тип вложения в MAX/pymax
+    attachment_index: Optional[int] = field(default=None, compare=False)
+    media_chat_id: Optional[str] = field(default=None, compare=False)
+    media_msg_id: Optional[str] = field(default=None, compare=False)
+    reference_kind: Optional[str] = field(default=None, compare=False)
+    reference_id: Optional[str] = field(default=None, compare=False)
 
 
 @dataclass

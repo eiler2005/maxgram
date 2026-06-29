@@ -55,6 +55,24 @@ class TgReplyMapping:
 
 
 @dataclass
+class DeliveredMediaPart:
+    max_chat_id: str
+    base_max_msg_id: str
+    attachment_index: int
+    kind: str
+    tg_msg_id: int
+    tg_topic_id: Optional[int]
+    source: str
+    created_at: int = 0
+    updated_at: int = 0
+    media_chat_id: Optional[str] = None
+    media_msg_id: Optional[str] = None
+    reference_kind: Optional[str] = None
+    reference_id: Optional[str] = None
+    id: Optional[int] = None
+
+
+@dataclass
 class TelegramCallbackActionRecord:
     id: str
     action_type: str

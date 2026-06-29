@@ -101,9 +101,305 @@ def edit_base_max_msg_id(max_msg_id: object, status: object | None = None) -> st
     return text if status_text == "EDITED" else None
 
 
+def canonical_media_base_msg_id(max_msg_id: object, status: object | None = None) -> str | None:
+    return edit_base_max_msg_id(max_msg_id, status) or (str(max_msg_id or "").strip() or None)
+
+
+def media_part_kind(kind: object) -> str:
+    return str(kind or "").strip().lower() or "unknown"
+
+
+def attachment_part_index(attachment: MaxAttachment, fallback_index: int) -> int:
+    try:
+        value = getattr(attachment, "attachment_index", None)
+        return int(value) if value is not None else int(fallback_index)
+    except (TypeError, ValueError):
+        return int(fallback_index)
+
+
+def media_part_reference(source) -> tuple[str | None, str | None]:
+    reference_kind = getattr(source, "reference_kind", None)
+    reference_id = getattr(source, "reference_id", None)
+    if reference_kind and reference_id is not None:
+        return str(reference_kind), str(reference_id)
+    return None, None
+
+
+async def has_any_delivered_media_parts(
+    *,
+    repo: Repository,
+    max_chat_id: str,
+    base_max_msg_id: str,
+) -> bool:
+    checker = getattr(repo, "has_delivered_media_parts", None)
+    if not callable(checker):
+        return False
+    return bool(
+        await checker(
+            max_chat_id=max_chat_id,
+            base_max_msg_id=base_max_msg_id,
+        )
+    )
+
+
+async def find_delivered_media_part(
+    *,
+    repo: Repository,
+    max_chat_id: str,
+    base_max_msg_id: str,
+    attachment_index: int,
+    kind: str,
+    reference_kind: str | None = None,
+    reference_id: str | None = None,
+):
+    finder = getattr(repo, "find_delivered_media_part", None)
+    if callable(finder):
+        exact = await finder(
+            max_chat_id=max_chat_id,
+            base_max_msg_id=base_max_msg_id,
+            attachment_index=attachment_index,
+            kind=media_part_kind(kind),
+        )
+        if exact is not None:
+            return exact
+    ref_finder = getattr(repo, "find_delivered_media_part_by_reference", None)
+    if callable(ref_finder) and reference_kind and reference_id is not None:
+        return await ref_finder(
+            max_chat_id=max_chat_id,
+            base_max_msg_id=base_max_msg_id,
+            kind=media_part_kind(kind),
+            reference_kind=reference_kind,
+            reference_id=str(reference_id),
+        )
+    return None
+
+
+async def is_media_part_delivered(
+    *,
+    repo: Repository,
+    max_chat_id: str,
+    base_max_msg_id: str,
+    attachment_index: int,
+    kind: str,
+    reference_kind: str | None = None,
+    reference_id: str | None = None,
+) -> bool:
+    return (
+        await find_delivered_media_part(
+            repo=repo,
+            max_chat_id=max_chat_id,
+            base_max_msg_id=base_max_msg_id,
+            attachment_index=attachment_index,
+            kind=kind,
+            reference_kind=reference_kind,
+            reference_id=reference_id,
+        )
+        is not None
+    )
+
+
+async def is_attachment_delivered(
+    *,
+    repo: Repository,
+    msg,
+    attachment: MaxAttachment,
+    fallback_index: int,
+) -> bool:
+    base_msg_id = canonical_media_base_msg_id(msg.msg_id, getattr(msg, "status", None))
+    if not base_msg_id:
+        return False
+    reference_kind, reference_id = media_part_reference(attachment)
+    return await is_media_part_delivered(
+        repo=repo,
+        max_chat_id=msg.chat_id,
+        base_max_msg_id=base_msg_id,
+        attachment_index=attachment_part_index(attachment, fallback_index),
+        kind=attachment.kind,
+        reference_kind=reference_kind,
+        reference_id=reference_id,
+    )
+
+
+async def undelivered_attachments(
+    *,
+    repo: Repository,
+    msg,
+    attachments: list[MaxAttachment],
+) -> list[tuple[int, MaxAttachment]]:
+    result: list[tuple[int, MaxAttachment]] = []
+    for fallback_index, attachment in enumerate(attachments):
+        part_index = attachment_part_index(attachment, fallback_index)
+        if await is_attachment_delivered(
+            repo=repo,
+            msg=msg,
+            attachment=attachment,
+            fallback_index=fallback_index,
+        ):
+            continue
+        result.append((part_index, attachment))
+    return result
+
+
+async def is_failure_delivered(
+    *,
+    repo: Repository,
+    msg,
+    failure: MaxAttachmentFailure,
+) -> bool:
+    base_msg_id = canonical_media_base_msg_id(msg.msg_id, getattr(msg, "status", None))
+    if not base_msg_id:
+        return False
+    return await is_media_part_delivered(
+        repo=repo,
+        max_chat_id=msg.chat_id,
+        base_max_msg_id=base_msg_id,
+        attachment_index=int(failure.index),
+        kind=failure.kind,
+        reference_kind=failure.reference_kind,
+        reference_id=failure.reference_id,
+    )
+
+
+async def are_failures_delivered_or_legacy_resolved(
+    *,
+    repo: Repository,
+    msg,
+    failures: list[MaxAttachmentFailure],
+) -> bool:
+    if not failures:
+        return False
+    unresolved = []
+    for failure in failures:
+        if not await is_failure_delivered(repo=repo, msg=msg, failure=failure):
+            unresolved.append(failure)
+    if not unresolved:
+        return True
+    return await is_edit_media_resolved_by_base_delivery(repo=repo, msg=msg)
+
+
+async def has_active_pending_media_part(
+    *,
+    repo: Repository,
+    msg,
+    attachment_index: int,
+    kind: str,
+) -> bool:
+    finder = getattr(repo, "find_active_pending_media", None)
+    if not callable(finder):
+        return False
+    candidate_ids = [str(getattr(msg, "msg_id", "") or "")]
+    base_msg_id = canonical_media_base_msg_id(
+        getattr(msg, "msg_id", None),
+        getattr(msg, "status", None),
+    )
+    if base_msg_id and base_msg_id not in candidate_ids:
+        candidate_ids.append(base_msg_id)
+    for candidate_id in candidate_ids:
+        if not candidate_id:
+            continue
+        existing = await finder(
+            max_chat_id=msg.chat_id,
+            max_msg_id=candidate_id,
+            attachment_index=int(attachment_index),
+            kind=media_part_kind(kind),
+        )
+        if existing is not None:
+            return True
+    return False
+
+
+async def save_delivered_attachment_part(
+    *,
+    repo: Repository,
+    msg,
+    attachment: MaxAttachment,
+    tg_msg_id: int,
+    tg_topic_id: int,
+    source: str,
+    fallback_index: int,
+    commit: bool = True,
+) -> None:
+    saver = getattr(repo, "save_delivered_media_part", None)
+    if not callable(saver) or not tg_msg_id:
+        return
+    base_msg_id = canonical_media_base_msg_id(msg.msg_id, getattr(msg, "status", None))
+    if not base_msg_id:
+        return
+    reference_kind, reference_id = media_part_reference(attachment)
+    await saver(
+        max_chat_id=msg.chat_id,
+        base_max_msg_id=base_msg_id,
+        attachment_index=attachment_part_index(attachment, fallback_index),
+        kind=media_part_kind(attachment.kind),
+        tg_msg_id=int(tg_msg_id),
+        tg_topic_id=tg_topic_id,
+        source=source,
+        media_chat_id=getattr(attachment, "media_chat_id", None) or msg.chat_id,
+        media_msg_id=getattr(attachment, "media_msg_id", None) or msg.msg_id,
+        reference_kind=reference_kind,
+        reference_id=reference_id,
+        commit=commit,
+    )
+
+
+async def save_delivered_job_part(
+    *,
+    repo: Repository,
+    job: PendingMediaDownload,
+    tg_msg_id: int,
+    source: str,
+    commit: bool = True,
+) -> None:
+    saver = getattr(repo, "save_delivered_media_part", None)
+    if not callable(saver) or not tg_msg_id:
+        return
+    base_msg_id = canonical_media_base_msg_id(job.max_msg_id)
+    if not base_msg_id:
+        return
+    await saver(
+        max_chat_id=job.max_chat_id,
+        base_max_msg_id=base_msg_id,
+        attachment_index=int(job.attachment_index),
+        kind=media_part_kind(job.kind),
+        tg_msg_id=int(tg_msg_id),
+        tg_topic_id=job.tg_topic_id,
+        source=source,
+        media_chat_id=job.media_chat_id,
+        media_msg_id=job.media_msg_id,
+        reference_kind=job.reference_kind if job.reference_id else None,
+        reference_id=job.reference_id or None,
+        commit=commit,
+    )
+
+
+async def is_job_part_delivered(
+    *,
+    repo: Repository,
+    job: PendingMediaDownload,
+):
+    base_msg_id = canonical_media_base_msg_id(job.max_msg_id)
+    if not base_msg_id:
+        return None
+    return await find_delivered_media_part(
+        repo=repo,
+        max_chat_id=job.max_chat_id,
+        base_max_msg_id=base_msg_id,
+        attachment_index=int(job.attachment_index),
+        kind=job.kind,
+        reference_kind=job.reference_kind if job.reference_id else None,
+        reference_id=job.reference_id or None,
+    )
+
+
 async def is_edit_media_resolved_by_base_delivery(*, repo: Repository, msg) -> bool:
     base_msg_id = edit_base_max_msg_id(msg.msg_id, getattr(msg, "status", None))
     if not base_msg_id or base_msg_id == msg.msg_id:
+        return False
+    if await has_any_delivered_media_parts(
+        repo=repo,
+        max_chat_id=msg.chat_id,
+        base_max_msg_id=base_msg_id,
+    ):
         return False
     latest_delivery = await repo.get_latest_delivery(msg.chat_id, base_msg_id, "inbound")
     return is_late_duplicate_resolved_delivery(latest_delivery)
@@ -116,6 +412,36 @@ async def mark_pending_media_delivered_if_late_recovered(
     flow_id: str,
 ) -> bool:
     if not job.id:
+        return False
+    delivered_part = await is_job_part_delivered(repo=repo, job=job)
+    if delivered_part is not None:
+        await repo.mark_pending_media_delivered(
+            job.id,
+            tg_msg_id=int(getattr(delivered_part, "tg_msg_id", 0) or 0),
+        )
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.media_retry.resolved",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="media_retry",
+            outcome="delivered",
+            reason="media_part_already_delivered",
+            max_chat_id=job.max_chat_id,
+            max_msg_id=job.max_msg_id,
+            tg_topic_id=job.tg_topic_id,
+            pending_media_id=job.id,
+            attachment_index=job.attachment_index,
+            kind=job.kind,
+        )
+        return True
+    base_msg_id = canonical_media_base_msg_id(job.max_msg_id)
+    if base_msg_id and await has_any_delivered_media_parts(
+        repo=repo,
+        max_chat_id=job.max_chat_id,
+        base_max_msg_id=base_msg_id,
+    ):
         return False
     latest_delivery = await repo.get_latest_delivery(job.max_chat_id, job.max_msg_id, "inbound")
     if not is_late_duplicate_resolved_delivery(latest_delivery):
@@ -177,9 +503,14 @@ async def enqueue_retryable_media_failures(
     display_failures: list[MaxAttachmentFailure] = []
     now = int(time.time())
     first_retry_at = now + 60
-    edit_media_resolved = await is_edit_media_resolved_by_base_delivery(repo=repo, msg=msg)
+    legacy_edit_media_resolved = await is_edit_media_resolved_by_base_delivery(repo=repo, msg=msg)
     for failure in msg.attachment_failures:
-        if edit_media_resolved:
+        media_part_delivered = await is_failure_delivered(
+            repo=repo,
+            msg=msg,
+            failure=failure,
+        )
+        if media_part_delivered or legacy_edit_media_resolved:
             log_event(
                 logger,
                 logging.INFO,
@@ -188,7 +519,11 @@ async def enqueue_retryable_media_failures(
                 direction="inbound",
                 stage="media_retry",
                 outcome="skipped",
-                reason="edit_base_media_already_delivered",
+                reason=(
+                    "media_part_already_delivered"
+                    if media_part_delivered
+                    else "edit_base_media_already_delivered"
+                ),
                 max_chat_id=msg.chat_id,
                 max_msg_id=msg.msg_id,
                 tg_topic_id=topic_id,
@@ -344,14 +679,22 @@ async def find_existing_pending_media_for_failure(
 ) -> PendingMediaDownload | None:
     finder = getattr(repo, "find_active_pending_media", None)
     if callable(finder):
-        existing = await finder(
-            max_chat_id=msg.chat_id,
-            max_msg_id=msg.msg_id,
-            attachment_index=failure.index,
-            kind=failure.kind,
+        candidate_ids = [str(msg.msg_id)]
+        base_msg_id = canonical_media_base_msg_id(
+            getattr(msg, "msg_id", None),
+            getattr(msg, "status", None),
         )
-        if existing is not None:
-            return existing
+        if base_msg_id and base_msg_id not in candidate_ids:
+            candidate_ids.append(base_msg_id)
+        for candidate_id in candidate_ids:
+            existing = await finder(
+                max_chat_id=msg.chat_id,
+                max_msg_id=candidate_id,
+                attachment_index=failure.index,
+                kind=media_part_kind(failure.kind),
+            )
+            if existing is not None:
+                return existing
 
     ref_finder = getattr(repo, "find_active_pending_media_by_reference", None)
     if (
@@ -658,6 +1001,12 @@ async def process_pending_media_download(
             max_chat_id=job.max_chat_id,
             max_msg_id=job.max_msg_id,
             tg_topic_id=job.tg_topic_id,
+            source="pending_media",
+        )
+        await save_delivered_job_part(
+            repo=repo,
+            job=job,
+            tg_msg_id=tg_msg_id,
             source="pending_media",
         )
         await repo.mark_pending_media_delivered(

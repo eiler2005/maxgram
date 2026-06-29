@@ -50,6 +50,7 @@ class DummyRepo:
         self.reply_mappings = {}
         self.saved_reply_mappings = []
         self.max_to_tg_mappings = {}
+        self.delivered_media_parts = {}
         self.pending_stats = {"pending_count": 0, "oldest_created_at": None}
         self.duplicates: set[tuple[str, str]] = set()
         self.phantom_bindings = []
@@ -209,6 +210,59 @@ class DummyRepo:
                                     tg_topic_id: int | None, *, source: str, commit: bool = True):
         self.reply_mappings[tg_msg_id] = max_msg_id
         self.saved_reply_mappings.append((tg_msg_id, max_chat_id, max_msg_id, tg_topic_id, source))
+
+    async def save_delivered_media_part(self, *, max_chat_id: str, base_max_msg_id: str,
+                                        attachment_index: int, kind: str, tg_msg_id: int,
+                                        tg_topic_id: int | None, source: str,
+                                        media_chat_id: str | None = None,
+                                        media_msg_id: str | None = None,
+                                        reference_kind: str | None = None,
+                                        reference_id: str | None = None,
+                                        commit: bool = True):
+        key = (max_chat_id, base_max_msg_id, attachment_index, kind)
+        self.delivered_media_parts.setdefault(
+            key,
+            SimpleNamespace(
+                max_chat_id=max_chat_id,
+                base_max_msg_id=base_max_msg_id,
+                attachment_index=attachment_index,
+                kind=kind,
+                tg_msg_id=tg_msg_id,
+                tg_topic_id=tg_topic_id,
+                source=source,
+                media_chat_id=media_chat_id,
+                media_msg_id=media_msg_id,
+                reference_kind=reference_kind,
+                reference_id=reference_id,
+            ),
+        )
+
+    async def find_delivered_media_part(self, *, max_chat_id: str, base_max_msg_id: str,
+                                        attachment_index: int, kind: str):
+        return self.delivered_media_parts.get(
+            (max_chat_id, base_max_msg_id, attachment_index, kind)
+        )
+
+    async def find_delivered_media_part_by_reference(self, *, max_chat_id: str,
+                                                     base_max_msg_id: str, kind: str,
+                                                     reference_kind: str,
+                                                     reference_id: str):
+        for part in self.delivered_media_parts.values():
+            if (
+                part.max_chat_id == max_chat_id
+                and part.base_max_msg_id == base_max_msg_id
+                and part.kind == kind
+                and part.reference_kind == reference_kind
+                and part.reference_id == reference_id
+            ):
+                return part
+        return None
+
+    async def has_delivered_media_parts(self, *, max_chat_id: str, base_max_msg_id: str):
+        return any(
+            part.max_chat_id == max_chat_id and part.base_max_msg_id == base_max_msg_id
+            for part in self.delivered_media_parts.values()
+        )
 
     async def create_callback_action(
         self,
@@ -1305,6 +1359,102 @@ async def test_duplicate_after_late_media_recovered_is_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_late_duplicate_after_partial_recovery_sends_remaining_part(tmp_path):
+    repo = DummyRepo()
+    chat_id = "-70000000000003"
+    repo.duplicates.add(("45", chat_id))
+    repo.binding_by_chat[chat_id] = ChatBinding(
+        chat_id,
+        99,
+        "Тестовая группа",
+        "active",
+        1,
+    )
+    repo.latest_deliveries[(chat_id, "45", "inbound")] = {
+        "status": "delivered",
+        "error": "late_media_recovered",
+    }
+    await repo.save_delivered_media_part(
+        max_chat_id=chat_id,
+        base_max_msg_id="45",
+        attachment_index=0,
+        kind="photo",
+        tg_msg_id=1001,
+        tg_topic_id=99,
+        source="late_media_recovery",
+    )
+    repo.pending_media.append(
+        PendingMediaDownload(
+            id=7,
+            max_chat_id=chat_id,
+            max_msg_id="45",
+            tg_topic_id=99,
+            attachment_index=1,
+            kind="photo",
+            source_type="PHOTO",
+            media_chat_id=chat_id,
+            media_msg_id="45",
+            reference_kind="late_duplicate",
+            reference_id="",
+            status="pending",
+        )
+    )
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+    first_path = Path(tmp_path) / "already.jpg"
+    first_path.write_bytes(b"old")
+    second_path = Path(tmp_path) / "remaining.jpg"
+    second_path.write_bytes(b"new")
+    msg = MaxMessage(
+        msg_id="45",
+        chat_id=chat_id,
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text=None,
+        attachments=[
+            MaxAttachment(
+                "photo",
+                str(first_path),
+                "already.jpg",
+                None,
+                640,
+                480,
+                "PHOTO",
+                attachment_index=0,
+            ),
+            MaxAttachment(
+                "photo",
+                str(second_path),
+                "remaining.jpg",
+                None,
+                640,
+                480,
+                "PHOTO",
+                attachment_index=1,
+            ),
+        ],
+        attachment_types=["PHOTO"],
+        rendered_texts=[],
+        message_type="CHANNEL",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == [("photo", "Досланное фото MAX #2")]
+    assert repo.pending_media[0].status == "delivered"
+    assert repo.pending_media[0].delivered_tg_msg_id == 1
+    assert (chat_id, "45", 1, "photo") in repo.delivered_media_parts
+    assert repo.saved_reply_mappings == [
+        (1, chat_id, "45", 99, "late_media_recovery"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_delivered_duplicate_with_media_is_skipped(tmp_path):
     repo = DummyRepo()
     repo.duplicates.add(("44", "-70000000000003"))
@@ -1325,6 +1475,63 @@ async def test_delivered_duplicate_with_media_is_skipped(tmp_path):
         sender_name="Тестовый Пользователь",
         text=None,
         attachments=[MaxAttachment("photo", str(photo_path), "delivered-photo.jpg", None, 640, 480, "PHOTO")],
+        attachment_types=["PHOTO"],
+        rendered_texts=[],
+        message_type="CHANNEL",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == []
+    assert repo.saved_reply_mappings == []
+    assert photo_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_delivered_duplicate_with_recorded_media_part_without_pending_is_skipped(tmp_path):
+    repo = DummyRepo()
+    chat_id = "-70000000000003"
+    repo.duplicates.add(("46", chat_id))
+    repo.latest_deliveries[(chat_id, "46", "inbound")] = {
+        "status": "delivered",
+        "error": "late_media_recovered",
+    }
+    await repo.save_delivered_media_part(
+        max_chat_id=chat_id,
+        base_max_msg_id="46",
+        attachment_index=0,
+        kind="photo",
+        tg_msg_id=1001,
+        tg_topic_id=99,
+        source="late_media_recovery",
+    )
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+    photo_path = Path(tmp_path) / "delivered-photo.jpg"
+    photo_path.write_bytes(b"jpg")
+    msg = MaxMessage(
+        msg_id="46",
+        chat_id=chat_id,
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text=None,
+        attachments=[
+            MaxAttachment(
+                "photo",
+                str(photo_path),
+                "delivered-photo.jpg",
+                None,
+                640,
+                480,
+                "PHOTO",
+                attachment_index=0,
+            )
+        ],
         attachment_types=["PHOTO"],
         rendered_texts=[],
         message_type="CHANNEL",
@@ -1947,6 +2154,145 @@ async def test_edit_photo_failure_after_delivered_base_does_not_enqueue_finalize
 
 
 @pytest.mark.asyncio
+async def test_edit_media_sends_only_new_attachment_parts(tmp_path):
+    repo = DummyRepo()
+    chat_id = "-70000000000003"
+    repo.binding_by_chat[chat_id] = SimpleNamespace(
+        max_chat_id=chat_id,
+        tg_topic_id=99,
+        title="Тестовая группа",
+        mode="active",
+    )
+    await repo.save_delivered_media_part(
+        max_chat_id=chat_id,
+        base_max_msg_id="mx-photo-1",
+        attachment_index=0,
+        kind="photo",
+        tg_msg_id=1001,
+        tg_topic_id=99,
+        source="late_media_recovery",
+    )
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+    old_path = Path(tmp_path) / "old.jpg"
+    old_path.write_bytes(b"old")
+    new_path = Path(tmp_path) / "new.jpg"
+    new_path.write_bytes(b"new")
+    msg = MaxMessage(
+        msg_id="mx-photo-1:EDITED",
+        chat_id=chat_id,
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text="",
+        attachments=[
+            MaxAttachment(
+                "photo",
+                str(old_path),
+                "old.jpg",
+                None,
+                10,
+                10,
+                "PHOTO",
+                attachment_index=0,
+            ),
+            MaxAttachment(
+                "photo",
+                str(new_path),
+                "new.jpg",
+                None,
+                10,
+                10,
+                "PHOTO",
+                attachment_index=1,
+            ),
+        ],
+        attachment_types=["PHOTO"],
+        rendered_texts=[],
+        message_type="CHANNEL",
+        status="EDITED",
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == [("photo", "[Тестовый Пользователь]")]
+    assert (chat_id, "mx-photo-1", 1, "photo") in repo.delivered_media_parts
+    assert repo.saved_reply_mappings == [
+        (1, chat_id, "mx-photo-1", 99, "media_part"),
+    ]
+    assert repo.delivery_logs[-1][0][3] == "delivered"
+    assert not new_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_edit_photo_failures_suppress_only_delivered_parts():
+    repo = DummyRepo()
+    chat_id = "-70000000000003"
+    repo.binding_by_chat[chat_id] = SimpleNamespace(
+        max_chat_id=chat_id,
+        tg_topic_id=99,
+        title="Тестовая группа",
+        mode="active",
+    )
+    await repo.save_delivered_media_part(
+        max_chat_id=chat_id,
+        base_max_msg_id="mx-photo-1",
+        attachment_index=0,
+        kind="photo",
+        tg_msg_id=1001,
+        tg_topic_id=99,
+        source="late_media_recovery",
+    )
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+    msg = MaxMessage(
+        msg_id="mx-photo-1:EDITED",
+        chat_id=chat_id,
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text="",
+        attachments=[],
+        attachment_types=["PHOTO"],
+        rendered_texts=[],
+        message_type="CHANNEL",
+        status="EDITED",
+        is_dm=False,
+        is_own=False,
+        raw=None,
+        attachment_failures=[
+            MaxAttachmentFailure(
+                kind="photo",
+                source_type="PHOTO",
+                filename=None,
+                index=0,
+                reason="download_failed",
+            ),
+            MaxAttachmentFailure(
+                kind="photo",
+                source_type="PHOTO",
+                filename=None,
+                index=1,
+                reason="download_failed",
+            ),
+        ],
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert tg_adapter.calls == [
+        ("text", "⏳ Фото MAX #2 загружается и будет дослано через пару минут"),
+    ]
+    assert len(repo.pending_media) == 1
+    assert repo.pending_media[0].max_msg_id == "mx-photo-1:EDITED"
+    assert repo.pending_media[0].attachment_index == 1
+    assert repo.delivery_logs[-1][0][3] == "partial"
+
+
+@pytest.mark.asyncio
 async def test_existing_pending_audio_failure_does_not_duplicate_placeholder():
     repo = DummyRepo()
     repo.binding_by_chat["200056208"] = SimpleNamespace(
@@ -2402,6 +2748,44 @@ async def test_pending_media_late_duplicate_finalizer_skips_after_late_recovery(
     assert tg_adapter.calls == []
     assert job.status == "delivered"
     assert job.delivered_tg_msg_id == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_media_edit_finalizer_skips_after_matching_part_delivery():
+    repo = DummyRepo()
+    chat_id = "-70000000000003"
+    await repo.save_delivered_media_part(
+        max_chat_id=chat_id,
+        base_max_msg_id="mx-photo-1",
+        attachment_index=0,
+        kind="photo",
+        tg_msg_id=1234,
+        tg_topic_id=99,
+        source="late_media_recovery",
+    )
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, tg_adapter=tg_adapter)
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id=chat_id,
+        max_msg_id="mx-photo-1:EDITED",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="photo",
+        source_type="PHOTO",
+        media_chat_id=chat_id,
+        media_msg_id="mx-photo-1",
+        reference_kind="late_duplicate",
+        reference_id="",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert tg_adapter.calls == []
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 1234
 
 
 @pytest.mark.asyncio

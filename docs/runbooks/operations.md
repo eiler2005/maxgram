@@ -613,18 +613,19 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
 - если медиа не скачалось сразу, bridge отправляет остальные части сообщения, показывает `⏳ Фото/Видео/Аудио/Файл MAX #N загружается и будет дослано через пару минут` и кладёт meta-only job в `pending_media_downloads`;
 - для фото/файлов без стабильного download reference этот job служит delayed-finalizer: если late duplicate/raw recovery не доставил media за несколько минут, bridge отправит terminal warning `⚠️ ... так и не удалось загрузить автоматически`;
-- edit-events из PyMax могут приходить как `MessageStatus.EDITED` или `EDITED`; bridge нормализует их в один статус и не создаёт отдельный delayed-finalizer для edit-media failure, если базовое MAX-сообщение уже доставило media. В логах это видно как `bridge.media_retry.suppressed reason=edit_base_media_already_delivered`;
+- успешная доставка каждого media part пишется в `delivered_media_parts` по canonical base `max_msg_id`, `attachment_index` и `kind`; таблица хранит только meta (`tg_msg_id`, topic/source, stable media reference если он есть), без текста, raw payload, signed URL или token;
+- edit-events из PyMax могут приходить как `MessageStatus.EDITED` или `EDITED`; bridge нормализует их в один status/base id и сверяет вложения per-index/per-kind. Уже доставленные фото/видео/аудио/файлы не пересылаются, новые вложения досылаются, terminal warning остаётся только для реально недоставленных indices. В логах это видно как `bridge.media_retry.suppressed reason=media_part_already_delivered` или legacy fallback `edit_base_media_already_delivered`;
 - для ретриабельных видео/аудио job продолжает retry/resume без terminal warning, пока есть шанс докачать; terminal warning отправляется только при окончательных причинах вроде missing stable reference или oversized file;
 - повторный sweep той же voice/media-reference не отправляет второй queued-placeholder: существующий pending job переиспользуется по `media_chat_id/media_msg_id/attachment_index/kind/reference_*`;
 - для degraded `CHANNEL/FORWARD` wrappers bridge принимает recovery только если payload содержит usable media refs; low-quality `PHOTO`/`VIDEO` без refs не занимает dedup partial сразу, а ждёт raw/history cache до короткого timeout;
-- если первый проход всё же дал `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные фото/видео, bridge best-effort досылает только media в тот же Telegram topic, пишет `delivery_log.error=late_media_recovered` и `tg_reply_map` для reply routing;
+- если первый проход всё же дал `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные фото/видео, bridge best-effort досылает только ещё не записанные media parts в тот же Telegram topic, пишет `delivery_log.error=late_media_recovered`, `delivered_media_parts` и `tg_reply_map` для reply routing;
 - retry worker для видео заново получает playable URL через `VIDEO_PLAY`; для голосовых заново читает raw `CHAT_HISTORY`, пробует exact `MSG_GET`, dialog cache, MAX Web `audioGetSources` (`opcode=301`) и только затем известный pymax/userbot-safe `FILE_DOWNLOAD` payload (`fileId`) + legacy pymax `get_file_by_id`; signed URL/token/text не хранятся, медиа досылается в тот же Telegram topic отдельным сообщением. `audioId`/token payload для `FILE_DOWNLOAD` в prod вернул `proto.payload` и закрыл socket, поэтому он отключён.
 
 Что смотреть в логах:
 
 ```bash
 rg 'flow_id=mx:<chat_id>:<msg_id>' data/bridge.log
-rg 'event=bridge\.media_retry\.suppressed .*edit_base_media_already_delivered' data/bridge.log
+rg 'event=bridge\.media_retry\.suppressed .*(media_part_already_delivered|edit_base_media_already_delivered)' data/bridge.log
 rg 'event=max\.attachment\.(download|download_retry|download_resume|video_fallback|audio_fallback|audio_protocol_probe|voice_reference_missing)' data/bridge.log
 rg 'event=bridge\.media_retry\.(enqueued|attempt_started|retry_scheduled|delivered|failed)' data/bridge.log
 rg 'event=bridge\.inbound\.late_media_recovery|event=max\.inbound\.degraded_media_recovery' data/bridge.log
@@ -642,6 +643,16 @@ sqlite3 -header -column data/bridge.db \
    FROM pending_media_downloads \
    WHERE status IN ('pending','retry','leased') \
    ORDER BY next_attempt_at LIMIT 20"
+```
+
+Уже доставленные media parts по конкретному MAX message:
+
+```bash
+sqlite3 -header -column data/bridge.db \
+  "SELECT base_max_msg_id, attachment_index, kind, tg_msg_id, source, media_msg_id, reference_kind \
+   FROM delivered_media_parts \
+   WHERE max_chat_id='<chat_id>' AND base_max_msg_id='<base_msg_id>' \
+   ORDER BY attachment_index, kind"
 ```
 
 В `delivery_log` для частичной доставки:

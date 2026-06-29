@@ -52,6 +52,26 @@ CREATE TABLE IF NOT EXISTS tg_reply_map (
     created_at      INTEGER NOT NULL
 );
 
+-- Доставленные MAX media parts.
+-- Только meta для идемпотентности edit/late recovery; без текста, signed URL, token или raw payload.
+CREATE TABLE IF NOT EXISTS delivered_media_parts (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    max_chat_id      TEXT NOT NULL,
+    base_max_msg_id  TEXT NOT NULL,
+    attachment_index INTEGER NOT NULL,
+    kind             TEXT NOT NULL,
+    tg_msg_id        INTEGER NOT NULL,
+    tg_topic_id      INTEGER,
+    source           TEXT NOT NULL,
+    media_chat_id    TEXT,
+    media_msg_id     TEXT,
+    reference_kind   TEXT,
+    reference_id     TEXT,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL,
+    UNIQUE(max_chat_id, base_max_msg_id, attachment_index, kind)
+);
+
 -- Durable retry для MAX-медиа, которое не удалось скачать сразу.
 -- Хранится только meta: без текста сообщений, signed URL, token или raw payload.
 CREATE TABLE IF NOT EXISTS pending_media_downloads (
@@ -216,6 +236,10 @@ CREATE INDEX IF NOT EXISTS idx_known_users_name ON known_users(display_name COLL
 CREATE INDEX IF NOT EXISTS idx_message_map_max ON message_map(max_msg_id, max_chat_id);
 CREATE INDEX IF NOT EXISTS idx_message_map_tg  ON message_map(tg_msg_id);
 CREATE INDEX IF NOT EXISTS idx_tg_reply_map_tg ON tg_reply_map(tg_msg_id);
+CREATE INDEX IF NOT EXISTS idx_delivered_media_base
+  ON delivered_media_parts(max_chat_id, base_max_msg_id);
+CREATE INDEX IF NOT EXISTS idx_delivered_media_reference
+  ON delivered_media_parts(max_chat_id, base_max_msg_id, kind, reference_kind, reference_id);
 CREATE INDEX IF NOT EXISTS idx_delivery_status ON delivery_log(status, last_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_delivery_created ON delivery_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_message_created  ON message_map(created_at);

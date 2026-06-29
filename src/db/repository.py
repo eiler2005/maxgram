@@ -15,6 +15,7 @@ from .migrations import apply_migrations
 from .repos.bindings import BindingsRepo
 from .repos.callback_actions import CallbackActionsRepo
 from .repos.delivery import DeliveryRepo
+from .repos.delivered_media import DeliveredMediaRepo
 from .repos.generations import GenerationsRepo
 from .repos.pending_inbound import PendingInboundRepo
 from .repos.messages import MessagesRepo
@@ -25,6 +26,7 @@ from .repos.users import UsersRepo
 from .types import (
     ChatBinding,
     ChatRecoveryEntry,
+    DeliveredMediaPart,
     DmContactRecoveryEntry,
     KnownUser,
     MessageRecord,
@@ -60,6 +62,7 @@ class Repository:
         self._pending_outbound = PendingOutboundRepo(get_db, should_autocommit)
         self._callback_actions = CallbackActionsRepo(get_db, should_autocommit)
         self._delivery = DeliveryRepo(get_db, should_autocommit)
+        self._delivered_media = DeliveredMediaRepo(get_db, should_autocommit)
         self._users = UsersRepo(get_db, should_autocommit)
 
     async def connect(self):
@@ -213,6 +216,80 @@ class Repository:
         direction: str,
     ) -> Optional[dict]:
         return await self._delivery.get_latest_delivery(max_chat_id, max_msg_id, direction)
+
+    async def save_delivered_media_part(
+        self,
+        *,
+        max_chat_id: str,
+        base_max_msg_id: str,
+        attachment_index: int,
+        kind: str,
+        tg_msg_id: int,
+        tg_topic_id: Optional[int],
+        source: str,
+        media_chat_id: Optional[str] = None,
+        media_msg_id: Optional[str] = None,
+        reference_kind: Optional[str] = None,
+        reference_id: Optional[str] = None,
+        commit: bool = True,
+    ) -> None:
+        await self._delivered_media.save_delivered_media_part(
+            max_chat_id=max_chat_id,
+            base_max_msg_id=base_max_msg_id,
+            attachment_index=attachment_index,
+            kind=kind,
+            tg_msg_id=tg_msg_id,
+            tg_topic_id=tg_topic_id,
+            source=source,
+            media_chat_id=media_chat_id,
+            media_msg_id=media_msg_id,
+            reference_kind=reference_kind,
+            reference_id=reference_id,
+            commit=commit,
+        )
+
+    async def find_delivered_media_part(
+        self,
+        *,
+        max_chat_id: str,
+        base_max_msg_id: str,
+        attachment_index: int,
+        kind: str,
+    ) -> Optional[DeliveredMediaPart]:
+        return await self._delivered_media.find_delivered_media_part(
+            max_chat_id=max_chat_id,
+            base_max_msg_id=base_max_msg_id,
+            attachment_index=attachment_index,
+            kind=kind,
+        )
+
+    async def find_delivered_media_part_by_reference(
+        self,
+        *,
+        max_chat_id: str,
+        base_max_msg_id: str,
+        kind: str,
+        reference_kind: str,
+        reference_id: str,
+    ) -> Optional[DeliveredMediaPart]:
+        return await self._delivered_media.find_delivered_media_part_by_reference(
+            max_chat_id=max_chat_id,
+            base_max_msg_id=base_max_msg_id,
+            kind=kind,
+            reference_kind=reference_kind,
+            reference_id=reference_id,
+        )
+
+    async def has_delivered_media_parts(
+        self,
+        *,
+        max_chat_id: str,
+        base_max_msg_id: str,
+    ) -> bool:
+        return await self._delivered_media.has_delivered_media_parts(
+            max_chat_id=max_chat_id,
+            base_max_msg_id=base_max_msg_id,
+        )
 
     async def upsert_max_account_generation(
         self,
