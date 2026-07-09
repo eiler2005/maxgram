@@ -206,6 +206,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_download_audio_reference_falls_back_to_file_download_after_audio_get_miss` | Если `audioGetSources` не вернул URL, bridge пробует только безопасный `FILE_DOWNLOAD fileId`; `FILE_DOWNLOAD audioId` не используется. |
 | `test_download_audio_reference_stops_protocol_after_socket_error` | Socket-level ошибка на protocol audio probe останавливает текущую попытку, не пробует рискованные payload shapes и не запускает legacy fallback на уже отвалившемся socket. |
 | `test_download_audio_attachment_logs_safe_diagnostic_without_reference` | Voice-вложение без `url/audio_id/id` даёт безопасный diagnostic без раскрытия token/text. |
+| `test_download_photo_reference_uses_file_download` | Durable photo retry использует stable `file_id/photo_id` через `FILE_DOWNLOAD`, не сохраняя signed URL. |
 | `test_download_video_attachment_normalizes_millisecond_duration` | MAX video duration в миллисекундах нормализуется в секунды перед отправкой в Telegram, чтобы не появлялись часы вместо минут/секунд. |
 | `test_download_video_reference_uses_mp4_duration_when_max_duration_missing` | Durable video retry добирает duration из MP4 `mvhd`, если MAX metadata отсутствует или непригодна. |
 
@@ -360,6 +361,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_on_tg_reply_does_not_persist_failed_media_for_retry` | TG→MAX media failure не сохраняет файл/текст в outbox и просит переотправить вручную. |
 | `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает pending-placeholder и создаёт `pending_media_downloads` job. |
 | `test_on_max_message_enqueues_photo_failure_for_delayed_final_notice` | Фото без stable refs сначала показывает pending-placeholder и создаёт delayed-finalizer job, чтобы late duplicate мог дослать media до terminal warning. |
+| `test_on_max_message_enqueues_retryable_photo_failure_with_file_reference` | Фото со stable `file_id/photo_id` создаёт обычный retryable `pending_media_downloads` job вместо delayed-finalizer. |
 | `test_edit_photo_failure_after_delivered_base_does_not_enqueue_finalizer` | Edit-event с failed photo не создаёт новый delayed-finalizer и логируется как delivered, если базовое MAX-сообщение уже доставило media. |
 | `test_edit_media_sends_only_new_attachment_parts` | Edit-event с уже записанным media part отправляет только новое вложение и мапит reply к base MAX message. |
 | `test_edit_photo_failures_suppress_only_delivered_parts` | Edit-event с несколькими failed photo suppress-ит только уже доставленные attachment indices, а недоставленные остаются pending. |
@@ -370,6 +372,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_delivered_duplicate_with_media_is_skipped` | Обычный delivered duplicate с media остаётся dedup-skipped и не меняет прежнее поведение. |
 | `test_delivered_duplicate_with_recorded_media_part_without_pending_is_skipped` | Duplicate с уже записанным media part и без active pending job не создаёт topic и не пересылает media повторно. |
 | `test_pending_media_worker_delivers_video_and_maps_reply` | Retry worker скачивает отложенное видео, отправляет `send_video`, закрывает job и сохраняет reply mapping на исходный MAX message. |
+| `test_pending_media_worker_delivers_photo_by_file_reference` | Retry worker скачивает отложенное фото через stable file reference, отправляет `send_photo`, закрывает job и сохраняет reply mapping. |
 | `test_pending_media_worker_skips_send_when_late_recovery_wins_race` | Если late duplicate успел доставить видео, пока retry worker уже скачивал тот же файл, worker закрывает job без повторного `send_video`. |
 | `test_pending_media_worker_falls_back_from_zero_media_chat` | Pending media retry для старых jobs с `media_chat_id=0` использует исходный MAX chat id, а при `not.found` пробует wrapper message id. |
 | `test_pending_media_worker_reschedules_download_failure` | Временный сбой скачивания переводит job в `retry` с увеличенным attempts и будущим `next_attempt_at`. |

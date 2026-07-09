@@ -334,6 +334,9 @@ class MaxAdapter:
     async def download_audio_reference(self, *args, **kwargs):
         return await self._media.download_audio_reference(*args, **kwargs)
 
+    async def download_photo_reference(self, *args, **kwargs):
+        return await self._media.download_photo_reference(*args, **kwargs)
+
     async def replay_recent_history(self, *args, **kwargs):
         return await self._voice_recovery.replay_recent_history(*args, **kwargs)
 

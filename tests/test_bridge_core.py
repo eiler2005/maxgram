@@ -476,6 +476,8 @@ class DummyMax:
         self.video_reference_calls = []
         self.audio_reference_result = None
         self.audio_reference_calls = []
+        self.photo_reference_result = None
+        self.photo_reference_calls = []
         self.replay_calls = []
         self.empty_stats = {"pending_count": 0, "oldest_created_at": None}
         self.start_handlers = []
@@ -538,6 +540,10 @@ class DummyMax:
     async def download_audio_reference(self, **kwargs):
         self.audio_reference_calls.append(kwargs)
         return self.audio_reference_result
+
+    async def download_photo_reference(self, **kwargs):
+        self.photo_reference_calls.append(kwargs)
+        return self.photo_reference_result
 
     async def replay_recent_history(
         self,
@@ -2097,6 +2103,59 @@ async def test_on_max_message_enqueues_photo_failure_for_delayed_final_notice():
 
 
 @pytest.mark.asyncio
+async def test_on_max_message_enqueues_retryable_photo_failure_with_file_reference():
+    repo = DummyRepo()
+    repo.binding_by_chat["-70000000000003"] = SimpleNamespace(
+        max_chat_id="-70000000000003",
+        tg_topic_id=99,
+        title="Тестовая группа",
+        mode="active",
+    )
+    bridge = _make_bridge(repo=repo, tg_adapter=DummyTelegram())
+    msg = MaxMessage(
+        msg_id="mx-photo-2",
+        chat_id="-70000000000003",
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Тестовый Пользователь",
+        text="",
+        attachments=[],
+        attachment_types=["PHOTO"],
+        rendered_texts=[],
+        message_type="CHANNEL",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+        attachment_failures=[
+            MaxAttachmentFailure(
+                kind="photo",
+                source_type="PHOTO",
+                filename=None,
+                index=0,
+                reason="download_failed",
+                retryable=True,
+                media_chat_id="-70000000000003",
+                media_msg_id="mx-photo-2",
+                reference_kind="file_id",
+                reference_id="777",
+            )
+        ],
+    )
+
+    await bridge._on_max_message(msg)
+
+    assert bridge._tg.calls == [
+        ("text", "⏳ Фото MAX #1 загружается и будет дослано через пару минут"),
+    ]
+    assert len(repo.pending_media) == 1
+    job = repo.pending_media[0]
+    assert job.kind == "photo"
+    assert job.reference_kind == "file_id"
+    assert job.reference_id == "777"
+
+
+@pytest.mark.asyncio
 async def test_edit_photo_failure_after_delivered_base_does_not_enqueue_finalizer():
     repo = DummyRepo()
     chat_id = "-70000000000003"
@@ -2426,6 +2485,63 @@ async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
     assert job.status == "delivered"
     assert job.delivered_tg_msg_id == 3
     assert not video_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pending_media_worker_delivers_photo_by_file_reference(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    photo_path = Path(tmp_path) / "retry.jpg"
+    photo_path.write_bytes(b"\xff\xd8\xff")
+    max_adapter.photo_reference_result = MaxAttachment(
+        "photo",
+        str(photo_path),
+        "retry.jpg",
+        None,
+        640,
+        480,
+        "PHOTO",
+    )
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-photo-2",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="photo",
+        source_type="PHOTO",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-photo-2",
+        reference_kind="file_id",
+        reference_id="777",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert max_adapter.photo_reference_calls == [
+        {
+            "chat_id": "-70000000000003",
+            "msg_id": "mx-photo-2",
+            "reference_id": "777",
+            "reference_kind": "file_id",
+            "attachment_index": 0,
+            "filename_hint": None,
+            "width": None,
+            "height": None,
+            "source_type": "PHOTO",
+            "flow_id": "mx:-70000000000003:mx-photo-2:media:0",
+        }
+    ]
+    assert tg_adapter.calls == [("photo", "Докачанное фото MAX #1")]
+    assert repo.reply_mappings[1] == "mx-photo-2"
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 1
+    assert not photo_path.exists()
 
 
 @pytest.mark.asyncio

@@ -495,6 +495,30 @@ async def test_handle_raw_message_recovers_degraded_channel_media_before_partial
     ]
 
 
+def test_photo_attachment_failure_uses_stable_file_reference(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+
+    failure = adapter._adapter._events._build_attachment_failure(
+        atype="PHOTO",
+        raw_type="PHOTO",
+        attach=SimpleNamespace(type="PHOTO", photo_id=777),
+        index=0,
+        filename=None,
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-photo-2",
+    )
+
+    assert failure.kind == "photo"
+    assert failure.retryable is True
+    assert failure.reference_kind == "file_id"
+    assert failure.reference_id == "777"
+
+
 @pytest.mark.asyncio
 async def test_degraded_channel_photo_low_quality_recovery_waits_before_partial(
     tmp_path,

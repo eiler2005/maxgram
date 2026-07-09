@@ -969,6 +969,58 @@ class MaxMediaService:
             reference_id=str(reference_id),
         )
 
+    async def download_photo_reference(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        reference_id: str,
+        reference_kind: str = "file_id",
+        attachment_index: int = 0,
+        filename_hint: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        source_type: Optional[str] = "PHOTO",
+        flow_id: Optional[str] = None,
+    ) -> Optional[MaxAttachment]:
+        """Retry MAX photo by stable FILE_DOWNLOAD reference without storing signed URLs."""
+        if reference_kind != "file_id":
+            return None
+        idx = f"_{attachment_index}" if attachment_index > 0 else ""
+        try:
+            file_id = int(reference_id)
+        except (TypeError, ValueError):
+            return None
+
+        local_path, filename = await self._download_file_by_id(
+            chat_id,
+            msg_id,
+            file_id,
+            f"photo_retry_{chat_id}_{msg_id}{idx}",
+            filename_hint,
+            ".jpg",
+            expected_kind="photo",
+            flow_id=flow_id,
+        )
+        if not local_path:
+            return None
+        return self._with_attachment_metadata(
+            MaxAttachment(
+                kind="photo",
+                local_path=local_path,
+                filename=filename,
+                duration=None,
+                width=width,
+                height=height,
+                source_type=source_type,
+            ),
+            chat_id=chat_id,
+            msg_id=msg_id,
+            index=attachment_index,
+            reference_kind=reference_kind,
+            reference_id=str(reference_id),
+        )
+
     async def _download_attachment(self, chat_id: str, msg_id: str,
                                    attach, index: int = 0,
                                    flow_id: Optional[str] = None) -> Optional[MaxAttachment]:

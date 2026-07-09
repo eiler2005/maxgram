@@ -607,10 +607,10 @@ class MaxEventsService:
         for ref in refs:
             ref_id = self._extract_user_id(ref)
             ref_name = self._extract_embedded_user_name(ref)
-            key = ref_id or (f"name:{ref_name}" if ref_name else None)
-            if not key or key in seen:
+            dedupe_key: str | None = ref_id or (f"name:{ref_name}" if ref_name else None)
+            if not dedupe_key or dedupe_key in seen:
                 continue
-            seen.add(key)
+            seen.add(dedupe_key)
             unique_refs.append(ref)
         return unique_refs
 
@@ -883,6 +883,17 @@ class MaxEventsService:
                 retryable = True
                 reference_kind = "file_id"
                 reference_id = str(file_id)
+        elif atype == "PHOTO":
+            file_id = (
+                getattr(attach, "file_id", None)
+                or getattr(attach, "fileId", None)
+                or getattr(attach, "photo_id", None)
+                or getattr(attach, "photoId", None)
+            )
+            if file_id is not None:
+                retryable = True
+                reference_kind = "file_id"
+                reference_id = str(file_id)
 
         return MaxAttachmentFailure(
             kind=self._attachment_kind_for_type(atype),
@@ -972,6 +983,7 @@ class MaxEventsService:
 
     def _attachment_has_usable_media_ref(self, attach, raw_type: str) -> bool:
         normalized_type = self._media._normalize_attachment_type(raw_type)
+        names: tuple[str, ...]
         if normalized_type == "PHOTO":
             names = ("base_url", "baseUrl", "baseRawUrl", "url", "file_id", "fileId", "id")
         elif normalized_type == "VIDEO":
@@ -1224,7 +1236,7 @@ class MaxEventsService:
             sender_int = getattr(message, "sender", None)
             sender_id  = str(sender_int) if sender_int is not None else None
             reply_to_msg_id = self._raw_payload._extract_reply_to_msg_id(message)
-            flow_id = build_max_flow_id(chat_id, msg_id or raw_msg_id)
+            flow_id = build_max_flow_id(chat_id, msg_id or raw_msg_id) or "mx:unknown"
 
             if not raw_msg_id or not chat_id:
                 log_event(

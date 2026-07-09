@@ -87,6 +87,57 @@ async def test_download_attachment_populates_media_part_metadata(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_download_photo_reference_uses_file_download(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "photo.jpg")
+    adapter.file_result = (local_path, "photo.jpg")
+
+    attachment = await adapter._adapter._media.download_photo_reference(
+        chat_id="-70000000000003",
+        msg_id="mx-photo-2",
+        reference_id="777",
+        reference_kind="file_id",
+        attachment_index=1,
+        filename_hint="photo.jpg",
+        width=640,
+        height=480,
+        source_type="PHOTO",
+    )
+
+    assert attachment == MaxAttachment(
+        "photo",
+        local_path,
+        "photo.jpg",
+        None,
+        640,
+        480,
+        "PHOTO",
+        attachment_index=1,
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-photo-2",
+        reference_kind="file_id",
+        reference_id="777",
+    )
+    assert adapter.file_downloads == [
+        (
+            "-70000000000003",
+            "mx-photo-2",
+            777,
+            "photo_retry_-70000000000003_mx-photo-2_1",
+            "photo.jpg",
+            ".jpg",
+            "photo",
+        )
+    ]
+    assert adapter.url_downloads == []
+
+
+@pytest.mark.asyncio
 async def test_download_audio_reference_refreshes_raw_history_url(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

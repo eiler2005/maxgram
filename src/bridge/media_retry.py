@@ -66,6 +66,8 @@ def is_retryable_media_failure(failure: MaxAttachmentFailure) -> bool:
         return failure.reference_kind == "video_id"
     if failure.kind == "audio":
         return failure.reference_kind in {"audio_id", "file_id"}
+    if failure.kind == "photo":
+        return failure.reference_kind == "file_id"
     return False
 
 
@@ -802,6 +804,7 @@ async def process_pending_media_download(
     if not job.reference_id or not (
         (job.kind == "video" and job.reference_kind == "video_id")
         or (job.kind == "audio" and job.reference_kind in {"audio_id", "file_id"})
+        or (job.kind == "photo" and job.reference_kind == "file_id")
     ):
         await tg.send_text(
             job.tg_topic_id,
@@ -859,6 +862,8 @@ async def process_pending_media_download(
 
     if job.kind == "audio":
         download_media = max_adapter.download_audio_reference
+    elif job.kind == "photo":
+        download_media = max_adapter.download_photo_reference
     else:
         download_media = max_adapter.download_video_reference
 
@@ -873,6 +878,19 @@ async def process_pending_media_download(
                 filename_hint=job.filename,
                 duration=job.duration,
                 source_type=job.source_type or "AUDIO",
+                flow_id=flow_id,
+            )
+        elif job.kind == "photo":
+            attachment = await download_media(
+                chat_id=media_chat_id,
+                msg_id=media_msg_id,
+                reference_id=job.reference_id,
+                reference_kind=job.reference_kind,
+                attachment_index=job.attachment_index,
+                filename_hint=job.filename,
+                width=job.width,
+                height=job.height,
+                source_type=job.source_type or "PHOTO",
                 flow_id=flow_id,
             )
         else:
@@ -967,7 +985,11 @@ async def process_pending_media_download(
             )
             return
 
-        media_label = "голосовое" if job.kind == "audio" else "видео"
+        media_label = {
+            "audio": "голосовое",
+            "photo": "фото",
+            "document": "файл",
+        }.get(job.kind, "видео")
         caption = f"Докачанное {media_label} MAX #{job.attachment_index + 1}"
         try:
             tg_msg_id = await bridge_forwarding.send_attachment(
