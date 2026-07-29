@@ -66,7 +66,11 @@ class MaxMediaService:
         return upper
 
     def _attachment_filename(self, attach) -> Optional[str]:
-        name = getattr(attach, "filename", None) or getattr(attach, "name", None)
+        name = (
+            getattr(attach, "filename", None)
+            or getattr(attach, "fileName", None)
+            or getattr(attach, "name", None)
+        )
         return self._fix_filename_encoding(name) if name else None
 
     def _attachment_reference(
@@ -396,12 +400,7 @@ class MaxMediaService:
 
         payloads = []
         for msg_value in dict.fromkeys(msg_values):
-            payloads.extend([
-                {"chatId": chat_id_value, "messageId": msg_value},
-                {"chatId": chat_id_value, "messageIds": [msg_value]},
-            ])
-        if msg_values:
-            payloads.append({"chatId": chat_id_value, "ids": [msg_values[0]]})
+            payloads.append({"chatId": chat_id_value, "messageId": msg_value})
 
         for index, payload in enumerate(payloads, start=1):
             try:
@@ -1031,14 +1030,25 @@ class MaxMediaService:
         idx = f"_{index}" if index > 0 else ""
 
         if "PHOTO" in atype or "IMAGE" in atype:
-            url = getattr(attach, "base_url", None) or getattr(attach, "baseRawUrl", None) or getattr(attach, "url", None)
+            url = (
+                getattr(attach, "base_url", None)
+                or getattr(attach, "baseUrl", None)
+                or getattr(attach, "baseRawUrl", None)
+                or getattr(attach, "url", None)
+            )
             if url:
                 local_path, filename = await self._download_from_url(
                     url, f"photo_{chat_id}_{msg_id}{idx}", filename_hint, ".jpg",
                     expected_kind="photo", flow_id=flow_id, download_source="direct_url",
                 )
             else:
-                file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
+                file_id = (
+                    getattr(attach, "file_id", None)
+                    or getattr(attach, "fileId", None)
+                    or getattr(attach, "photo_id", None)
+                    or getattr(attach, "photoId", None)
+                    or getattr(attach, "id", None)
+                )
                 if not file_id:
                     return None
                 local_path, filename = await self._download_file_by_id(
@@ -1064,7 +1074,11 @@ class MaxMediaService:
             return None
 
         if "VIDEO" in atype:
-            video_id = getattr(attach, "video_id", None) or getattr(attach, "id", None)
+            video_id = (
+                getattr(attach, "video_id", None)
+                or getattr(attach, "videoId", None)
+                or getattr(attach, "id", None)
+            )
             url = getattr(attach, "url", None)
             local_path = None
             filename = None
@@ -1123,6 +1137,7 @@ class MaxMediaService:
             token = getattr(attach, "token", None)
             file_id = (
                 getattr(attach, "file_id", None)
+                or getattr(attach, "fileId", None)
                 or getattr(attach, "id", None)
                 or audio_id
             )
@@ -1204,7 +1219,11 @@ class MaxMediaService:
             return None
 
         if "FILE" in atype or "DOCUMENT" in atype or "DOC" in atype:
-            file_id = getattr(attach, "file_id", None) or getattr(attach, "id", None)
+            file_id = (
+                getattr(attach, "file_id", None)
+                or getattr(attach, "fileId", None)
+                or getattr(attach, "id", None)
+            )
             if not file_id:
                 return None
             local_path, filename = await self._download_file_by_id(

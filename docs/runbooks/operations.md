@@ -611,6 +611,7 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - при обрыве следующая попытка отправляет `Range: bytes=<уже_скачано>-`;
 - если CDN не поддерживает `Range` и отвечает `200`, bridge удаляет `*.part` и качает заново;
 - если прямой URL видео не скачался, bridge пробует fallback через MAX `VIDEO_PLAY`;
+- live-вложения `type=UNSUPPORTED` не считаются terminal unsupported сразу: adapter сначала разворачивает nested `payload` и по `audioId`/`fileId`/`photoId`/`baseUrl`/filename/url hints переклассифицирует их в `AUDIO`/`FILE`/`PHOTO`/`VIDEO`;
 - если медиа не скачалось сразу, bridge отправляет остальные части сообщения, показывает `⏳ Фото/Видео/Аудио/Файл MAX #N загружается и будет дослано через пару минут` и кладёт meta-only job в `pending_media_downloads`;
 - для фото/файлов без стабильного download reference этот job служит delayed-finalizer: если late duplicate/raw recovery не доставил media за несколько минут, bridge отправит terminal warning `⚠️ ... так и не удалось загрузить автоматически`;
 - успешная доставка каждого media part пишется в `delivered_media_parts` по canonical base `max_msg_id`, `attachment_index` и `kind`; таблица хранит только meta (`tg_msg_id`, topic/source, stable media reference если он есть), без текста, raw payload, signed URL или token;
@@ -619,7 +620,7 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - повторный sweep той же voice/media-reference не отправляет второй queued-placeholder: существующий pending job переиспользуется по `media_chat_id/media_msg_id/attachment_index/kind/reference_*`;
 - для degraded `CHANNEL/FORWARD` wrappers bridge принимает recovery только если payload содержит usable media refs; low-quality `PHOTO`/`VIDEO` без refs не занимает dedup partial сразу, а ждёт raw/history cache до короткого timeout;
 - если первый проход всё же дал `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные фото/видео, bridge best-effort досылает только ещё не записанные media parts в тот же Telegram topic, пишет `delivery_log.error=late_media_recovered`, `delivered_media_parts` и `tg_reply_map` для reply routing;
-- retry worker для фото со stable `fileId`/`photoId` заново получает signed URL через safe `FILE_DOWNLOAD` и скачивает файл без сохранения URL; для видео заново получает playable URL через `VIDEO_PLAY`; для голосовых заново читает raw `CHAT_HISTORY`, пробует exact `MSG_GET`, dialog cache, MAX Web `audioGetSources` (`opcode=301`) и только затем известный pymax/userbot-safe `FILE_DOWNLOAD` payload (`fileId`) + legacy pymax `get_file_by_id`; signed URL/token/text не хранятся, медиа досылается в тот же Telegram topic отдельным сообщением. `audioId`/token payload для `FILE_DOWNLOAD` в prod вернул `proto.payload` и закрыл socket, поэтому он отключён.
+- retry worker для фото со stable `fileId`/`photoId` заново получает signed URL через safe `FILE_DOWNLOAD` и скачивает файл без сохранения URL; для видео заново получает playable URL через `VIDEO_PLAY`; для голосовых заново читает raw `CHAT_HISTORY`, пробует exact `MSG_GET` только в одиночной форме `messageId`, dialog cache, MAX Web `audioGetSources` (`opcode=301`) и только затем известный pymax/userbot-safe `FILE_DOWNLOAD` payload (`fileId`) + legacy pymax `get_file_by_id`; signed URL/token/text не хранятся, медиа досылается в тот же Telegram topic отдельным сообщением. `audioId`/token payload для `FILE_DOWNLOAD`, а также `MSG_GET` shapes `messageIds`/`ids`, в prod возвращали `proto.payload` и закрывали socket, поэтому они отключены.
 
 Что смотреть в логах:
 
@@ -654,6 +655,21 @@ sqlite3 -header -column data/bridge.db \
    WHERE max_chat_id='<chat_id>' AND base_max_msg_id='<base_msg_id>' \
    ORDER BY attachment_index, kind"
 ```
+
+Точечная операторская переотправка старого MAX-вложения:
+
+```bash
+# Важно: не запускать одновременно со штатным bridge-контейнером.
+docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml stop bridge
+docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml run --rm --no-deps bridge \
+  env PYTHONPATH=/app python scripts/operator_replay_max_messages.py \
+  --chat-id=<max_chat_id> \
+  --msg-id <max_msg_id> \
+  --limit 100
+docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml up -d bridge
+```
+
+`operator_replay_max_messages.py` принимает только explicit ids, не печатает текст/raw payload/URL/token и гонит найденные сообщения через обычный bridge pipeline. По умолчанию он временно помечает существующие `delivery_log` rows как `partial attachment_download_failed:forced_replay_unsupported`, чтобы штатный late-media recovery дослал media в тот же Telegram topic. Если MAX больше не отдаёт message через history/exact lookup, восстановить старое вложение нечем: bridge не хранит raw payload, signed URL или сам файл после failed unsupported fallback.
 
 В `delivery_log` для частичной доставки:
 

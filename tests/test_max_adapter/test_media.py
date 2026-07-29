@@ -888,6 +888,135 @@ async def test_handle_raw_message_marks_failed_video_retryable_by_video_id(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_handle_raw_message_reclassifies_live_unsupported_nested_audio(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    local_path = str(tmp_path / "tmp" / "voice.ogg")
+    adapter.url_result = (local_path, "voice.ogg")
+    adapter._client = LookupClient(users={7001: make_user("Людмила")})
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    await adapter._handle_raw_message(
+        SimpleNamespace(
+            id=778,
+            chat_id=-70000000000003,
+            sender=7001,
+            text="",
+            type="USER",
+            status=None,
+            attaches=[
+                SimpleNamespace(
+                    type="UNSUPPORTED",
+                    payload={
+                        "audioId": 92,
+                        "url": "https://audio.example.test/live.ogg",
+                        "duration": 9,
+                        "wave": "abc",
+                    },
+                )
+            ],
+            link=None,
+        )
+    )
+
+    assert len(received) == 1
+    assert received[0].attachment_types == ["AUDIO"]
+    assert received[0].rendered_texts == []
+    assert received[0].attachments == [
+        MaxAttachment("audio", local_path, "voice.ogg", 9, None, None, "AUDIO")
+    ]
+    assert adapter.url_downloads == [
+        (
+            "https://audio.example.test/live.ogg",
+            "audio_-70000000000003_778",
+            None,
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_reclassifies_live_unsupported_nested_photo_and_file(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter.url_result = (str(tmp_path / "tmp" / "photo.jpg"), "photo.jpg")
+    adapter.file_result = (str(tmp_path / "tmp" / "notice.pdf"), "notice.pdf")
+    adapter._client = LookupClient(users={7001: make_user("Людмила")})
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+
+    await adapter._handle_raw_message(
+        SimpleNamespace(
+            id=779,
+            chat_id=-70000000000003,
+            sender=7001,
+            text="",
+            type="USER",
+            status=None,
+            attaches=[
+                SimpleNamespace(
+                    type="UNSUPPORTED",
+                    payload={"baseUrl": "https://cdn.example.test/photo.jpg"},
+                ),
+                SimpleNamespace(
+                    type="UNSUPPORTED",
+                    payload={"fileId": 77, "fileName": "notice.pdf"},
+                ),
+            ],
+            link=None,
+        )
+    )
+
+    assert len(received) == 1
+    assert received[0].attachment_types == ["PHOTO", "FILE"]
+    assert received[0].rendered_texts == []
+    assert [(item.kind, item.source_type) for item in received[0].attachments] == [
+        ("photo", "PHOTO"),
+        ("document", "FILE"),
+    ]
+    assert adapter.url_downloads == [
+        (
+            "https://cdn.example.test/photo.jpg",
+            "photo_-70000000000003_779",
+            None,
+            ".jpg",
+            "photo",
+            "direct_url",
+        )
+    ]
+    assert adapter.file_downloads == [
+        (
+            "-70000000000003",
+            "779",
+            77,
+            "doc_-70000000000003_779_1",
+            "notice.pdf",
+            "",
+            "document",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeypatch):
     adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
     captured = {}

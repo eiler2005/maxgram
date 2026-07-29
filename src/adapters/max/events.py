@@ -22,6 +22,7 @@ from ...bridge.contracts import (
 )
 from .deps import EventsDeps
 from . import constants as max_constants
+from .ports import MaxClientAttachment, MaxClientMessage
 from ...logging_utils import build_max_flow_id, log_event, sanitize_path
 
 logger = logging.getLogger("src.adapters.max_adapter")
@@ -981,6 +982,45 @@ class MaxEventsService:
             return forwarded.message
         return message
 
+    def _attachment_dict_for_raw_normalization(self, attach) -> dict | None:
+        try:
+            normalized = MaxClientAttachment.from_object(attach)
+        except Exception:
+            return dict(attach) if isinstance(attach, dict) else None
+        return dict(vars(normalized))
+
+    def _normalize_live_content_message_media(self, content_message):
+        attaches = self._object_value(content_message, "attaches", "attachments")
+        if not attaches:
+            return content_message
+        attach_list = attaches if isinstance(attaches, list) else [attaches]
+        attach_dicts: list[object] = []
+        for attach in attach_list:
+            attach_dict = self._attachment_dict_for_raw_normalization(attach)
+            attach_dicts.append(attach_dict if attach_dict is not None else attach)
+
+        message_dict = {
+            "id": self._object_value(content_message, "id", "messageId", "message_id", "msgId"),
+            "chatId": self._object_value(content_message, "chatId", "chat_id"),
+            "sender": self._object_value(content_message, "sender"),
+            "time": self._object_value(content_message, "time"),
+            "text": self._object_value(content_message, "text"),
+            "type": self._object_value(content_message, "type", "_type"),
+            "status": self._object_value(content_message, "status"),
+            "attaches": attach_dicts,
+        }
+        normalized = self._raw_payload._normalize_message_dict(message_dict)
+        normalized_attaches = normalized.get("attaches") or []
+        if normalized_attaches == attach_dicts:
+            return content_message
+
+        normalized_message = MaxClientMessage.from_object(content_message)
+        normalized_message.attaches = [
+            MaxClientAttachment.from_object(attach) if isinstance(attach, dict) else attach
+            for attach in normalized_attaches
+        ]
+        return normalized_message
+
     def _attachment_has_usable_media_ref(self, attach, raw_type: str) -> bool:
         normalized_type = self._media._normalize_attachment_type(raw_type)
         names: tuple[str, ...]
@@ -1194,6 +1234,7 @@ class MaxEventsService:
 
             forwarded = self._raw_payload._extract_forwarded_payload(message)
             content_message = forwarded.message if forwarded else message
+            content_message = self._normalize_live_content_message_media(content_message)
 
             raw_text_value = (
                 getattr(content_message, "text", None)

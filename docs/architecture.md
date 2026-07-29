@@ -100,12 +100,12 @@ src/
 │   │   ├── deps.py           explicit service dependency objects
 │   │   ├── network/          MAX-only egress profiles and safe Channel M probes
 │   │   ├── lifecycle.py      start/reconnect/readiness lifecycle service
-│   │   ├── events.py         backend events -> MaxMessage normalization
+│   │   ├── events.py         backend events -> MaxMessage normalization, live unsupported-media recovery
 │   │   ├── raw_payload.py    compatibility facade for raw payload helpers
-│   │   ├── raw/              parser, raw-history cache/fetch, empty recovery candidates, telemetry
+│   │   ├── raw/              parser, raw-history cache/fetch, empty recovery candidates, unsupported-media inference, telemetry
 │   │   ├── send.py           outbound send with reconnect wait/ack service
 │   │   ├── media/
-│   │   │   ├── attachments.py attachment extraction/download service
+│   │   │   ├── attachments.py attachment extraction/download, camelCase refs, safe exact lookup
 │   │   │   ├── downloader.py HTTP Range/.part downloader
 │   │   │   └── ua.py         MAX CDN srcAg -> User-Agent mapping
 │   │   ├── backends/
@@ -295,6 +295,7 @@ Runtime слой разделён на supervisor и health package:
 - Protocol-порты `MaxBridgePort`, `TelegramBridgePort`, `OpsNotifierPort`
 - helper-политики, которые нужны core и adapter-слою одинаково (`is_probable_client_cid`, DM history sweep window)
 - `MaxBridgePort.replay_recent_history(..., is_known_message=...)` принимает transport-neutral pre-dedup callback: core проверяет существующий `message_map`, а MAX adapter пропускает уже известные history messages до нормализации/скачивания; pending empty recovery остаётся исключением.
+- Live/history `UNSUPPORTED` вложения MAX с nested payload нормализуются внутри adapter до обычных `MaxAttachment` типов `AUDIO`/`PHOTO`/`FILE`/`VIDEO` или `MaxAttachmentFailure`; `BridgeCore` не зависит от pymax-specific attachment shapes.
 
 `src/bridge/contracts.py` не импортирует `pymax`, `aiogram` или concrete adapters. Канонический импорт общих моделей:
 
@@ -323,11 +324,11 @@ src.adapters.max_adapter compatibility alias
         │
         ├─ operation services
         │    lifecycle.py       start/reconnect/readiness
-        │    events.py          backend event/raw payload -> MaxMessage
+        │    events.py          backend event/raw payload -> MaxMessage, live unsupported-media recovery
         │    send.py            outbound text + reconnect wait + ack tracking
-        │    media/attachments.py media refs -> local files / MaxAttachment
+        │    media/attachments.py media refs -> local files / MaxAttachment, safe exact lookup
         │    media/downloader.py  generic CDN HTTP/.part/Range download
-        │    raw/*               raw parser/cache/recovery/telemetry helpers
+        │    raw/*               raw parser/cache/recovery/unsupported-type inference/telemetry helpers
         │    recovery.py        chats/dialogs/users -> MaxRecoverySnapshot
         │    resolve.py         user/chat title and DM partner lookup
         │    voice_recovery.py  empty voice/raw history recovery

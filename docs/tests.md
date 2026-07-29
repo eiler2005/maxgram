@@ -131,7 +131,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (110 тестов)
+## tests/test_max_adapter/ — MAX adapter behavior split (117 тестов)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -199,6 +199,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_handle_raw_receive_logs_safe_empty_message_diagnostic` | Raw empty-event diagnostic логирует только тип, id и безопасные имена полей, без URL/token/text. |
 | `test_handle_raw_receive_logs_top_level_empty_message_diagnostic` | Top-level raw empty payload логируется безопасно, без URL/token/text. |
 | `test_download_attachment_populates_media_part_metadata` | Успешно скачанные photo/video/audio/document получают `attachment_index`, media source ids и stable reference metadata для per-part dedupe, не сохраняя signed URL. |
+| `test_handle_raw_message_reclassifies_live_unsupported_nested_audio` | Live pymax `UNSUPPORTED` с nested `payload.audioId/url/duration/wave` переклассифицируется в `AUDIO`, скачивается и не уходит fallback-текстом. |
+| `test_handle_raw_message_reclassifies_live_unsupported_nested_photo_and_file` | Live pymax `UNSUPPORTED` с nested `baseUrl` или `fileId/fileName` становится `PHOTO`/`FILE` и проходит штатный media download path. |
 | `test_download_audio_attachment_uses_direct_url_and_preserves_duration` | `AUDIO` скачивается по прямому `url`; `duration` сохраняется в `MaxAttachment`. |
 | `test_download_audio_attachment_normalizes_millisecond_duration` | MAX voice duration в миллисекундах нормализуется в секунды перед отправкой в Telegram. |
 | `test_download_audio_attachment_falls_back_to_audio_id` | Если `url` нет и protocol resolver недоступен, `audio_id` используется через legacy download-by-id путь. |

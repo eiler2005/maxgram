@@ -213,6 +213,19 @@ class RawPayloadParser:
                 return "VIDEO"
             if self._payload_value(node, "photoId", "photo_id", "imageId", "image_id") is not None:
                 return "PHOTO"
+            filename = self._payload_value(node, "filename", "fileName", "name")
+            url = self._payload_value(node, "url", "baseUrl", "baseRawUrl")
+            hint = f"{key} {filename or ''} {url or ''}".lower()
+            if any(ext in hint for ext in (".ogg", ".opus", ".mp3", ".m4a", ".aac", ".wav")):
+                return "AUDIO"
+            if any(ext in hint for ext in (".mp4", ".mov", ".m4v", ".webm", ".m3u8")):
+                return "VIDEO"
+            if any(ext in hint for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                return "PHOTO"
+            if self._payload_value(node, "baseUrl", "baseRawUrl") is not None:
+                return "PHOTO"
+            if self._payload_value(node, "fileId", "file_id") is not None:
+                return "FILE"
             key_lower = key.lower()
             if "voice" in key_lower or "audio" in key_lower:
                 return "AUDIO"
@@ -235,9 +248,13 @@ class RawPayloadParser:
                 "image_id",
                 "fileId",
                 "file_id",
+                "filename",
+                "fileName",
+                "name",
                 "token",
                 "url",
                 "baseUrl",
+                "baseRawUrl",
                 "duration",
                 "wave",
             )
