@@ -74,6 +74,7 @@ chats:
     assert cfg.health.dm_history_sweep.per_chat_delay_seconds == 0.5
     assert cfg.content.forward_voice is True
     assert cfg.bridge.default_mode == "readonly"
+    assert cfg.bridge.media_recovery_cache_ttl_hours == 48
     assert len(cfg.chats) == 1
     assert cfg.chats[0].max_chat_id == "-70000000000001"
     assert cfg.chats[0].title == "Локальный чат"

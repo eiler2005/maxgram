@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **354 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **366 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -64,7 +64,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 | Тест | Что проверяет |
 |------|--------------|
-| `test_load_config_merges_optional_local_override` | `config.local.yaml` перекрывает `config.yaml`: `bridge.default_mode`, список `chats` с `max_chat_id`, `title`, `mode`. Переменные окружения (`TG_BOT_TOKEN` и др.) подставляются в YAML через env-interpolation. |
+| `test_load_config_merges_optional_local_override` | `config.local.yaml` перекрывает `config.yaml`: `bridge.default_mode`, список `chats` с `max_chat_id`, `title`, `mode`; дефолт `bridge.media_recovery_cache_ttl_hours=48`. Переменные окружения (`TG_BOT_TOKEN` и др.) подставляются в YAML через env-interpolation. |
 | `test_load_config_reads_dm_history_sweep_overrides` | `health.dm_history_sweep` читает balanced-настройки нагрузки: enabled, warmup/steady intervals, limit, backfill, jitter и per-chat delay. |
 | `test_load_config_reads_secrets_from_dotenv_secrets` | `load_config()` подхватывает секреты из `.env.secrets`, а не только из уже экспортированного окружения; заодно проверяет что `DATA_DIR` берётся из `.env`. |
 | `test_load_config_reads_max_egress_profiles` | `max.egress` читает active profile, direct backward-compatible default и `${MAX_EGRESS_PROXY_URL}` для `home_ru_proxy`. |
@@ -86,7 +86,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## test_repository.py — работа с SQLite (21 тест)
+## test_repository.py — работа с SQLite (22 теста)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -107,6 +107,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_find_phantom_topic_bindings_requires_duplicate_real_delivery` | Cleanup phantom topics срабатывает только при подтверждённом duplicate real delivery, не на одном совпадении metadata. |
 | `test_pending_media_queue_lifecycle_is_idempotent` | Очередь durable media retry идемпотентно создаёт, reschedule-ит и завершает jobs. |
 | `test_delivered_media_parts_are_idempotent_and_findable` | `delivered_media_parts` хранит только meta для per-attachment media idempotency, не плодит rows при повторном save и ищется по index/kind или stable reference. |
+| `test_media_recovery_cache_encrypts_payload_and_purges` | `media_recovery_cache` хранит volatile media hints только как Fernet ciphertext, отдаёт payload до `expires_at` и удаляет expired rows. |
 | `test_pending_outbound_lifecycle_clears_text_after_delivery` | Durable TG→MAX text outbox хранит plaintext только до успешной доставки и очищает `text`. |
 | `test_pending_inbound_lifecycle_clears_text_after_delivery` | Durable MAX→TG text outbox хранит plaintext только до успешной доставки и очищает `text`. |
 
@@ -131,7 +132,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (117 тестов)
+## tests/test_max_adapter/ — MAX adapter behavior split (119 тестов)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -199,6 +200,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_handle_raw_receive_logs_safe_empty_message_diagnostic` | Raw empty-event diagnostic логирует только тип, id и безопасные имена полей, без URL/token/text. |
 | `test_handle_raw_receive_logs_top_level_empty_message_diagnostic` | Top-level raw empty payload логируется безопасно, без URL/token/text. |
 | `test_download_attachment_populates_media_part_metadata` | Успешно скачанные photo/video/audio/document получают `attachment_index`, media source ids и stable reference metadata для per-part dedupe, не сохраняя signed URL. |
+| `test_media_recovery_payload_sanitizes_nested_unsupported_audio` | Recovery cache payload для nested `UNSUPPORTED` берёт только whitelisted media hints (`audioId/url/duration/wave/type/sourceType`) и не включает text/raw fields. |
+| `test_download_cached_media_payload_uses_cached_direct_url` | MAX media service скачивает media из cached encrypted hints через обычный `_download_attachment` path и сохраняет исходный `source_type=UNSUPPORTED`. |
 | `test_handle_raw_message_reclassifies_live_unsupported_nested_audio` | Live pymax `UNSUPPORTED` с nested `payload.audioId/url/duration/wave` переклассифицируется в `AUDIO`, скачивается и не уходит fallback-текстом. |
 | `test_handle_raw_message_reclassifies_live_unsupported_nested_photo_and_file` | Live pymax `UNSUPPORTED` с nested `baseUrl` или `fileId/fileName` становится `PHOTO`/`FILE` и проходит штатный media download path. |
 | `test_download_audio_attachment_uses_direct_url_and_preserves_duration` | `AUDIO` скачивается по прямому `url`; `duration` сохраняется в `MaxAttachment`. |
@@ -364,6 +367,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_on_max_message_enqueues_retryable_video_failure` | Частично доставленное MAX-сообщение с retryable video failure отправляет фото сразу, показывает pending-placeholder и создаёт `pending_media_downloads` job. |
 | `test_on_max_message_enqueues_photo_failure_for_delayed_final_notice` | Фото без stable refs сначала показывает pending-placeholder и создаёт delayed-finalizer job, чтобы late duplicate мог дослать media до terminal warning. |
 | `test_on_max_message_enqueues_retryable_photo_failure_with_file_reference` | Фото со stable `file_id/photo_id` создаёт обычный retryable `pending_media_downloads` job вместо delayed-finalizer. |
+| `test_enqueue_media_retry_saves_cache_only_document_payload` | Document/file failure с encrypted recovery payload создаёт cache-only `pending_media_downloads` job (`reference_kind=cached_payload`) и пишет TTL cache meta. |
 | `test_edit_photo_failure_after_delivered_base_does_not_enqueue_finalizer` | Edit-event с failed photo не создаёт новый delayed-finalizer и логируется как delivered, если базовое MAX-сообщение уже доставило media. |
 | `test_edit_media_sends_only_new_attachment_parts` | Edit-event с уже записанным media part отправляет только новое вложение и мапит reply к base MAX message. |
 | `test_edit_photo_failures_suppress_only_delivered_parts` | Edit-event с несколькими failed photo suppress-ит только уже доставленные attachment indices, а недоставленные остаются pending. |
@@ -374,6 +378,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_delivered_duplicate_with_media_is_skipped` | Обычный delivered duplicate с media остаётся dedup-skipped и не меняет прежнее поведение. |
 | `test_delivered_duplicate_with_recorded_media_part_without_pending_is_skipped` | Duplicate с уже записанным media part и без active pending job не создаёт topic и не пересылает media повторно. |
 | `test_pending_media_worker_delivers_video_and_maps_reply` | Retry worker скачивает отложенное видео, отправляет `send_video`, закрывает job и сохраняет reply mapping на исходный MAX message. |
+| `test_pending_media_worker_falls_back_to_recovery_cache_after_reference_miss` | Если stable photo reference не дал файл, worker читает encrypted recovery cache payload и досылает media без логирования signed URL. |
+| `test_pending_media_worker_delivers_cache_only_document` | Cache-only document/file job не вызывает video reference path, скачивает вложение из cached hints и отправляет `send_document`. |
 | `test_pending_media_worker_delivers_photo_by_file_reference` | Retry worker скачивает отложенное фото через stable file reference, отправляет `send_photo`, закрывает job и сохраняет reply mapping. |
 | `test_pending_media_worker_skips_send_when_late_recovery_wins_race` | Если late duplicate успел доставить видео, пока retry worker уже скачивал тот же файл, worker закрывает job без повторного `send_video`. |
 | `test_pending_media_worker_falls_back_from_zero_media_chat` | Pending media retry для старых jobs с `media_chat_id=0` использует исходный MAX chat id, а при `not.found` пробует wrapper message id. |

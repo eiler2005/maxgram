@@ -80,6 +80,7 @@ src/
 │       ├── bindings.py       chat_bindings
 │       ├── messages.py       message_map, tg_reply_map
 │       ├── delivered_media.py delivered_media_parts
+│       ├── media_recovery_cache.py encrypted TTL media recovery cache
 │       ├── delivery.py       delivery_log and activity counters
 │       ├── pending_media.py  durable media retry queue
 │       ├── pending_inbound.py durable MAX→TG text retry queue
@@ -439,6 +440,7 @@ Routine recovery deltas from auto scans are quiet: новые registry rows, unm
 - `bindings.py` — chat bindings and topic mappings
 - `messages.py` — `message_map`, `tg_reply_map`
 - `delivered_media.py` — `delivered_media_parts` per-attachment media idempotency
+- `media_recovery_cache.py` — `media_recovery_cache` encrypted TTL cache для проблемных MAX media hints
 - `delivery.py` — delivery log and activity counters
 - `pending_media.py` — durable media retry queue
 - `pending_inbound.py` — durable MAX→TG text retry queue
@@ -449,7 +451,7 @@ Routine recovery deltas from auto scans are quiet: новые registry rows, unm
 
 Все subrepo используют одно `aiosqlite.Connection`, чтобы commit/transaction behavior оставался прежним. Принципы:
 - Только простые запросы, никаких JOIN-монстров
-- Никакого контента доставленных сообщений; исключение — plaintext в `pending_inbound_messages.text` / `pending_outbound_messages.text` для недоставленных текстов до доставки/TTL
+- Никакого контента доставленных сообщений; исключения — plaintext в `pending_inbound_messages.text` / `pending_outbound_messages.text` для недоставленных текстов до доставки/TTL и encrypted `media_recovery_cache.payload_ciphertext` для проблемных media hints до 48ч
 - Все методы async (aiosqlite)
 - Grouped post-send writes идут через `Repository.transaction()` (`BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`); nested transactions запрещены явно.
 - SQLite transaction нельзя держать вокруг network await. Внешний send/download выполняется до transaction, затем атомарно сохраняются mapping/delivery/queue rows.
@@ -521,6 +523,7 @@ src/logging_utils.py
 - `bridge.outbound.*` — reply resolution и доставка TG -> MAX
 - `max.outbound.*` — отправка в MAX и echo/ack result
 - `bridge.media_retry.*` — durable retry MAX media из `pending_media_downloads`
+- `bridge.media_recovery_cache.*` — сохранение и cached-payload recovery для проблемных MAX media; логи содержат только kind/index/reference metadata, без URL/payload
 - `bridge.recovery.*` — meta-only recovery snapshot scheduling/scan/report/remap/notification events
 - `bridge.watchdog.*`, `bridge.cleanup.*`, `app.startup.*` — эксплуатационные фоновые события
 
@@ -569,6 +572,7 @@ SQLite остаётся источником состояния и delivery meta
 - `message_map` — дедупликация и reply routing
 - `tg_reply_map` — дополнительные TG message ids для reply routing поздно досланных медиа
 - `delivered_media_parts` — per-index/per-kind идемпотентность MAX media после edit/late recovery; только metadata без текста, raw payload, signed URL или token
+- `media_recovery_cache` — временный encrypted cache только для проблемных MAX media hints; открыто хранятся stable refs/filename/duration/size meta, volatile URL/payload лежит только в Fernet ciphertext и чистится по TTL
 - `delivery_log` — high-level статус доставки
 - `pending_inbound_messages` — durable retry для MAX→TG текстов
 - `pending_outbound_messages` — durable retry для TG→MAX текстов; медиа не сохраняются
@@ -614,6 +618,27 @@ delivered_media_parts (
     reference_kind   TEXT,
     reference_id     TEXT,
     UNIQUE(max_chat_id, base_max_msg_id, attachment_index, kind)
+)
+
+-- Временный encrypted cache для проблемных media hints
+media_recovery_cache (
+    max_chat_id        TEXT,
+    max_msg_id         TEXT,
+    attachment_index   INTEGER,
+    kind               TEXT,
+    source_type        TEXT,
+    media_chat_id      TEXT,
+    media_msg_id       TEXT,
+    reference_kind     TEXT,
+    reference_id       TEXT,
+    filename           TEXT,
+    duration           INTEGER,
+    width              INTEGER,
+    height             INTEGER,
+    payload_cipher     TEXT,   -- fernet | NULL
+    payload_ciphertext TEXT,   -- encrypted URL/payload hints only
+    expires_at         INTEGER,
+    UNIQUE(max_chat_id, max_msg_id, attachment_index, kind)
 )
 
 -- Лог доставки (meta only, без текста)
@@ -723,6 +748,7 @@ config.local.yaml           ← НЕ в git (локальные chat bindings / 
   TG_OWNER_ID
   TG_FORUM_GROUP_ID
   MAX_PHONE
+  MAX_RECOVERY_CONTACTS_KEY    # Fernet key для contacts snapshot и encrypted media recovery cache
 ```
 
 ## Политика хранения данных
@@ -733,6 +759,7 @@ config.local.yaml           ← НЕ в git (локальные chat bindings / 
 | Недоставленный TG→MAX текст | Да, plaintext только в text outbox | до доставки или TTL 48ч |
 | Недоставленный MAX→TG текст | Да, plaintext только в text outbox | до доставки или TTL 48ч |
 | Медиафайлы (tmp) | Временно | 1 час |
+| Media recovery cache | Да, stable refs + encrypted media hints только для problematic attachments | 48ч по `bridge.media_recovery_cache_ttl_hours` |
 | message_map | Да | 30 дней |
 | delivery_log | Да | 7 дней |
 | chat_bindings | Да | Бессрочно |
@@ -740,7 +767,7 @@ config.local.yaml           ← НЕ в git (локальные chat bindings / 
 | DM contact recovery registry | Да, только реальные DM dialogs | Бессрочно, в `data/bridge.db` |
 | recovery export JSON | Временно | удаляется после отправки owner DM |
 
-Фоновая очистка запускается каждые 30 минут (`Bridge.run_cleanup()`).
+Фоновая очистка запускается каждые 30 минут (`Bridge.run_cleanup()`); expired `media_recovery_cache` rows удаляются по `expires_at`.
 
 ## Деплой
 

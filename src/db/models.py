@@ -103,6 +103,31 @@ CREATE TABLE IF NOT EXISTS pending_media_downloads (
     UNIQUE(max_chat_id, max_msg_id, attachment_index, kind)
 );
 
+-- Временный recovery cache для проблемных MAX media.
+-- Stable refs лежат открыто как meta; volatile media hints шифруются и чистятся по TTL.
+CREATE TABLE IF NOT EXISTS media_recovery_cache (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    max_chat_id        TEXT NOT NULL,
+    max_msg_id         TEXT NOT NULL,
+    attachment_index   INTEGER NOT NULL,
+    kind               TEXT NOT NULL,
+    source_type        TEXT,
+    media_chat_id      TEXT,
+    media_msg_id       TEXT,
+    reference_kind     TEXT,
+    reference_id       TEXT,
+    filename           TEXT,
+    duration           INTEGER,
+    width              INTEGER,
+    height             INTEGER,
+    payload_cipher     TEXT,
+    payload_ciphertext TEXT,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    expires_at         INTEGER NOT NULL,
+    UNIQUE(max_chat_id, max_msg_id, attachment_index, kind)
+);
+
 -- Durable retry для Telegram -> MAX текстов.
 -- Хранит plaintext только для сообщений, которые не удалось отправить сразу.
 CREATE TABLE IF NOT EXISTS pending_outbound_messages (
@@ -247,6 +272,10 @@ CREATE INDEX IF NOT EXISTS idx_pending_media_status_due
   ON pending_media_downloads(status, next_attempt_at, lease_until);
 CREATE INDEX IF NOT EXISTS idx_pending_media_source
   ON pending_media_downloads(max_chat_id, max_msg_id);
+CREATE INDEX IF NOT EXISTS idx_media_recovery_cache_expires
+  ON media_recovery_cache(expires_at);
+CREATE INDEX IF NOT EXISTS idx_media_recovery_cache_source
+  ON media_recovery_cache(media_chat_id, media_msg_id, reference_kind, reference_id);
 CREATE INDEX IF NOT EXISTS idx_pending_outbound_status_due
   ON pending_outbound_messages(status, next_attempt_at, lease_until);
 CREATE INDEX IF NOT EXISTS idx_pending_outbound_created

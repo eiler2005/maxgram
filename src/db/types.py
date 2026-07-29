@@ -157,6 +157,29 @@ class PendingMediaDownload:
 
 
 @dataclass
+class MediaRecoveryCacheEntry:
+    max_chat_id: str
+    max_msg_id: str
+    attachment_index: int
+    kind: str
+    source_type: Optional[str] = None
+    media_chat_id: Optional[str] = None
+    media_msg_id: Optional[str] = None
+    reference_kind: Optional[str] = None
+    reference_id: Optional[str] = None
+    filename: Optional[str] = None
+    duration: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    payload_cipher: Optional[str] = None
+    payload_ciphertext: Optional[str] = None
+    created_at: int = 0
+    updated_at: int = 0
+    expires_at: int = 0
+    id: Optional[int] = None
+
+
+@dataclass
 class PendingOutboundMessage:
     tg_topic_id: int
     tg_msg_id: int

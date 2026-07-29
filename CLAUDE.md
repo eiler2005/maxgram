@@ -49,6 +49,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `tg_reply_map` — дополнительные TG message ids для reply routing поздно досланных медиа
 - `delivery_log` — статусы доставки (meta only)
 - `pending_media_downloads` — durable retry meta для MAX media
+- `media_recovery_cache` — короткий encrypted TTL-cache только для проблемных MAX media hints (`UNSUPPORTED`, download failure, partial delivery); stable refs открыто как meta, volatile URL/payload только Fernet ciphertext, без текста/raw event
 - `pending_inbound_messages` / `pending_outbound_messages` — durable retry для MAX→TG и TG→MAX текстов; хранит plaintext только для недоставленных текстов до доставки/TTL, медиа не сохраняет
 - `telegram_callback_actions` — owner-only Telegram callback actions; хранит только MAX invite payload для `max_join`, внешние URL не сохраняет
 - `known_users` — справочник имён MAX для `/dm`
@@ -119,7 +120,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 
 ## Принципы (не нарушать)
 
-1. **Privacy first** — текст сообщений и медиа не логируются, не хранятся в DB; исключение: durable text retry queues временно держат plaintext недоставленных текстов до доставки/TTL
+1. **Privacy first** — текст сообщений и медиа не логируются, не хранятся в DB; исключения: durable text retry queues временно держат plaintext недоставленных текстов до доставки/TTL, а `media_recovery_cache` до 48ч держит только encrypted media hints для проблемных вложений без message text/full raw
 2. **Whitelist by default** — `forward_all: true` в конфиге; режим per-chat переопределяет
 3. **Idempotency** — `max_msg_id` сохраняется до отправки в TG (idempotency key)
 4. **No third parties** — всё self-hosted, никаких GREEN-API и подобных

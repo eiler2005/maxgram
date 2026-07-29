@@ -298,12 +298,12 @@ for _ in range(3):
 ### Durable retry queues
 
 - Text-only retry queues (`pending_inbound_messages`, `pending_outbound_messages`) временно хранят plaintext только для недоставленных сообщений и очищают его после успешной доставки или TTL 48ч.
-- Media retry (`pending_media_downloads`) хранит только metadata/stable MAX media references; тяжёлые файлы, signed URLs, token и raw payload не пишутся в SQLite.
+- Media retry (`pending_media_downloads`) хранит только metadata/stable MAX media references. Для проблемных media есть отдельный `media_recovery_cache`: stable refs открыто как meta, volatile URL/payload только Fernet ciphertext до TTL 48ч, без message text/full raw event.
 - `retry_policy.py` задаёт общие lease/backoff/TTL правила, а inbound/outbound/media workers применяют разные политики хранения для текста и медиа.
 
 ### Тесты
 
-В проекте есть regression-набор на `pytest` (**229 тестов**):
+В проекте есть regression-набор на `pytest` (**366 тестов**):
 
 - `tests/test_max_adapter.py` — системные MAX события, supported attachments, channel/forward unwrap, unknown diagnostics, echo/ack исходящих, history pre-dedup, recovery snapshot collector
 - `tests/test_max_adapter_leaves.py` — pymax-free helper leaves и PyMax 2 backend/factory/raw/egress contracts
@@ -311,7 +311,7 @@ for _ in range(3):
 - `tests/test_bridge_core.py` — пересылка media/rendered text, `/dm`, `/recovery`, adaptive DM history sweep, async event-driven recovery scans, remap stale-reply safety
 - `tests/test_tg_adapter.py` — приём сообщений от участников группы, public `/dm` allowlist, owner-only `/recovery`
 - `tests/test_main.py` — startup notification с runtime/location/masked IP и статусом startup `pytest`
-- `tests/test_repository.py` — upsert `message_map`, MAX ↔ TG маппинг, recovery migrations/idempotency/deltas/report/export/remap
+- `tests/test_repository.py` — upsert `message_map`, MAX ↔ TG маппинг, recovery migrations/idempotency/deltas/report/export/remap, encrypted media recovery cache TTL/purge
 
 Запуск:
 ```bash
@@ -488,6 +488,7 @@ bridge:
   file_retention_hours: 1
   message_retention_days: 30
   log_retention_days: 7
+  media_recovery_cache_ttl_hours: 48
 
 content:
   forward_photos: true
@@ -533,6 +534,7 @@ MAX_PHONE=+79...
 | Текст сообщений | ❌ Нигде | — |
 | Недоставленный MAX→TG/TG→MAX текст | SQLite text retry queue | До доставки или 48 часов |
 | Медиафайлы | `data/tmp/` | 1 час |
+| Media recovery cache | SQLite `media_recovery_cache` | 48 часов, encrypted payload only |
 | `message_map` | SQLite | 30 дней |
 | `delivery_log` | SQLite | 7 дней |
 | `chat_bindings` | SQLite | Бессрочно |
@@ -816,3 +818,8 @@ fly logs -f
 | [ADR-004](docs/decisions/ADR-004-pymax-reconnect-strategy.md) | Fresh client на каждый reconnect |
 | [ADR-005](docs/decisions/ADR-005-max-account-recovery-registry.md) | MAX account migration recovery registry |
 | [ADR-006](docs/decisions/ADR-006-bridge-contracts-boundary.md) | Bridge contracts boundary для transport adapters |
+| [ADR-007](docs/decisions/ADR-007-max-backend-boundary.md) | MAX backend boundary |
+| [ADR-008](docs/decisions/ADR-008-bridge-core-coordinator-split.md) | Bridge core coordinator split |
+| [ADR-009](docs/decisions/ADR-009-max-adapter-service-boundaries.md) | MAX adapter service boundaries |
+| [ADR-010](docs/decisions/ADR-010-pymax-v2-migration.md) | PyMax v2 migration through backend adapter |
+| [ADR-011](docs/decisions/ADR-011-media-recovery-cache.md) | Encrypted TTL cache для failed MAX media recovery |

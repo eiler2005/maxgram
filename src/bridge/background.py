@@ -633,6 +633,12 @@ async def run_cleanup(
         try:
             await repo.cleanup_old_messages(cfg.bridge.message_retention_days)
             await repo.cleanup_old_logs(cfg.bridge.log_retention_days)
+            purge_media_cache = getattr(repo, "purge_expired_media_recovery_cache", None)
+            purged_media_cache = (
+                await purge_media_cache()
+                if callable(purge_media_cache)
+                else 0
+            )
             if health is not None:
                 await health.mark_healthy(
                     "storage",
@@ -652,6 +658,12 @@ async def run_cleanup(
                 outcome="completed",
                 message_retention_days=cfg.bridge.message_retention_days,
                 log_retention_days=cfg.bridge.log_retention_days,
+                media_recovery_cache_ttl_hours=getattr(
+                    cfg.bridge,
+                    "media_recovery_cache_ttl_hours",
+                    48,
+                ),
+                purged_media_recovery_cache=purged_media_cache,
             )
         except Exception as e:
             log_event(

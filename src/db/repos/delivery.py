@@ -8,7 +8,7 @@ from .base import BaseRepo
 
 class DeliveryRepo(BaseRepo):
     async def log_delivery(self, max_msg_id: str, max_chat_id: str,
-                           direction: str, status: str, error: str = None,
+                           direction: str, status: str, error: Optional[str] = None,
                            attempts: int = 1):
         now = int(time.time())
         await self._db.execute(

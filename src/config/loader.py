@@ -102,6 +102,7 @@ class BridgeConfig:
     file_retention_hours: int = 1
     message_retention_days: int = 30
     log_retention_days: int = 7
+    media_recovery_cache_ttl_hours: int = 48
     max_file_size_mb: int = 50
 
 
@@ -334,6 +335,10 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         file_retention_hours=br_raw.get("file_retention_hours", 1),
         message_retention_days=br_raw.get("message_retention_days", 30),
         log_retention_days=br_raw.get("log_retention_days", 7),
+        media_recovery_cache_ttl_hours=_resolve_int(
+            br_raw.get("media_recovery_cache_ttl_hours"),
+            48,
+        ),
         max_file_size_mb=br_raw.get("max_file_size_mb", 50),
     )
 

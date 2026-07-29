@@ -175,6 +175,11 @@ class BridgeCore:
             msg=msg,
             topic_id=topic_id,
             flow_id=flow_id,
+            cache_ttl_seconds=getattr(
+                self._cfg.bridge,
+                "media_recovery_cache_ttl_hours",
+                48,
+            ) * 3600,
         )
 
     async def _get_or_create_topic(

@@ -11,6 +11,7 @@ from typing import Optional
 from .. import errors as max_errors
 from .. import payload as max_payload
 from ..deps import MediaDeps
+from ..ports import MaxClientAttachment
 from . import downloader as max_downloader
 from .ua import (
     MAX_CDN_ANDROID_CHROME_USER_AGENT,
@@ -22,6 +23,46 @@ from ....bridge.contracts import MaxAttachment
 from ....logging_utils import log_event, sanitize_path, sanitize_url
 
 logger = logging.getLogger("src.adapters.max_adapter")
+
+_RECOVERY_PAYLOAD_FIELD_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("id", ("id",)),
+    ("fileId", ("fileId", "file_id")),
+    ("photoId", ("photoId", "photo_id", "imageId", "image_id")),
+    ("videoId", ("videoId", "video_id")),
+    ("audioId", ("audioId", "audio_id")),
+    ("url", ("url",)),
+    ("baseUrl", ("baseUrl", "base_url")),
+    ("baseRawUrl", ("baseRawUrl",)),
+    ("filename", ("filename", "fileName", "name")),
+    ("duration", ("duration",)),
+    ("width", ("width",)),
+    ("height", ("height",)),
+    ("size", ("size", "fileSize", "file_size")),
+    ("mimeType", ("mimeType", "mime_type")),
+    ("wave", ("wave",)),
+)
+_RECOVERY_PAYLOAD_NESTED_KEYS = (
+    "payload",
+    "audio",
+    "voice",
+    "audioMessage",
+    "voiceMessage",
+    "media",
+    "file",
+    "photo",
+    "image",
+    "video",
+    "data",
+    "content",
+    "body",
+)
+_RECOVERY_PAYLOAD_KIND_TYPE = {
+    "audio": "AUDIO",
+    "photo": "PHOTO",
+    "video": "VIDEO",
+    "document": "FILE",
+    "file": "FILE",
+}
 
 
 class MaxMediaService:
@@ -72,6 +113,71 @@ class MaxMediaService:
             or getattr(attach, "name", None)
         )
         return self._fix_filename_encoding(name) if name else None
+
+    def _recovery_payload_value(self, value) -> object | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            return text[:4096] if text else None
+        if isinstance(value, (list, tuple)):
+            cleaned: list[object] = []
+            for item in list(value)[:256]:
+                cleaned_item = self._recovery_payload_value(item)
+                if cleaned_item is not None and not isinstance(cleaned_item, list):
+                    cleaned.append(cleaned_item)
+            return cleaned if cleaned else None
+        return None
+
+    def _object_media_value(self, source, *names: str):
+        if isinstance(source, dict):
+            return max_payload.payload_value(source, *names)
+        raw_fields = getattr(source, "__dict__", None)
+        if isinstance(raw_fields, dict):
+            value = max_payload.payload_value(raw_fields, *names)
+            if value is not None:
+                return value
+        for name in names:
+            if hasattr(source, name):
+                value = getattr(source, name, None)
+                if value is not None:
+                    return value
+        return None
+
+    def _copy_recovery_payload_fields(self, source, target: dict[str, object]) -> None:
+        for output_name, aliases in _RECOVERY_PAYLOAD_FIELD_ALIASES:
+            if output_name in target:
+                continue
+            value = self._object_media_value(source, *aliases)
+            cleaned = self._recovery_payload_value(value)
+            if cleaned is not None:
+                target[output_name] = cleaned
+
+    def media_recovery_payload_for_attachment(
+        self,
+        attach,
+        *,
+        atype: str,
+        raw_type: str | None = None,
+    ) -> dict[str, object] | None:
+        payload: dict[str, object] = {}
+        self._copy_recovery_payload_fields(attach, payload)
+        for nested_key in _RECOVERY_PAYLOAD_NESTED_KEYS:
+            nested = self._object_media_value(attach, nested_key)
+            if isinstance(nested, (dict, SimpleNamespace)) or hasattr(nested, "__dict__"):
+                self._copy_recovery_payload_fields(nested, payload)
+        normalized_type = self._normalize_attachment_type(atype or raw_type or "")
+        if normalized_type:
+            payload["type"] = normalized_type
+        if raw_type:
+            payload["sourceType"] = str(raw_type).upper()
+        return payload or None
 
     def _attachment_reference(
         self,
@@ -1019,6 +1125,52 @@ class MaxMediaService:
             reference_kind=reference_kind,
             reference_id=str(reference_id),
         )
+
+    async def download_cached_media_payload(
+        self,
+        *,
+        chat_id: str,
+        msg_id: str,
+        kind: str,
+        payload: dict[str, object],
+        attachment_index: int = 0,
+        filename_hint: Optional[str] = None,
+        duration: Optional[int] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        source_type: Optional[str] = None,
+        flow_id: Optional[str] = None,
+    ) -> Optional[MaxAttachment]:
+        if not isinstance(payload, dict):
+            return None
+        normalized_type = _RECOVERY_PAYLOAD_KIND_TYPE.get(str(kind or "").lower())
+        if not normalized_type:
+            return None
+        attach_payload = dict(payload)
+        attach_payload["type"] = normalized_type
+        if filename_hint and not self._object_media_value(
+            attach_payload,
+            "filename",
+            "fileName",
+            "name",
+        ):
+            attach_payload["filename"] = filename_hint
+        if duration is not None and self._object_media_value(attach_payload, "duration") is None:
+            attach_payload["duration"] = duration
+        if width is not None and self._object_media_value(attach_payload, "width") is None:
+            attach_payload["width"] = width
+        if height is not None and self._object_media_value(attach_payload, "height") is None:
+            attach_payload["height"] = height
+        attachment = await self._download_attachment(
+            chat_id,
+            msg_id,
+            MaxClientAttachment.from_object(attach_payload),
+            index=attachment_index,
+            flow_id=flow_id,
+        )
+        if attachment is not None and source_type:
+            attachment.source_type = source_type
+        return attachment
 
     async def _download_attachment(self, chat_id: str, msg_id: str,
                                    attach, index: int = 0,

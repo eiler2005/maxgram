@@ -7,6 +7,7 @@ All notable changes to Maxgram are documented here.
 ## Unreleased
 
 ### Added
+- **Encrypted MAX media recovery cache** — failed/unsupported MAX attachments now keep metadata-only stable refs plus Fernet-encrypted volatile payload hints for a short TTL (default 48h). The media retry worker can replay cache-only failures and cleanup purges expired rows automatically.
 - **MAX join and link buttons in Telegram** — `SHARE`, `inline_keyboard`, nested `web_app.url` / `buttons[].url`, and msgpack text URLs now become Telegram inline buttons. `max.ru/join/...` links create an owner-only `Вступить в MAX` callback that joins through PyMax; external sites use normal URL buttons and are not persisted in SQLite.
 - **Encrypted contacts snapshot for new-number recovery** — owner-only `/recovery contacts status`, `/recovery contacts snapshot [--force]`, and `/recovery contacts import dry-run|apply` support PyMax `import_contacts()` migration without writing raw phone numbers to SQLite, logs, health, reports, or normal exports.
 - **Durable text outbox in both directions** — failed text-only TG→MAX and MAX→TG deliveries now use SQLite-backed queues with lease/backoff/TTL. Plaintext is kept only while pending and is cleared after delivery or expiration.
@@ -49,6 +50,7 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added coverage for encrypted media recovery cache storage/purge, sanitized MAX attachment payload hints, and media retry fallback/replay through cached payloads.
 - Added regressions for `delivered_media_parts` SQLite idempotency, per-index edit-media dedupe, partial late-media recovery continuation, edit finalizer suppression by matching part, and successful attachment metadata propagation.
 - Added regressions for PyMax enum edit-status normalization and suppression of false edit-event media finalizers after the base message has already delivered.
 - Added coverage for MAX share/inline-keyboard URL extraction, Telegram URL buttons, owner-only MAX join callbacks, callback action SQLite lifecycle, and PyMax join group/channel fallback.

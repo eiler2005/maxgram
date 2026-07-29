@@ -863,6 +863,11 @@ class MaxEventsService:
         retryable = False
         reference_kind = None
         reference_id = None
+        recovery_payload = self._media.media_recovery_payload_for_attachment(
+            attach,
+            atype=atype,
+            raw_type=raw_type,
+        )
         if atype == "VIDEO":
             video_id = (
                 getattr(attach, "video_id", None)
@@ -895,6 +900,17 @@ class MaxEventsService:
                 retryable = True
                 reference_kind = "file_id"
                 reference_id = str(file_id)
+        elif atype == "FILE":
+            file_id = (
+                getattr(attach, "file_id", None)
+                or getattr(attach, "fileId", None)
+                or getattr(attach, "id", None)
+            )
+            if file_id is not None:
+                reference_kind = "file_id"
+                reference_id = str(file_id)
+        if not retryable and recovery_payload and atype in {"PHOTO", "VIDEO", "AUDIO", "FILE"}:
+            retryable = True
 
         return MaxAttachmentFailure(
             kind=self._attachment_kind_for_type(atype),
@@ -913,6 +929,7 @@ class MaxEventsService:
             ),
             width=getattr(attach, "width", None),
             height=getattr(attach, "height", None),
+            recovery_payload=recovery_payload,
         )
 
     def _should_skip_empty_event(self, message_type: Optional[str], text: Optional[str],

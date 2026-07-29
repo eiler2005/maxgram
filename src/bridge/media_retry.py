@@ -2,6 +2,8 @@
 
 import asyncio
 from contextlib import suppress
+import hashlib
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -26,6 +28,8 @@ logger = logging.getLogger("src.bridge.core")
 
 SendAttachment = Callable[[int, MaxAttachment, str], Awaitable[Optional[int]]]
 LATE_DUPLICATE_REFERENCE_KIND = "late_duplicate"
+CACHED_PAYLOAD_REFERENCE_KIND = "cached_payload"
+DEFAULT_MEDIA_RECOVERY_CACHE_TTL_SECONDS = 48 * 60 * 60
 LATE_DUPLICATE_FINAL_DELAY_SECONDS = 180
 _EDIT_STATUS_SUFFIXES = (":EDITED", ":MESSAGESTATUS.EDITED")
 
@@ -69,6 +73,82 @@ def is_retryable_media_failure(failure: MaxAttachmentFailure) -> bool:
     if failure.kind == "photo":
         return failure.reference_kind == "file_id"
     return False
+
+
+def is_cached_payload_media_failure(
+    failure: MaxAttachmentFailure,
+    *,
+    payload_encrypted: bool,
+) -> bool:
+    return bool(
+        payload_encrypted
+        and failure.recovery_payload
+        and failure.kind in {"video", "audio", "photo", "document"}
+    )
+
+
+def media_recovery_cache_reference_id(failure: MaxAttachmentFailure) -> str | None:
+    if not failure.recovery_payload:
+        return None
+    payload = {
+        "kind": failure.kind,
+        "source_type": failure.source_type,
+        "reference_kind": failure.reference_kind,
+        "reference_id": failure.reference_id,
+        "payload": failure.recovery_payload,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+async def save_media_recovery_cache_for_failure(
+    *,
+    repo: Repository,
+    msg,
+    failure: MaxAttachmentFailure,
+    media_chat_id: str,
+    media_msg_id: str,
+    ttl_seconds: int,
+    flow_id: str | None,
+) -> bool:
+    saver = getattr(repo, "save_media_recovery_cache", None)
+    if not callable(saver):
+        return False
+    payload_encrypted = await saver(
+        max_chat_id=str(msg.chat_id),
+        max_msg_id=str(msg.msg_id),
+        attachment_index=failure.index,
+        kind=media_part_kind(failure.kind),
+        source_type=failure.source_type,
+        media_chat_id=media_chat_id,
+        media_msg_id=media_msg_id,
+        reference_kind=failure.reference_kind,
+        reference_id=failure.reference_id,
+        filename=failure.filename,
+        duration=failure.duration,
+        width=failure.width,
+        height=failure.height,
+        payload=failure.recovery_payload,
+        ttl_seconds=ttl_seconds,
+    )
+    log_event(
+        logger,
+        logging.INFO,
+        "bridge.media_recovery_cache.saved",
+        flow_id=flow_id,
+        direction="inbound",
+        stage="media_retry",
+        outcome="saved",
+        max_chat_id=msg.chat_id,
+        max_msg_id=msg.msg_id,
+        attachment_index=failure.index,
+        kind=failure.kind,
+        source_type=failure.source_type,
+        reference_kind=failure.reference_kind,
+        payload_encrypted=payload_encrypted,
+        ttl_seconds=ttl_seconds,
+    )
+    return payload_encrypted
 
 
 def is_late_duplicate_finalizer_job(job: PendingMediaDownload) -> bool:
@@ -500,6 +580,7 @@ async def enqueue_retryable_media_failures(
     msg,
     topic_id: int,
     flow_id: str | None = None,
+    cache_ttl_seconds: int = DEFAULT_MEDIA_RECOVERY_CACHE_TTL_SECONDS,
 ) -> tuple[int, list[MaxAttachmentFailure]]:
     enqueued = 0
     display_failures: list[MaxAttachmentFailure] = []
@@ -533,7 +614,32 @@ async def enqueue_retryable_media_failures(
                 kind=failure.kind,
             )
             continue
-        if not is_retryable_media_failure(failure):
+
+        media_chat_id, media_msg_id, source_fallback = media_source_pair(
+            source_chat_id=failure.media_chat_id,
+            source_msg_id=failure.media_msg_id,
+            fallback_chat_id=msg.chat_id,
+            fallback_msg_id=msg.msg_id,
+        )
+        payload_encrypted = False
+        if failure.recovery_payload or failure.reference_id:
+            payload_encrypted = await save_media_recovery_cache_for_failure(
+                repo=repo,
+                msg=msg,
+                failure=failure,
+                media_chat_id=media_chat_id,
+                media_msg_id=media_msg_id,
+                ttl_seconds=cache_ttl_seconds,
+                flow_id=flow_id,
+            )
+
+        stable_retryable = is_retryable_media_failure(failure)
+        cached_payload_retryable = is_cached_payload_media_failure(
+            failure,
+            payload_encrypted=payload_encrypted,
+        )
+
+        if not (stable_retryable or cached_payload_retryable):
             existing = await find_existing_pending_media_for_failure(repo=repo, msg=msg, failure=failure)
             if existing is not None:
                 log_event(
@@ -594,13 +700,6 @@ async def enqueue_retryable_media_failures(
             )
             continue
 
-        media_chat_id, media_msg_id, source_fallback = media_source_pair(
-            source_chat_id=failure.media_chat_id,
-            source_msg_id=failure.media_msg_id,
-            fallback_chat_id=msg.chat_id,
-            fallback_msg_id=msg.msg_id,
-        )
-
         existing = await find_existing_pending_media_for_failure(
             repo=repo,
             msg=msg,
@@ -629,6 +728,12 @@ async def enqueue_retryable_media_failures(
             )
             continue
 
+        job_reference_kind = failure.reference_kind or "video_id"
+        job_reference_id = failure.reference_id or ""
+        if not stable_retryable and cached_payload_retryable:
+            job_reference_kind = CACHED_PAYLOAD_REFERENCE_KIND
+            job_reference_id = media_recovery_cache_reference_id(failure) or ""
+
         job_id = await repo.enqueue_pending_media(
             PendingMediaDownload(
                 max_chat_id=msg.chat_id,
@@ -639,8 +744,8 @@ async def enqueue_retryable_media_failures(
                 source_type=failure.source_type,
                 media_chat_id=media_chat_id,
                 media_msg_id=media_msg_id,
-                reference_kind=failure.reference_kind or "video_id",
-                reference_id=failure.reference_id or "",
+                reference_kind=job_reference_kind,
+                reference_id=job_reference_id,
                 filename=failure.filename,
                 duration=failure.duration,
                 width=failure.width,
@@ -665,7 +770,7 @@ async def enqueue_retryable_media_failures(
             pending_media_id=job_id,
             attachment_index=failure.index,
             kind=failure.kind,
-            reference_kind=failure.reference_kind,
+            reference_kind=job_reference_kind,
             media_source_fallback=source_fallback,
         )
     return enqueued, display_failures
@@ -753,6 +858,73 @@ async def mark_pending_media_retry(
     )
 
 
+async def download_media_from_recovery_cache(
+    *,
+    repo: Repository,
+    max_adapter: MaxBridgePort,
+    job: PendingMediaDownload,
+    media_chat_id: str,
+    media_msg_id: str,
+    flow_id: str,
+) -> tuple[Optional[MaxAttachment], bool]:
+    payload_getter = getattr(repo, "get_media_recovery_cache_payload", None)
+    if not callable(payload_getter):
+        return None, False
+    payload = await payload_getter(
+        max_chat_id=job.max_chat_id,
+        max_msg_id=job.max_msg_id,
+        attachment_index=job.attachment_index,
+        kind=job.kind,
+    )
+    if not payload:
+        return None, False
+    log_event(
+        logger,
+        logging.INFO,
+        "bridge.media_recovery_cache.attempt_started",
+        flow_id=flow_id,
+        direction="inbound",
+        stage="media_retry",
+        outcome="started",
+        max_chat_id=job.max_chat_id,
+        max_msg_id=job.max_msg_id,
+        tg_topic_id=job.tg_topic_id,
+        pending_media_id=job.id,
+        attachment_index=job.attachment_index,
+        kind=job.kind,
+    )
+    attachment = await max_adapter.download_cached_media_payload(
+        chat_id=media_chat_id,
+        msg_id=media_msg_id,
+        kind=job.kind,
+        payload=payload,
+        attachment_index=job.attachment_index,
+        filename_hint=job.filename,
+        duration=job.duration,
+        width=job.width,
+        height=job.height,
+        source_type=job.source_type,
+        flow_id=flow_id,
+    )
+    if attachment is not None:
+        log_event(
+            logger,
+            logging.INFO,
+            "bridge.media_recovery_cache.recovered",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="media_retry",
+            outcome="recovered",
+            max_chat_id=job.max_chat_id,
+            max_msg_id=job.max_msg_id,
+            tg_topic_id=job.tg_topic_id,
+            pending_media_id=job.id,
+            attachment_index=job.attachment_index,
+            kind=job.kind,
+        )
+    return attachment, True
+
+
 async def process_pending_media_download(
     *,
     cfg: AppConfig,
@@ -801,11 +973,16 @@ async def process_pending_media_download(
             kind=job.kind,
         )
         return
-    if not job.reference_id or not (
+    cached_payload_job = (
+        job.reference_kind == CACHED_PAYLOAD_REFERENCE_KIND
+        and bool(job.reference_id)
+    )
+    stable_reference_job = bool(job.reference_id) and (
         (job.kind == "video" and job.reference_kind == "video_id")
         or (job.kind == "audio" and job.reference_kind in {"audio_id", "file_id"})
         or (job.kind == "photo" and job.reference_kind == "file_id")
-    ):
+    )
+    if not (stable_reference_job or cached_payload_job):
         await tg.send_text(
             job.tg_topic_id,
             compose_terminal_media_failure_text(
@@ -868,7 +1045,9 @@ async def process_pending_media_download(
         download_media = max_adapter.download_video_reference
 
     try:
-        if job.kind == "audio":
+        attachment = None
+        cache_available = False
+        if stable_reference_job and job.kind == "audio":
             attachment = await download_media(
                 chat_id=media_chat_id,
                 msg_id=media_msg_id,
@@ -880,7 +1059,7 @@ async def process_pending_media_download(
                 source_type=job.source_type or "AUDIO",
                 flow_id=flow_id,
             )
-        elif job.kind == "photo":
+        elif stable_reference_job and job.kind == "photo":
             attachment = await download_media(
                 chat_id=media_chat_id,
                 msg_id=media_msg_id,
@@ -893,7 +1072,7 @@ async def process_pending_media_download(
                 source_type=job.source_type or "PHOTO",
                 flow_id=flow_id,
             )
-        else:
+        elif stable_reference_job:
             attachment = await download_media(
                 chat_id=media_chat_id,
                 msg_id=media_msg_id,
@@ -935,6 +1114,15 @@ async def process_pending_media_download(
                     source_type=job.source_type or "VIDEO",
                     flow_id=flow_id,
                 )
+        if attachment is None:
+            attachment, cache_available = await download_media_from_recovery_cache(
+                repo=repo,
+                max_adapter=max_adapter,
+                job=job,
+                media_chat_id=media_chat_id,
+                media_msg_id=media_msg_id,
+                flow_id=flow_id,
+            )
     except Exception as e:
         await mark_pending_media_retry(
             repo=repo,
@@ -944,6 +1132,37 @@ async def process_pending_media_download(
         )
         return
     if attachment is None:
+        if cached_payload_job and not cache_available:
+            await tg.send_text(
+                job.tg_topic_id,
+                compose_terminal_media_failure_text(
+                    kind=job.kind,
+                    index=job.attachment_index,
+                    source_type=job.source_type,
+                ),
+                flow_id=flow_id,
+            )
+            await repo.mark_pending_media_failed(
+                job.id,
+                error="media_recovery_cache_miss",
+            )
+            log_event(
+                logger,
+                logging.ERROR,
+                "bridge.media_retry.failed",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="media_retry",
+                outcome="failed",
+                reason="media_recovery_cache_miss",
+                max_chat_id=job.max_chat_id,
+                max_msg_id=job.max_msg_id,
+                tg_topic_id=job.tg_topic_id,
+                pending_media_id=job.id,
+                attachment_index=job.attachment_index,
+                kind=job.kind,
+            )
+            return
         await mark_pending_media_retry(
             repo=repo,
             job=job,

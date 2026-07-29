@@ -52,6 +52,7 @@ bridge:
   file_retention_hours: 1
   message_retention_days: 30
   log_retention_days: 7
+  media_recovery_cache_ttl_hours: 48
   max_file_size_mb: 50
 
 content:

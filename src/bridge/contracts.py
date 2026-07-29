@@ -69,6 +69,7 @@ class MaxAttachmentFailure:
     duration: Optional[int] = None
     width: Optional[int] = None
     height: Optional[int] = None
+    recovery_payload: Optional[dict[str, object]] = None
 
 
 @dataclass
@@ -255,6 +256,7 @@ class MaxBridgePort(Protocol):
     async def download_video_reference(self, **kwargs) -> Optional[MaxAttachment]: ...
     async def download_audio_reference(self, **kwargs) -> Optional[MaxAttachment]: ...
     async def download_photo_reference(self, **kwargs) -> Optional[MaxAttachment]: ...
+    async def download_cached_media_payload(self, **kwargs) -> Optional[MaxAttachment]: ...
     async def replay_recent_history(
         self,
         chat_id: str,

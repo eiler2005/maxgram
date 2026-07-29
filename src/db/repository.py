@@ -17,8 +17,9 @@ from .repos.callback_actions import CallbackActionsRepo
 from .repos.delivery import DeliveryRepo
 from .repos.delivered_media import DeliveredMediaRepo
 from .repos.generations import GenerationsRepo
-from .repos.pending_inbound import PendingInboundRepo
+from .repos.media_recovery_cache import MediaRecoveryCacheRepo
 from .repos.messages import MessagesRepo
+from .repos.pending_inbound import PendingInboundRepo
 from .repos.pending_media import PendingMediaRepo
 from .repos.pending_outbound import PendingOutboundRepo
 from .repos.recovery import RecoveryRepo
@@ -29,6 +30,7 @@ from .types import (
     DeliveredMediaPart,
     DmContactRecoveryEntry,
     KnownUser,
+    MediaRecoveryCacheEntry,
     MessageRecord,
     PendingInboundMessage,
     PendingMediaDownload,
@@ -58,6 +60,7 @@ class Repository:
             should_autocommit,
         )
         self._pending_media = PendingMediaRepo(get_db, should_autocommit)
+        self._media_recovery_cache = MediaRecoveryCacheRepo(get_db, should_autocommit)
         self._pending_inbound = PendingInboundRepo(get_db, should_autocommit)
         self._pending_outbound = PendingOutboundRepo(get_db, should_autocommit)
         self._callback_actions = CallbackActionsRepo(get_db, should_autocommit)
@@ -444,6 +447,86 @@ class Repository:
     async def count_pending_media(self) -> dict[str, Optional[int]]:
         return await self._pending_media.count_pending_media()
 
+    async def save_media_recovery_cache(
+        self,
+        *,
+        max_chat_id: str,
+        max_msg_id: str,
+        attachment_index: int,
+        kind: str,
+        source_type: Optional[str] = None,
+        media_chat_id: Optional[str] = None,
+        media_msg_id: Optional[str] = None,
+        reference_kind: Optional[str] = None,
+        reference_id: Optional[str] = None,
+        filename: Optional[str] = None,
+        duration: Optional[int] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        payload: Optional[dict[str, object]] = None,
+        ttl_seconds: int = 48 * 60 * 60,
+        now: Optional[int] = None,
+    ) -> bool:
+        return await self._media_recovery_cache.save_media_recovery_cache(
+            max_chat_id=max_chat_id,
+            max_msg_id=max_msg_id,
+            attachment_index=attachment_index,
+            kind=kind,
+            source_type=source_type,
+            media_chat_id=media_chat_id,
+            media_msg_id=media_msg_id,
+            reference_kind=reference_kind,
+            reference_id=reference_id,
+            filename=filename,
+            duration=duration,
+            width=width,
+            height=height,
+            payload=payload,
+            ttl_seconds=ttl_seconds,
+            now=now,
+        )
+
+    async def get_media_recovery_cache_payload(
+        self,
+        *,
+        max_chat_id: str,
+        max_msg_id: str,
+        attachment_index: int,
+        kind: str,
+        now: Optional[int] = None,
+    ) -> Optional[dict[str, object]]:
+        return await self._media_recovery_cache.get_media_recovery_cache_payload(
+            max_chat_id=max_chat_id,
+            max_msg_id=max_msg_id,
+            attachment_index=attachment_index,
+            kind=kind,
+            now=now,
+        )
+
+    async def get_media_recovery_cache_entry(
+        self,
+        *,
+        max_chat_id: str,
+        max_msg_id: str,
+        attachment_index: int,
+        kind: str,
+    ) -> Optional[MediaRecoveryCacheEntry]:
+        return await self._media_recovery_cache.get_media_recovery_cache_entry(
+            max_chat_id=max_chat_id,
+            max_msg_id=max_msg_id,
+            attachment_index=attachment_index,
+            kind=kind,
+        )
+
+    async def purge_expired_media_recovery_cache(
+        self,
+        *,
+        now: Optional[int] = None,
+    ) -> int:
+        return await self._media_recovery_cache.purge_expired_media_recovery_cache(
+            now=now,
+        )
+
     # ── PendingInboundMessages ────────────────────────────────────────────
 
     async def enqueue_pending_inbound(self, job: PendingInboundMessage) -> int:
@@ -601,7 +684,7 @@ class Repository:
     # ── DeliveryLog / Stats / Retention ────────────────────────────────────
 
     async def log_delivery(self, max_msg_id: str, max_chat_id: str,
-                           direction: str, status: str, error: str = None,
+                           direction: str, status: str, error: Optional[str] = None,
                            attempts: int = 1):
         await self._delivery.log_delivery(
             max_msg_id,

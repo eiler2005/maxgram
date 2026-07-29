@@ -45,6 +45,7 @@ class DummyRepo:
         self.delivery_logs = []
         self.latest_deliveries = {}
         self.pending_media = []
+        self.media_recovery_cache = {}
         self.pending_inbound = []
         self.pending_outbound = []
         self.reply_mappings = {}
@@ -310,6 +311,33 @@ class DummyRepo:
     async def count_pending_media(self):
         return self.pending_stats
 
+    async def save_media_recovery_cache(self, **kwargs):
+        key = (
+            kwargs["max_chat_id"],
+            kwargs["max_msg_id"],
+            kwargs["attachment_index"],
+            kwargs["kind"],
+        )
+        self.media_recovery_cache[key] = dict(kwargs)
+        return bool(kwargs.get("payload"))
+
+    async def get_media_recovery_cache_payload(
+        self,
+        *,
+        max_chat_id: str,
+        max_msg_id: str,
+        attachment_index: int,
+        kind: str,
+        now=None,
+    ):
+        entry = self.media_recovery_cache.get(
+            (max_chat_id, max_msg_id, attachment_index, kind)
+        )
+        return dict(entry.get("payload") or {}) if entry else None
+
+    async def purge_expired_media_recovery_cache(self, *, now=None):
+        return 0
+
     async def enqueue_pending_inbound(self, job):
         for existing in self.pending_inbound:
             if existing.max_chat_id == job.max_chat_id and existing.max_msg_id == job.max_msg_id:
@@ -478,6 +506,8 @@ class DummyMax:
         self.audio_reference_calls = []
         self.photo_reference_result = None
         self.photo_reference_calls = []
+        self.cached_media_payload_result = None
+        self.cached_media_payload_calls = []
         self.replay_calls = []
         self.empty_stats = {"pending_count": 0, "oldest_created_at": None}
         self.start_handlers = []
@@ -544,6 +574,10 @@ class DummyMax:
     async def download_photo_reference(self, **kwargs):
         self.photo_reference_calls.append(kwargs)
         return self.photo_reference_result
+
+    async def download_cached_media_payload(self, **kwargs):
+        self.cached_media_payload_calls.append(kwargs)
+        return self.cached_media_payload_result
 
     async def replay_recent_history(
         self,
@@ -757,7 +791,10 @@ class DummyConfig(SimpleNamespace):
 def make_bridge(repo=None, max_adapter=None, tg_adapter=None):
     return BridgeCore(
         config=DummyConfig(
-            bridge=SimpleNamespace(max_file_size_mb=50),
+            bridge=SimpleNamespace(
+                max_file_size_mb=50,
+                media_recovery_cache_ttl_hours=48,
+            ),
             content=SimpleNamespace(
                 placeholder_unsupported="[unsupported: {type}]",
                 placeholder_file_too_large="[too large: {filename}]",
@@ -2432,6 +2469,58 @@ async def test_existing_pending_audio_failure_does_not_duplicate_placeholder():
 
 
 @pytest.mark.asyncio
+async def test_enqueue_media_retry_saves_cache_only_document_payload():
+    repo = DummyRepo()
+    payload = {
+        "type": "FILE",
+        "url": "https://cdn.example.invalid/doc.pdf?sig=secret",
+        "fileId": "file-1",
+        "filename": "doc.pdf",
+    }
+    msg = SimpleNamespace(
+        msg_id="mx-doc-1",
+        chat_id="-70000000000003",
+        status=None,
+        attachment_failures=[
+            MaxAttachmentFailure(
+                kind="document",
+                source_type="UNSUPPORTED",
+                filename="doc.pdf",
+                index=0,
+                reason="download_failed",
+                retryable=True,
+                media_chat_id="-70000000000003",
+                media_msg_id="mx-doc-1",
+                reference_kind="file_id",
+                reference_id="file-1",
+                recovery_payload=payload,
+            )
+        ],
+    )
+
+    enqueued, display_failures = await bridge_media_retry.enqueue_retryable_media_failures(
+        repo=repo,
+        msg=msg,
+        topic_id=99,
+        flow_id="flow-doc-cache",
+        cache_ttl_seconds=3600,
+    )
+
+    assert enqueued == 1
+    assert display_failures == msg.attachment_failures
+    assert len(repo.pending_media) == 1
+    job = repo.pending_media[0]
+    assert job.kind == "document"
+    assert job.reference_kind == bridge_media_retry.CACHED_PAYLOAD_REFERENCE_KIND
+    assert job.reference_id
+    cache_entry = repo.media_recovery_cache[
+        ("-70000000000003", "mx-doc-1", 0, "document")
+    ]
+    assert cache_entry["payload"] == payload
+    assert cache_entry["ttl_seconds"] == 3600
+
+
+@pytest.mark.asyncio
 async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
     repo = DummyRepo()
     max_adapter = DummyMax()
@@ -2485,6 +2574,116 @@ async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
     assert job.status == "delivered"
     assert job.delivered_tg_msg_id == 3
     assert not video_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pending_media_worker_falls_back_to_recovery_cache_after_reference_miss(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    photo_path = Path(tmp_path) / "cached.jpg"
+    photo_path.write_bytes(b"\xff\xd8\xff")
+    max_adapter.cached_media_payload_result = MaxAttachment(
+        "photo",
+        str(photo_path),
+        "cached.jpg",
+        None,
+        800,
+        600,
+        "UNSUPPORTED",
+    )
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-photo-cache",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="photo",
+        source_type="UNSUPPORTED",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-photo-cache",
+        reference_kind="file_id",
+        reference_id="photo-file-1",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+    repo.media_recovery_cache[
+        ("-70000000000003", "mx-photo-cache", 0, "photo")
+    ] = {
+        "payload": {
+            "type": "PHOTO",
+            "baseUrl": "https://cdn.example.invalid/photo.jpg?sig=secret",
+            "filename": "cached.jpg",
+        }
+    }
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert max_adapter.photo_reference_calls
+    assert max_adapter.cached_media_payload_calls
+    assert "sig=secret" not in str(repo.delivery_logs)
+    assert tg_adapter.calls == [("photo", "Докачанное фото MAX #1")]
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 1
+    assert not photo_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pending_media_worker_delivers_cache_only_document(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    doc_path = Path(tmp_path) / "cached.pdf"
+    doc_path.write_bytes(b"%PDF-1.4\n")
+    max_adapter.cached_media_payload_result = MaxAttachment(
+        "document",
+        str(doc_path),
+        "cached.pdf",
+        None,
+        None,
+        None,
+        "UNSUPPORTED",
+    )
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-doc-cache",
+        tg_topic_id=99,
+        attachment_index=1,
+        kind="document",
+        source_type="UNSUPPORTED",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-doc-cache",
+        reference_kind=bridge_media_retry.CACHED_PAYLOAD_REFERENCE_KIND,
+        reference_id="cache-ref",
+        filename="cached.pdf",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+    repo.media_recovery_cache[
+        ("-70000000000003", "mx-doc-cache", 1, "document")
+    ] = {
+        "payload": {
+            "type": "FILE",
+            "url": "https://cdn.example.invalid/cached.pdf?sig=secret",
+            "filename": "cached.pdf",
+        }
+    }
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert max_adapter.video_reference_calls == []
+    assert max_adapter.cached_media_payload_calls
+    assert tg_adapter.calls == [
+        ("document", "Докачанное файл MAX #2", "cached.pdf"),
+    ]
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 2
+    assert not doc_path.exists()
 
 
 @pytest.mark.asyncio

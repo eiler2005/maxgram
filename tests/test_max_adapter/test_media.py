@@ -87,6 +87,87 @@ async def test_download_attachment_populates_media_part_metadata(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_media_recovery_payload_sanitizes_nested_unsupported_audio(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    media = adapter._adapter._media
+    attach = SimpleNamespace(
+        type="UNSUPPORTED",
+        text="do not cache this text",
+        raw={"url": "https://example.invalid/raw"},
+        payload={
+            "audioId": "a-1",
+            "url": "https://cdn.example.invalid/voice.ogg?sig=secret",
+            "duration": 7000,
+            "wave": [1, 2, 3],
+            "text": "nested secret",
+            "raw": {"field": "nested"},
+        },
+    )
+
+    payload = media.media_recovery_payload_for_attachment(
+        attach,
+        atype="AUDIO",
+        raw_type="UNSUPPORTED",
+    )
+
+    assert payload == {
+        "audioId": "a-1",
+        "url": "https://cdn.example.invalid/voice.ogg?sig=secret",
+        "duration": 7000,
+        "wave": [1, 2, 3],
+        "type": "AUDIO",
+        "sourceType": "UNSUPPORTED",
+    }
+
+
+@pytest.mark.asyncio
+async def test_download_cached_media_payload_uses_cached_direct_url(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    media = adapter._adapter._media
+    adapter.url_result = (str(tmp_path / "tmp" / "voice.ogg"), "voice.ogg")
+
+    attachment = await media.download_cached_media_payload(
+        chat_id="chat-1",
+        msg_id="msg-1",
+        kind="audio",
+        payload={
+            "type": "AUDIO",
+            "url": "https://cdn.example.invalid/voice.ogg?sig=secret",
+            "filename": "voice.ogg",
+            "duration": 7000,
+        },
+        attachment_index=2,
+        source_type="UNSUPPORTED",
+    )
+
+    assert attachment is not None
+    assert attachment.kind == "audio"
+    assert attachment.source_type == "UNSUPPORTED"
+    assert attachment.duration == 7
+    assert attachment.attachment_index == 2
+    assert adapter.url_downloads == [
+        (
+            "https://cdn.example.invalid/voice.ogg?sig=secret",
+            "audio_chat-1_msg-1_2",
+            "voice.ogg",
+            ".ogg",
+            "audio",
+            "direct_url",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_download_photo_reference_uses_file_download(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

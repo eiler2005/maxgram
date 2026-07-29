@@ -2,6 +2,7 @@ import json
 
 import aiosqlite
 import pytest
+from cryptography.fernet import Fernet
 
 from src.db.repository import (
     ChatBinding,
@@ -40,6 +41,7 @@ async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
             (3, "pending_inbound_messages"),
             (4, "telegram_callback_actions"),
             (5, "delivered_media_parts"),
+            (6, "media_recovery_cache"),
         ]
 
         async with db.execute(
@@ -71,6 +73,12 @@ async def test_schema_migrations_apply_fresh_and_are_idempotent(tmp_path):
         ) as cur:
             row = await cur.fetchone()
         assert row["name"] == "delivered_media_parts"
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'media_recovery_cache'"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["name"] == "media_recovery_cache"
     finally:
         await db.close()
 
@@ -150,6 +158,77 @@ async def test_save_message_upserts_tg_fields(tmp_path):
         assert row["tg_msg_id"] == 777
         assert row["tg_topic_id"] == 12
         assert row["direction"] == "inbound"
+    finally:
+        await repo.close()
+
+
+@pytest.mark.asyncio
+async def test_media_recovery_cache_encrypts_payload_and_purges(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "MAX_RECOVERY_CONTACTS_KEY",
+        Fernet.generate_key().decode("ascii"),
+    )
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+
+    payload = {
+        "type": "AUDIO",
+        "url": "https://cdn.example.invalid/private-media.ogg?sig=secret",
+        "audioId": "a-1",
+        "filename": "voice.ogg",
+        "duration": 7,
+    }
+    try:
+        encrypted = await repo.save_media_recovery_cache(
+            max_chat_id="-100",
+            max_msg_id="m-cache",
+            attachment_index=0,
+            kind="audio",
+            source_type="UNSUPPORTED",
+            media_chat_id="-100",
+            media_msg_id="m-cache",
+            reference_kind="audio_id",
+            reference_id="a-1",
+            filename="voice.ogg",
+            duration=7,
+            payload=payload,
+            ttl_seconds=120,
+            now=100,
+        )
+
+        assert encrypted is True
+        entry = await repo.get_media_recovery_cache_entry(
+            max_chat_id="-100",
+            max_msg_id="m-cache",
+            attachment_index=0,
+            kind="audio",
+        )
+        assert entry is not None
+        assert entry.payload_cipher == "fernet"
+        assert entry.payload_ciphertext
+        assert entry.expires_at == 220
+        async with repo._db.execute("SELECT * FROM media_recovery_cache") as cur:
+            row = await cur.fetchone()
+        assert payload["url"] not in dict(row).values()
+
+        restored = await repo.get_media_recovery_cache_payload(
+            max_chat_id="-100",
+            max_msg_id="m-cache",
+            attachment_index=0,
+            kind="audio",
+            now=105,
+        )
+        assert restored == payload
+
+        assert await repo.get_media_recovery_cache_payload(
+            max_chat_id="-100",
+            max_msg_id="m-cache",
+            attachment_index=0,
+            kind="audio",
+            now=221,
+        ) is None
+        assert await repo.purge_expired_media_recovery_cache(now=221) == 1
+        assert await _count_rows(repo, "media_recovery_cache") == 0
     finally:
         await repo.close()
 

@@ -92,7 +92,7 @@ python examples/swap_max_backend.py
 
 ## Persistence Rules
 
-SQLite stores routing and delivery metadata, not successful message content. The exception is temporary durable retry queues for undelivered text-only messages until delivery/TTL.
+SQLite stores routing and delivery metadata, not successful message content. Exceptions are temporary durable retry queues for undelivered text-only messages until delivery/TTL and encrypted TTL media hints in `media_recovery_cache` for failed/problematic MAX attachments.
 
 `Repository.transaction()` is for grouped post-send writes only. Do not hold a transaction around Telegram/MAX network awaits: send first, then atomically persist mapping/delivery/queue rows.
 
@@ -102,6 +102,7 @@ SQLite stores routing and delivery metadata, not successful message content. The
 - [ADR-006: Bridge contracts boundary](decisions/ADR-006-bridge-contracts-boundary.md)
 - [ADR-007: MAX backend boundary](decisions/ADR-007-max-backend-boundary.md)
 - [ADR-010: PyMax v2 migration](decisions/ADR-010-pymax-v2-migration.md)
+- [ADR-011: Encrypted TTL media recovery cache](decisions/ADR-011-media-recovery-cache.md)
 - [Operations runbook](runbooks/operations.md)
 - [Production deploy runbook](runbooks/hetzner-production.md)
 - [Architecture audit](archive/audit-2026-05-25.md)
