@@ -10,7 +10,7 @@ pytestmark = pytest.mark.architecture
 
 
 def test_pymax_runtime_version_is_pinned():
-    assert pymax.__version__ == "2.3.1"
+    assert pymax.__version__ == "2.4.0"
 
 
 PINS = {
@@ -27,8 +27,11 @@ PINS = {
         "MessageReadEvent",
         "ReactionUpdateEvent",
         "MessageDeleteEvent",
+        "VideoNote",
+        "Voice",
     ),
     "pymax.types": ("ContactInfo",),
+    "pymax.types.domain.attachments": ("Poll", "PollAttachment", "ShareAttachment"),
     "pymax.client": ("Client",),
     "pymax.connection": ("ConnectionManager",),
     "pymax.connection.readers": ("TCPReader",),
@@ -66,7 +69,7 @@ def test_pymax_backend_surface_is_pinned(module_name: str, names: tuple[str, ...
     )
 
 
-def test_pymax_231_client_methods_are_pinned():
+def test_pymax_240_client_methods_are_pinned():
     for name in (
         "forward_message",
         "import_contacts",
@@ -76,15 +79,21 @@ def test_pymax_231_client_methods_are_pinned():
         "delete_chat",
         "join_group",
         "join_channel",
+        "vote_poll",
+        "get_chat_members",
+        "add_admin",
+        "set_presence",
+        "is_update_available",
+        "change_profile_settings",
     ):
         assert hasattr(pymax.Client, name), f"pymax.Client.{name} is missing"
 
 
-def test_pymax_231_message_forward_bound_method_is_pinned():
+def test_pymax_240_message_forward_bound_method_is_pinned():
     assert hasattr(pymax.Message, "forward")
 
 
-def test_pymax_231_session_store_delete_all_sessions_is_pinned():
+def test_pymax_240_session_store_delete_all_sessions_is_pinned():
     from pymax.session import SessionStore
 
     assert hasattr(SessionStore, "delete_all_sessions")

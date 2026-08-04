@@ -1,4 +1,5 @@
 from .conftest import *  # noqa: F403
+from pymax.types.domain.attachments import ShareAttachment
 from src.adapters.max import constants as max_constants
 
 
@@ -178,6 +179,41 @@ async def test_handle_raw_message_extracts_max_join_action_from_share(tmp_path):
     assert received[0].rendered_texts == []
     assert [(action.kind, action.label, action.url) for action in received[0].actions] == [
         ("max_join", "Вступить в MAX", "https://max.ru/join/abc123")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_extracts_url_from_pymax_240_share_attachment(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    received = []
+
+    async def handler(msg):
+        received.append(msg)
+
+    adapter.on_message(handler)
+    url = "https://insurance.example.test/policy"
+    message = SimpleNamespace(
+        id=1,
+        chat_id=123,
+        sender=7001,
+        text="Оформить полис",
+        type="USER",
+        status=None,
+        attaches=[ShareAttachment.model_validate({"_type": "SHARE", "url": url})],
+        link=None,
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].rendered_texts == []
+    assert [(action.kind, action.label, action.url) for action in received[0].actions] == [
+        ("open_url", "Открыть insurance.example.test", url)
     ]
 
 

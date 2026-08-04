@@ -15,11 +15,11 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **366 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **368 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
-Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.3.1"`. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
+Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.4.0"`, новые message/account methods и `Voice`/`VideoNote`/poll exports. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
 
 ```text
                          pytest -q
@@ -132,7 +132,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
-## tests/test_max_adapter/ — MAX adapter behavior split (119 тестов)
+## tests/test_max_adapter/ — MAX adapter behavior split (120 тестов)
 
 Бывший монолит `tests/test_max_adapter.py` разрезан на пакет:
 
@@ -152,6 +152,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_handle_raw_message_extracts_text_from_msgpack_bytes` | SHARE/msgpack-like `message.text` bytes распаковываются до настоящего text без `�` и raw field names. |
 | `test_handle_raw_message_normalizes_pymax_enum_edit_status` | PyMax enum/string status вроде `MessageStatus.EDITED` нормализуется в `EDITED`, чтобы edit-события не создавали разные `max_msg_id` variants. |
 | `test_handle_raw_message_extracts_max_join_action_from_share` | `SHARE` с `https://max.ru/join/...` становится `max_join` action и больше не деградирует в один `[Вложение MAX: share]`. |
+| `test_handle_raw_message_extracts_url_from_pymax_240_share_attachment` | Реальный PyMax 2.4.0 `ShareAttachment.url` становится Telegram `open_url` action, без generic `share` fallback. |
 | `test_handle_raw_message_extracts_external_action_from_inline_keyboard` | `inline_keyboard` / nested `web_app.url` превращается в `open_url` action с безопасной label. |
 | `test_handle_raw_message_extracts_msgpack_text_url_and_deduplicates` | URL из msgpack text/buttons и `SHARE` дедуплицируются в один action. |
 | `test_handle_raw_message_ignores_unsafe_share_url` | Не-HTTP(S) URL игнорируется, а generic MAX attachment fallback остаётся. |
