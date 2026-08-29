@@ -53,6 +53,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 
 ## Engineering Highlights
 
+- **PyMax 2.4.1 lifecycle compatibility** — bridge-owned auth/user/TCP guards are installed after PyMax creates its lazy runtime; the bridge uses one-shot `connect()` with its existing fresh-client reconnect loop, keeps upstream MAX CA trust on custom egress, and disables automatic upstream relogin
 - **PyMax v2 compatibility shim** — the bridge now targets `maxapi-python` 2.x through a typed backend adapter; old PyMax v1 reconnect/OOM behavior is historical context, not the active architecture
 - **Explicit adapter/backend boundary** — `BridgeCore` depends on transport-neutral contracts; MAX operation services depend on typed client ports/DTO, and `pymax` imports plus pymax client shape are isolated to `src/adapters/max/backends/pymax/`, with surface-pin and fake-backend integration tests guarding the boundary
 - **MAX-only egress profiles** — MAX API/CDN traffic can use authenticated HTTP CONNECT through reverse Channel M (`home_ru_proxy`: router-originated SSH remote-forward to the VPS) while Telegram stays direct; Hetzner direct is retained only as a manual emergency profile

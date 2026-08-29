@@ -62,19 +62,20 @@ class PymaxClientAdapter:
         return pymax_connection_transport_connected(connection)
 
     def prepare_startup(self, error_handler: RuntimeErrorHandler) -> None:
-        original = getattr(self._client, "start", None)
-        if original is None or getattr(original, "_maxtg_wrapped", False):
-            return
+        for method_name in ("connect", "start"):
+            original = getattr(self._client, method_name, None)
+            if original is None or getattr(original, "_maxtg_wrapped", False):
+                continue
 
-        async def wrapped_start(*args, **kwargs):
-            try:
-                return await original(*args, **kwargs)
-            except Exception as exc:
-                await error_handler(exc)
-                raise
+            async def wrapped_start(*args, __original=original, **kwargs):
+                try:
+                    return await __original(*args, **kwargs)
+                except Exception as exc:
+                    await error_handler(exc)
+                    raise
 
-        wrapped_start._maxtg_wrapped = True  # type: ignore[attr-defined]
-        setattr(self._client, "start", wrapped_start)
+            wrapped_start._maxtg_wrapped = True  # type: ignore[attr-defined]
+            setattr(self._client, method_name, wrapped_start)
 
     def install_interactive_ping(self, _ping_loop: Callable[[], object]) -> None:
         """PyMax 2 has its own ping loop; keep port method as a no-op."""
@@ -126,6 +127,14 @@ class PymaxClientAdapter:
         return [MaxClientMessage.from_object(m) for m in (results or [])]
 
     async def start(self):
+        connect = getattr(self._client, "connect", None)
+        if callable(connect):
+            await connect()
+            connection = pymax_client_connection(self._client)
+            wait_closed = getattr(connection, "wait_closed", None)
+            if callable(wait_closed):
+                await wait_closed()
+            return None
         return await self._client.start()
 
     async def close(self):

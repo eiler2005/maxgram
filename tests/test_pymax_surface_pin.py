@@ -10,7 +10,7 @@ pytestmark = pytest.mark.architecture
 
 
 def test_pymax_runtime_version_is_pinned():
-    assert pymax.__version__ == "2.4.0"
+    assert pymax.__version__ == "2.4.1"
 
 
 PINS = {
@@ -29,6 +29,7 @@ PINS = {
         "MessageDeleteEvent",
         "VideoNote",
         "Voice",
+        "PasswordAttemptsExceededError",
     ),
     "pymax.types": ("ContactInfo",),
     "pymax.types.domain.attachments": ("Poll", "PollAttachment", "ShareAttachment"),
@@ -41,7 +42,7 @@ PINS = {
     "pymax.protocol.tcp.framing": ("TcpPacketFramer",),
     "pymax.protocol.tcp.payload": ("MsgpackPayloadCodec", "TcpPayloadDecoder"),
     "pymax.transport.tcp": ("TCPTransport",),
-    "pymax.session": ("SessionStore",),
+    "pymax.session": ("InMemoryStore", "SessionStore"),
     "pymax.session.models": ("SessionInfo",),
     "pymax.api.auth.payloads": ("SyncPayload", "WebSyncPayload"),
     "pymax.api.auth.service": ("AuthService",),
@@ -55,6 +56,7 @@ PINS = {
     "pymax.auth": ("AuthFlow", "SmsAuthFlow", "ConsoleSmsCodeProvider"),
     "pymax.types.domain.attachments.enums": ("AttachmentType",),
     "pymax.types.domain.login": ("LoginResponse",),
+    "pymax.versions.catalog": ("VersionCatalog",),
 }
 
 
@@ -69,7 +71,7 @@ def test_pymax_backend_surface_is_pinned(module_name: str, names: tuple[str, ...
     )
 
 
-def test_pymax_240_client_methods_are_pinned():
+def test_pymax_241_client_methods_are_pinned():
     for name in (
         "forward_message",
         "import_contacts",
@@ -85,6 +87,7 @@ def test_pymax_240_client_methods_are_pinned():
         "set_presence",
         "is_update_available",
         "change_profile_settings",
+        "connect",
     ):
         assert hasattr(pymax.Client, name), f"pymax.Client.{name} is missing"
 
@@ -97,3 +100,8 @@ def test_pymax_240_session_store_delete_all_sessions_is_pinned():
     from pymax.session import SessionStore
 
     assert hasattr(SessionStore, "delete_all_sessions")
+
+
+def test_pymax_241_lazy_runtime_hooks_are_pinned():
+    for name in ("_ensure_runtime", "_build_app", "is_connected"):
+        assert hasattr(pymax.Client, name), f"pymax.Client.{name} is missing"

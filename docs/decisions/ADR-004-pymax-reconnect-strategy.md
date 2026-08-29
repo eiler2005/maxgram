@@ -2,7 +2,7 @@
 
 **Статус:** Принято  
 **Дата:** 2026-04  
-**Обновлено:** 2026-08-04 для PyMax 2.4.0
+**Обновлено:** 2026-08-29 для PyMax 2.4.1
 **Контекст:** Обнаружен баг при отладке production
 
 ## Проблема
@@ -57,3 +57,4 @@ async def _make_client(self):
 - PyMax 2.3.0 добавил `on_disconnect()`, `on_error()`, `relogin()`, `delete_chat()`, `SessionStore.delete_all_sessions()` и `import_contacts()`. Bridge использует `on_disconnect()` только как безопасную диагностику и ранний disconnected-state; `on_error()` не используется как passive logging, потому что handled errors могут быть swallowed upstream. Guarded reauth flow не заменяется на `relogin()` в этом изменении.
 - PyMax 2.3.1 добавил `forward_message()` / `Message.forward()` и исправил compressed TCP payload decoding: Zstandard flag `0xFF` и LZ4 handling. Bridge не переносит этот API в `BridgeCore`, пока нет MAX→MAX forwarding use-case, но surface pin-ится; `BridgeMsgpackPayloadCodec` остаётся serializer-only guard и не заменяет upstream `TcpPayloadDecoder`/`ZstdCompression`.
 - PyMax 2.4.0 исправил lifecycle `stop()` и session-revocation reauth, обновил fingerprints и partial attachment parsing. `fetch_history()` теперь всегда возвращает список; bridge уже обрабатывает empty history как `[]`. New `Voice`/`VideoNote`/poll APIs пока не используются без отдельного product use-case, а `ShareAttachment.url` покрыт реальным adapter regression.
+- PyMax 2.4.1 создаёт runtime лениво и вводит one-shot `connect()`. Bridge ставит local auth/user/TCP guards через `BridgeClient._ensure_runtime()` после создания runtime и использует `connect()` + ожидание закрытия connection, сохраняя свой fresh-client outer reconnect loop. `ExtraConfig(relogin=False)` обязателен: upstream не должен автоматически очищать session или запускать SMS/2FA. Custom `EgressTCPTransport` использует upstream MAX-CA-aware `_ssl_ctx` для TLS к `api2.oneme.ru`.

@@ -15,11 +15,11 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **368 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **372 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
-Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.4.0"`, новые message/account methods и `Voice`/`VideoNote`/poll exports. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
+Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.4.1"`, lazy-runtime hooks, новые message/account methods и `Voice`/`VideoNote`/poll exports. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
 
 ```text
                          pytest -q
@@ -284,9 +284,10 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_max_ua_mapping_selects_chrome_android_profile` | `media/ua.py` выбирает корректный MAX CDN User-Agent для Chrome/Android/iOS/Safari fallback. |
 | `test_payload_helpers_match_case_and_strip_unsafe_fields` | `payload.py` читает nested payload values и чистит unsafe raw fields без pymax. |
 | `test_error_classification_is_pymax_free` | `errors.py` классифицирует runtime issue и retryable outbound errors без pymax imports. |
-| `test_pymax_client_adapter_captures_early_startup_errors` | `PymaxClientAdapter.prepare_startup()` ловит PyMax 2 `start()` ошибки до `on_start`. |
+| `test_pymax_client_adapter_captures_early_startup_errors` | `PymaxClientAdapter.prepare_startup()` ловит ошибки PyMax `connect()`/`start()` до `on_start`. |
+| `test_pymax_client_adapter_uses_one_shot_connect_and_waits_for_disconnect` | PyMax 2.4.1 path вызывает `connect()` один раз и ждёт закрытия connection; outer reconnect остаётся у bridge. |
 | `test_users_and_downloader_helpers_are_plain_object_based` | `users.py` и downloader helpers работают с plain objects/URL metadata. |
-| `test_client_factory_disables_pymax_reconnect_and_telemetry` | `client_factory.py` создаёт PyMax 2 `Client` с `ExtraConfig(reconnect=False, telemetry=False)`, backend session store, DESKTOP user-agent и sync overrides для legacy session. |
+| `test_client_factory_disables_pymax_reconnect_and_telemetry` | `client_factory.py` создаёт PyMax 2 `Client` с `ExtraConfig(reconnect=False, relogin=False, telemetry=False)`, backend session store, DESKTOP user-agent и sync overrides для legacy session. |
 | `test_client_factory_passes_custom_auth_flow` | `client_factory.py` умеет принять custom auth flow для one-shot MAX reauth без изменения runtime path. |
 | `test_client_factory_can_disable_legacy_session_import` | Reauth path может отключить legacy PyMax 1 `auth` import, чтобы stale token не импортировался обратно. |
 | `test_pymax_msgpack_codec_tolerates_array_map_keys` | Backend-local PyMax codec не падает на raw msgpack map с array-like key, который встречается в некоторых `CHAT_HISTORY` ответах. |

@@ -16,6 +16,8 @@ from pymax.transport.tcp import TCPTransport
 from ...network import DirectSocketConnector
 from ...network.egress import MaxSocketConnector
 from .internals import pymax_client_connection, pymax_connection_protocol
+from .login import BridgeAuthService
+from .user import BridgeUserService
 
 
 class BridgeConnectionManager(ConnectionManager):
@@ -140,6 +142,24 @@ def install_bridge_sequence_guard(connection) -> None:
     connection._maxtg_seq_guard_installed = True
 
 
+def install_bridge_services(app) -> None:
+    """Install bridge-local API services after PyMax creates its lazy runtime."""
+
+    api = getattr(app, "api", None)
+    if api is not None:
+        api.auth = BridgeAuthService(app)
+        api.users = BridgeUserService(app)
+
+
+class BridgeClient(Client):
+    """PyMax client that installs bridge hooks after lazy runtime creation."""
+
+    async def _ensure_runtime(self) -> None:
+        await super()._ensure_runtime()
+        install_bridge_services(self._app)
+        install_bridge_protocol_guards(self)
+
+
 class EgressTCPTransport(TCPTransport):
     """PyMax 2 TCP transport that opens sockets through bridge MAX egress."""
 
@@ -168,14 +188,15 @@ class EgressTCPTransport(TCPTransport):
         )
         raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         raw_sock.setblocking(False)
+        ssl_context = self._ssl_ctx if self._use_ssl else None
         self._reader, self._writer = await asyncio.open_connection(
             sock=raw_sock,
-            ssl=self._use_ssl,
+            ssl=ssl_context,
             server_hostname=self._host if self._use_ssl else None,
         )
 
 
-class EgressClient(Client):
+class EgressClient(BridgeClient):
     """PyMax 2 Client variant that preserves configured MAX-only egress."""
 
     def __init__(self, *args, socket_connector: MaxSocketConnector | None = None, **kwargs):

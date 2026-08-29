@@ -99,6 +99,28 @@ async def test_pymax_client_adapter_captures_early_startup_errors():
     assert captured == ["start boom"]
 
 
+@pytest.mark.asyncio
+async def test_pymax_client_adapter_captures_one_shot_connect_errors():
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+
+    class FakeClient:
+        async def connect(self):
+            raise RuntimeError("connect boom")
+
+    captured = []
+    adapter = PymaxClientAdapter(FakeClient())
+
+    async def capture(exc):
+        captured.append(str(exc))
+
+    adapter.prepare_startup(capture)
+
+    with pytest.raises(RuntimeError, match="connect boom"):
+        await adapter.start()
+
+    assert captured == ["connect boom"]
+
+
 def test_users_and_downloader_helpers_are_plain_object_based():
     dialog = SimpleNamespace(participants=[SimpleNamespace(id="own"), SimpleNamespace(account_id="peer")])
     video_url = max_downloader.extract_video_url(
@@ -121,11 +143,12 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_
         def __init__(self, **kwargs):
             calls.update(kwargs)
 
-    monkeypatch.setattr(pymax_factory, "Client", FakeClient)
+    monkeypatch.setattr(pymax_factory, "BridgeClient", FakeClient)
 
     create_socket_client(phone="+79991234567", data_dir=str(tmp_path), session_name="session")
 
     assert calls["extra_config"].reconnect is False
+    assert calls["extra_config"].relogin is False
     assert calls["extra_config"].telemetry is False
     assert isinstance(calls["extra_config"].store, BridgeSessionStore)
     assert calls["extra_config"].user_agent.device_type.value == "DESKTOP"
@@ -144,7 +167,7 @@ def test_client_factory_passes_custom_auth_flow(monkeypatch, tmp_path):
             calls.update(kwargs)
 
     auth_flow = object()
-    monkeypatch.setattr(pymax_factory, "Client", FakeClient)
+    monkeypatch.setattr(pymax_factory, "BridgeClient", FakeClient)
 
     pymax_factory.create_pymax_client(
         phone="+79991234567",
@@ -166,7 +189,7 @@ def test_client_factory_can_disable_legacy_session_import(monkeypatch, tmp_path)
         def __init__(self, **kwargs):
             calls.update(kwargs)
 
-    monkeypatch.setattr(pymax_factory, "Client", FakeClient)
+    monkeypatch.setattr(pymax_factory, "BridgeClient", FakeClient)
 
     pymax_factory.create_pymax_client(
         phone="+79991234567",
@@ -240,37 +263,26 @@ def test_bridge_tcp_protocol_keeps_pymax_231_zstd_payload_decoder():
     assert isinstance(protocol.payload_decoder.zstd_compression, ZstdCompression)
 
 
-def test_client_factory_installs_bridge_protocol_guards(monkeypatch, tmp_path):
-    from src.adapters.max.backends.pymax import client_factory as pymax_factory
+@pytest.mark.asyncio
+async def test_client_factory_installs_bridge_protocol_guards_after_lazy_runtime(tmp_path):
     from src.adapters.max.backends.pymax.transport import BridgeMsgpackPayloadCodec
 
-    class FakeDecoder:
-        serializer = object()
-
-    class FakeProtocol:
-        serializer = object()
-        payload_decoder = FakeDecoder()
-
-    class FakeClient:
-        def __init__(self, **_kwargs):
-            self._connection = SimpleNamespace(protocol=FakeProtocol(), _seq=65533)
-            self._app = SimpleNamespace(api=SimpleNamespace(auth=None, users=None))
-
-    monkeypatch.setattr(pymax_factory, "Client", FakeClient)
-
-    client = pymax_factory.create_pymax_client(
+    client = create_socket_client(
         phone="+79991234567",
         data_dir=str(tmp_path),
         session_name="session",
     )
+    await client._ensure_runtime()
 
     assert isinstance(client._connection.protocol.serializer, BridgeMsgpackPayloadCodec)
     assert isinstance(client._connection.protocol.payload_decoder.serializer, BridgeMsgpackPayloadCodec)
+    client._connection._seq = 65533
     assert [client._connection.next_seq() for _ in range(4)] == [65534, 65535, 0, 1]
     assert client._maxtg_msgpack_guard_installed is True
     assert client._connection._maxtg_seq_guard_installed is True
     assert client._app.api.auth.__class__.__name__ == "BridgeAuthService"
     assert client._app.api.users.__class__.__name__ == "BridgeUserService"
+    await client.close()
 
 
 @pytest.mark.asyncio
@@ -863,11 +875,12 @@ async def test_pymax2_egress_transport_uses_configured_socket_connector(monkeypa
 
     assert calls[0] == ("connect", "api.oneme.ru", 443, 20.0)
     assert calls[-1][0] == "open_connection"
-    assert calls[-1][1]["ssl"] is True
+    assert calls[-1][1]["ssl"] is transport._ssl_ctx
     assert calls[-1][1]["server_hostname"] == "api.oneme.ru"
 
 
-def test_pymax2_egress_client_uses_bridge_connection_manager(tmp_path):
+@pytest.mark.asyncio
+async def test_pymax2_egress_client_uses_bridge_connection_manager(tmp_path):
     from src.adapters.max.backends.pymax.transport import BridgeConnectionManager, EgressClient
 
     client = EgressClient(
@@ -875,9 +888,33 @@ def test_pymax2_egress_client_uses_bridge_connection_manager(tmp_path):
         work_dir=str(tmp_path),
         session_name="session",
     )
+    await client._ensure_runtime()
 
     assert isinstance(client._connection, BridgeConnectionManager)
     assert client._connection.next_seq() == 0
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_pymax_client_adapter_uses_one_shot_connect_and_waits_for_disconnect():
+    from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
+
+    calls = []
+
+    class FakeConnection:
+        async def wait_closed(self):
+            calls.append("wait_closed")
+
+    class FakeClient:
+        def __init__(self):
+            self._connection = FakeConnection()
+
+        async def connect(self):
+            calls.append("connect")
+
+    await PymaxClientAdapter(FakeClient()).start()
+
+    assert calls == ["connect", "wait_closed"]
 
 
 def test_max_adapter_can_be_composed_with_fake_backend(tmp_path):

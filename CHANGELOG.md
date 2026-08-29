@@ -26,6 +26,7 @@ All notable changes to Maxgram are documented here.
 - **Precise message recovery via `get_message()`** — empty-event voice/forward recovery now attempts the new PyMax 2.2.0 `get_message(chat_id, message_id)` API first, bypassing the time-window history sweep when a precise fetch succeeds. The full fallback chain (cache → raw history payload → `history_messages`) is preserved.
 
 ### Changed
+- **PyMax 2.4.1 upgrade** — `maxapi-python` is pinned to 2.4.1. The bridge initializes its local auth/user/TCP guards after PyMax's lazy runtime is built, uses the one-shot `connect()` lifecycle with the bridge-owned outer reconnect loop, keeps upstream's MAX CA trust context on custom egress sockets, and disables automatic upstream relogin so reauth remains an explicit operator action.
 - **PyMax 2.4.0 upgrade** — `maxapi-python` is pinned to 2.4.0. The bridge verifies the new message/account surface, keeps `fetch_history()` list-safe, and adds a regression for real PyMax `ShareAttachment.url` conversion into a Telegram URL action.
 - **PyMax 2.3.1 upgrade** — `maxapi-python` is pinned to 2.3.1 and `zstandard` is installed for upstream TCP payload decoding. The bridge pins the new `forward_message()` / `Message.forward()` surface and keeps its msgpack guard limited to serializer replacement, preserving PyMax 2.3.1 Zstandard/LZ4 payload decoding.
 - **PyMax 2.3.0 upgrade** — `maxapi-python` is pinned to 2.3.0. The bridge pins the new PyMax surface (`ContactInfo`, `import_contacts()`, `on_disconnect()`, `on_error()`, `relogin()`, `delete_chat()`, `SessionStore.delete_all_sessions()`), uses `on_disconnect()` only for safe diagnostics, and keeps guarded reauth unchanged.
@@ -51,6 +52,7 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added PyMax 2.4.1 runtime/API surface pins plus regressions for lazy hook installation, MAX CA-aware custom egress TLS, one-shot connect/disconnect waiting, and disabled automatic relogin.
 - Added coverage for encrypted media recovery cache storage/purge, sanitized MAX attachment payload hints, and media retry fallback/replay through cached payloads.
 - Added regressions for `delivered_media_parts` SQLite idempotency, per-index edit-media dedupe, partial late-media recovery continuation, edit finalizer suppression by matching part, and successful attachment metadata propagation.
 - Added regressions for PyMax enum edit-status normalization and suppression of false edit-event media finalizers after the base message has already delivered.

@@ -2,7 +2,7 @@
 aiogram==3.26.0
 
 # MAX userbot
-maxapi-python==2.4.0
+maxapi-python==2.4.1
 requests>=2.31,<3
 zstandard>=0.25,<1
 
