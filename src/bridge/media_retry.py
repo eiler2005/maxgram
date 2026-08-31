@@ -1170,6 +1170,34 @@ async def process_pending_media_download(
                 media_msg_id=media_msg_id,
                 flow_id=flow_id,
             )
+            if attachment is None and cache_available and (
+                media_chat_id != str(job.max_chat_id)
+                or media_msg_id != str(job.max_msg_id)
+            ):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "bridge.media_retry.source_fallback",
+                    flow_id=flow_id,
+                    direction="inbound",
+                    stage="media_retry",
+                    outcome="retry",
+                    reason="fallback_to_wrapper_message",
+                    max_chat_id=job.max_chat_id,
+                    max_msg_id=job.max_msg_id,
+                    tg_topic_id=job.tg_topic_id,
+                    pending_media_id=job.id,
+                    attachment_index=job.attachment_index,
+                    kind=job.kind,
+                )
+                attachment, _ = await download_media_from_recovery_cache(
+                    repo=repo,
+                    max_adapter=max_adapter,
+                    job=job,
+                    media_chat_id=str(job.max_chat_id),
+                    media_msg_id=str(job.max_msg_id),
+                    flow_id=flow_id,
+                )
     except Exception as e:
         await mark_pending_media_retry(
             repo=repo,

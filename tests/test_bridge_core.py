@@ -2869,6 +2869,68 @@ async def test_pending_media_worker_delivers_cache_only_document(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_pending_media_worker_retries_cached_document_against_wrapper(tmp_path):
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+
+    doc_path = Path(tmp_path) / "wrapper.pdf"
+    doc_path.write_bytes(b"%PDF-1.4\n")
+    results = [
+        None,
+        MaxAttachment(
+            "document",
+            str(doc_path),
+            "wrapper.pdf",
+            None,
+            None,
+            None,
+            "UNSUPPORTED",
+        ),
+    ]
+
+    async def download_cached_media_payload(**kwargs):
+        max_adapter.cached_media_payload_calls.append(kwargs)
+        return results.pop(0)
+
+    max_adapter.download_cached_media_payload = download_cached_media_payload
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-doc-wrapper",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="document",
+        source_type="UNSUPPORTED",
+        media_chat_id="-70000000000004",
+        media_msg_id="mx-doc-source",
+        reference_kind=bridge_media_retry.CACHED_PAYLOAD_REFERENCE_KIND,
+        reference_id="cache-ref",
+        filename="wrapper.pdf",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+    repo.media_recovery_cache[
+        ("-70000000000003", "mx-doc-wrapper", 0, "document")
+    ] = {"payload": {"type": "FILE", "fileId": 77, "filename": "wrapper.pdf"}}
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert [
+        (call["chat_id"], call["msg_id"])
+        for call in max_adapter.cached_media_payload_calls
+    ] == [
+        ("-70000000000004", "mx-doc-source"),
+        ("-70000000000003", "mx-doc-wrapper"),
+    ]
+    assert tg_adapter.calls == [("document", "Докачанное файл MAX #1", "wrapper.pdf")]
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 2
+    assert not doc_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_pending_media_worker_delivers_photo_by_file_reference(tmp_path):
     repo = DummyRepo()
     max_adapter = DummyMax()

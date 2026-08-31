@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **381 тест**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **382 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -389,6 +389,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pending_media_worker_falls_back_to_recovery_cache_after_reference_miss` | Если stable photo reference не дал файл, worker читает encrypted recovery cache payload и досылает media без логирования signed URL. |
 | `test_pending_media_worker_delivers_cache_only_document` | Cache-only document/file job не вызывает video reference path, скачивает вложение из cached hints и отправляет `send_document`. |
 | `test_download_cached_document_payload_uses_cached_direct_url` | Cache-only `FILE` использует encrypted direct URL hint как документ; signed URL не попадает в логи. |
+| `test_pending_media_worker_retries_cached_document_against_wrapper` | Cache-only файл после неудачи source coordinates повторяет recovery по wrapper message и отправляется один раз. |
 | `test_pending_media_worker_delivers_photo_by_file_reference` | Retry worker скачивает отложенное фото через stable file reference, отправляет `send_photo`, закрывает job и сохраняет reply mapping. |
 | `test_pending_media_worker_skips_send_when_late_recovery_wins_race` | Если late duplicate успел доставить видео, пока retry worker уже скачивал тот же файл, worker закрывает job без повторного `send_video`. |
 | `test_pending_media_worker_falls_back_to_wrapper_message` | Pending video retry проверяет как legacy `media_chat_id=0`, так и valid forwarded source pair, после чего пробует receiving wrapper chat/message. |
