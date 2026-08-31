@@ -2931,6 +2931,103 @@ async def test_pending_media_worker_retries_cached_document_against_wrapper(tmp_
 
 
 @pytest.mark.asyncio
+async def test_pending_media_worker_retries_cached_document_after_source_and_wrapper_miss():
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-doc-wrapper-miss",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="document",
+        source_type="UNSUPPORTED",
+        media_chat_id="-70000000000004",
+        media_msg_id="mx-doc-source",
+        reference_kind=bridge_media_retry.CACHED_PAYLOAD_REFERENCE_KIND,
+        reference_id="cache-ref",
+        filename="wrapper.pdf",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+    repo.media_recovery_cache[
+        ("-70000000000003", "mx-doc-wrapper-miss", 0, "document")
+    ] = {"payload": {"type": "FILE", "fileId": 77, "filename": "wrapper.pdf"}}
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert [
+        (call["chat_id"], call["msg_id"])
+        for call in max_adapter.cached_media_payload_calls
+    ] == [
+        ("-70000000000004", "mx-doc-source"),
+        ("-70000000000003", "mx-doc-wrapper-miss"),
+    ]
+    assert tg_adapter.calls == []
+    assert job.status == "retry"
+    assert job.attempts == 1
+    assert job.last_error == "download_failed"
+    assert job.next_attempt_at > 0
+
+
+@pytest.mark.asyncio
+async def test_pending_media_worker_skips_duplicate_cached_document_after_late_recovery(tmp_path):
+    repo = DummyRepo()
+    doc_path = Path(tmp_path) / "late-recovered.pdf"
+    doc_path.write_bytes(b"%PDF-1.4\n")
+
+    class RacingDocumentMax(DummyMax):
+        async def download_cached_media_payload(self, **kwargs):
+            self.cached_media_payload_calls.append(kwargs)
+            repo.latest_deliveries[("-70000000000003", "mx-doc-race", "inbound")] = {
+                "status": "delivered",
+                "error": "late_media_recovered",
+            }
+            return MaxAttachment(
+                "document",
+                str(doc_path),
+                "late-recovered.pdf",
+                None,
+                None,
+                None,
+                "UNSUPPORTED",
+            )
+
+    max_adapter = RacingDocumentMax()
+    tg_adapter = DummyTelegram()
+    bridge = _make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-doc-race",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="document",
+        source_type="UNSUPPORTED",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-doc-race",
+        reference_kind=bridge_media_retry.CACHED_PAYLOAD_REFERENCE_KIND,
+        reference_id="cache-ref",
+        filename="late-recovered.pdf",
+        status="leased",
+    )
+    repo.pending_media.append(job)
+    repo.media_recovery_cache[
+        ("-70000000000003", "mx-doc-race", 0, "document")
+    ] = {"payload": {"type": "FILE", "fileId": 77, "filename": "late-recovered.pdf"}}
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert max_adapter.cached_media_payload_calls
+    assert tg_adapter.calls == []
+    assert job.status == "delivered"
+    assert job.delivered_tg_msg_id == 0
+    assert not doc_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_pending_media_worker_delivers_photo_by_file_reference(tmp_path):
     repo = DummyRepo()
     max_adapter = DummyMax()

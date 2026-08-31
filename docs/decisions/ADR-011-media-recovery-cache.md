@@ -24,6 +24,11 @@ raw payloads, signed URLs, message text or media files.
 - Retry workers first try stable MAX references/history paths. If they fail,
   they may read encrypted cached hints and pass them back into the MAX adapter
   media downloader. Logs include only cache metadata, never URL/payload.
+- Cache-only `FILE` recovery first tries the encrypted direct URL hint, then
+  its stable `fileId`. The typed PyMax file API must return an HTTP(S) URL;
+  otherwise the backend performs the constrained raw `FILE_DOWNLOAD` fallback
+  with only `chatId`, `messageId` and `fileId`. Forwarded/cache jobs retry the
+  source coordinates and then the receiving wrapper coordinates.
 - Video recovery uses public PyMax 2.4.1 `get_video_by_id()` first and keeps raw
   `VIDEO_PLAY` only as a backend fallback. After the immediate failure it makes
   six deferred attempts every 180 seconds, then emits a terminal warning.
@@ -51,3 +56,7 @@ raw payloads, signed URLs, message text or media files.
 - A video placeholder has a bounded 18-minute lifetime instead of promising an
   indefinite delivery "in a couple of minutes". A failed job remains as
   metadata for diagnostics and can be reset only by exact id after a backup.
+- The recovery regression matrix covers safe typed/raw URL selection, direct
+  URL → stable reference fallback for files, source/wrapper fallback, durable
+  retry after a double miss, exact video retry exhaustion and per-media-part
+  duplicate suppression. New media recovery paths must extend this matrix.

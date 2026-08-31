@@ -50,12 +50,12 @@ class PymaxMediaGateway:
             message_id=message_id,
             file_id=file_id,
         )
-        url = getattr(file_obj, "url", None)
+        url = self._safe_http_url(getattr(file_obj, "url", None))
         if not url:
             data = model_dump(file_obj) or {}
-            url = data.get("url")
+            url = self._safe_http_url(data.get("url"))
         if url:
-            return str(url)
+            return url
 
         raw = await self._raw.request(
             opcode_name="FILE_DOWNLOAD",
@@ -76,8 +76,10 @@ class PymaxMediaGateway:
         while queue:
             candidate = queue.pop(0)
             if isinstance(candidate, dict):
-                url = candidate.get("url") or candidate.get("downloadUrl")
-                if isinstance(url, str) and url.startswith(("https://", "http://")):
+                url = PymaxMediaGateway._safe_http_url(
+                    candidate.get("url") or candidate.get("downloadUrl")
+                )
+                if url:
                     return url
                 queue.extend(
                     value
@@ -86,17 +88,24 @@ class PymaxMediaGateway:
                 )
         return None
 
+    @staticmethod
+    def _safe_http_url(value: object | None) -> str | None:
+        if value is None:
+            return None
+        url = str(value).strip()
+        return url if url.startswith(("https://", "http://")) else None
+
     async def video_url(self, *, chat_id: int, message_id: int, video_id: int) -> str | None:
         video_obj = await self._client.get_video_by_id(
             chat_id=chat_id,
             message_id=message_id,
             video_id=video_id,
         )
-        url = getattr(video_obj, "url", None)
+        url = self._safe_http_url(getattr(video_obj, "url", None))
         if not url:
             data = model_dump(video_obj) or {}
-            url = data.get("url")
-        return str(url) if url else None
+            url = self._safe_http_url(data.get("url"))
+        return url
 
     async def video_payload(
         self, *, chat_id: int, message_id: int, video_id: int

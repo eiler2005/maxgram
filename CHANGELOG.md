@@ -55,6 +55,9 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added a media-recovery failure matrix for safe typed/raw file URLs, cached
+  direct URL → `fileId` fallback, source/wrapper double-miss retry, and
+  late-recovery duplicate suppression for documents.
 - Added regressions for inbound MAX reply/forward normalization, native replies across text/media, missing-mapping markers, Telegram media `reply_to_message_id`, typed video URL selection, source/wrapper video fallback, and the 18-minute retry terminal state.
 - Added PyMax 2.4.1 runtime/API surface pins plus regressions for lazy hook installation, MAX CA-aware custom egress TLS, one-shot connect/disconnect waiting, and disabled automatic relogin.
 - Added coverage for encrypted media recovery cache storage/purge, sanitized MAX attachment payload hints, and media retry fallback/replay through cached payloads.

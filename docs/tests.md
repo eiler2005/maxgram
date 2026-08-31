@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **383 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **389 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -324,6 +324,9 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | Тест | Что проверяет |
 |------|--------------|
 | `test_file_url_falls_back_to_raw_file_download_after_empty_typed_response` | Если typed `get_file_by_id()` вернул пустой URL, backend делает безопасный raw `FILE_DOWNLOAD` только с `chatId/messageId/fileId` и извлекает URL без записи его в логи или БД. |
+| `test_file_url_uses_safe_typed_url_without_raw_request` | Валидный HTTP(S) URL из typed PyMax API используется сразу и не делает лишний raw request. |
+| `test_file_url_discards_unsafe_typed_url_and_uses_safe_raw_fallback` | Некорректный typed URL не обрывает file recovery: backend использует ограниченный raw fallback и принимает только HTTP(S) URL. |
+| `test_video_url_discards_non_http_typed_url_so_caller_can_use_raw_fallback` | Некорректный typed video URL не попадает в downloader, поэтому media service может выполнить существующий `VIDEO_PLAY` fallback. |
 
 ---
 
@@ -397,7 +400,10 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pending_media_worker_falls_back_to_recovery_cache_after_reference_miss` | Если stable photo reference не дал файл, worker читает encrypted recovery cache payload и досылает media без логирования signed URL. |
 | `test_pending_media_worker_delivers_cache_only_document` | Cache-only document/file job не вызывает video reference path, скачивает вложение из cached hints и отправляет `send_document`. |
 | `test_download_cached_document_payload_uses_cached_direct_url` | Cache-only `FILE` использует encrypted direct URL hint как документ; signed URL не попадает в логи. |
+| `test_download_cached_document_falls_back_to_file_id_after_direct_url_miss` | Истёкший cached direct URL для `FILE` не теряет вложение: downloader продолжает через стабильный `fileId`. |
 | `test_pending_media_worker_retries_cached_document_against_wrapper` | Cache-only файл после неудачи source coordinates повторяет recovery по wrapper message и отправляется один раз. |
+| `test_pending_media_worker_retries_cached_document_after_source_and_wrapper_miss` | Если cache-only `FILE` не скачался ни по source, ни по wrapper coordinates, job остаётся durable `retry`, а не получает ложный terminal status. |
+| `test_pending_media_worker_skips_duplicate_cached_document_after_late_recovery` | Если late recovery успела доставить файл в гонке с worker, worker закрывает job и удаляет temp-файл без второго `send_document`. |
 | `test_pending_media_worker_delivers_photo_by_file_reference` | Retry worker скачивает отложенное фото через stable file reference, отправляет `send_photo`, закрывает job и сохраняет reply mapping. |
 | `test_pending_media_worker_skips_send_when_late_recovery_wins_race` | Если late duplicate успел доставить видео, пока retry worker уже скачивал тот же файл, worker закрывает job без повторного `send_video`. |
 | `test_pending_media_worker_falls_back_to_wrapper_message` | Pending video retry проверяет как legacy `media_chat_id=0`, так и valid forwarded source pair, после чего пробует receiving wrapper chat/message. |

@@ -208,6 +208,58 @@ async def test_download_cached_document_payload_uses_cached_direct_url(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_download_cached_document_falls_back_to_file_id_after_direct_url_miss(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    media = adapter._adapter._media
+    cached_path = str(tmp_path / "tmp" / "cached.pdf")
+    adapter.file_result = (cached_path, "cached.pdf")
+
+    attachment = await media.download_cached_media_payload(
+        chat_id="chat-1",
+        msg_id="msg-1",
+        kind="document",
+        payload={
+            "type": "FILE",
+            "url": "https://cdn.example.invalid/expired.pdf?sig=secret",
+            "fileId": 77,
+            "filename": "cached.pdf",
+        },
+        attachment_index=1,
+        source_type="UNSUPPORTED",
+    )
+
+    assert attachment is not None
+    assert attachment.kind == "document"
+    assert attachment.local_path == cached_path
+    assert adapter.url_downloads == [
+        (
+            "https://cdn.example.invalid/expired.pdf?sig=secret",
+            "doc_chat-1_msg-1_1",
+            "cached.pdf",
+            "",
+            "document",
+            "direct_url",
+        )
+    ]
+    assert adapter.file_downloads == [
+        (
+            "chat-1",
+            "msg-1",
+            77,
+            "doc_chat-1_msg-1_1",
+            "cached.pdf",
+            "",
+            "document",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_download_photo_reference_uses_file_download(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

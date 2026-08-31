@@ -165,7 +165,7 @@ Bridge работает в production на **Hetzner Cloud**.
 - Доступ: только SSH-ключ, ограничен по IP через UFW
 - Security: `fail2ban`, `unattended-upgrades`, публичных HTTP-портов нет
 - Бот после старта присылает startup-уведомление в owner DM с runtime/host и итогом встроенного `pytest`
-- Регулярный деплой, бэкап, recovery, bootstrap новой VM и hardening кодифицированы как Ansible playbooks в `infra/ansible/`; ручной runbook остаётся как fallback
+- Регулярный деплой, бэкап, recovery, bootstrap новой VM и hardening кодифицированы как Ansible playbooks в `infra/ansible/`; аварийный fallback документирован как backup-first rollout точного отправленного commit, а секреты и state остаются только на сервере
 
 ---
 

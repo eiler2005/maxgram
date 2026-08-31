@@ -7,6 +7,8 @@
 > не автоматизирует (создание VM в панели, копирование секретов, SMS reauth)
 > и как fallback, если ansible недоступен.
 > `ansible-playbook deploy.yml --check --diff` здесь означает preflight verify без rollout, а не полную симуляцию `docker compose build/up`.
+> Любой rollout, включая аварийный, должен собираться только из уже отправленного
+> immutable Git commit; приватные env/state-файлы не являются частью release.
 
 ## Цель
 
@@ -67,7 +69,8 @@ tar -czf maxtg-bridge-backup.tgz .env .env.secrets config.local.yaml data/
 Firewall bootstrap:
 
 - inbound `22/tcp` только с твоего IP, если IP стабильный
-- если IP нестабильный, временно открыть `22/tcp`, потом закрыть
+- если IP нестабильный, через Console добавить только текущий временный `/32`,
+  подтвердить доступ и затем убрать его, когда он больше не нужен
 - других inbound-правил не добавлять
 
 ## 2. Базовый hardening
@@ -267,22 +270,60 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 ## 8. Обновления
 
 > **Рекомендованный путь — Ansible:** `cd infra/ansible && ansible-playbook deploy.yml --check --diff && ansible-playbook deploy.yml`.
-> Ручной workflow ниже — fallback на случай, если ansible недоступен.
+> Следующий путь — контролируемый fallback, когда сам transport Ansible
+> недоступен. Это не второй обычный способ deploy.
+
+### Контролируемый fallback без Ansible
+
+Использовать только при проблеме с control channel/маршрутизацией до уже
+работающего сервера. Он сохраняет те же границы, что Ansible:
+
+1. Зафиксировать `immutable_commit` уже после `git push` и записать текущий
+   commit на сервере для rollback. Не деплоить рабочее дерево, branch tip или
+   непроверенный архив.
+2. До изменения создать production backup. State, `data/`, `.env*`,
+   `config.local.yaml`, SSH-материалы и recovery snapshot остаются только на
+   сервере и не входят в release bundle.
+3. Если мешает VPN/маршрут администратора, временно использовать стабильный
+   разрешённый путь. Через Hetzner Console разрешить **только** текущий `/32` в
+   Cloud Firewall и такой же `/32` в UFW; существующий доверенный `/32` не
+   удалять до подтверждения нового доступа. Никогда не открывать SSH для
+   `0.0.0.0/0` или всего IPv6-интернета. После работы вернуть обычный маршрут.
+4. Если Git remote на сервере доступен, переключить release на точный
+   `immutable_commit`; если нет — подготовить bundle исключительно через
+   `git archive` этого commit и перенести только tracked release-файлы.
+   Не передавать dot-env, данные, локальные конфиги, ключи или untracked files.
+5. На сервере выполнить тот же build/up, что использует role `bridge_app`, без
+   `compose down`; затем проверить Docker health, startup self-tests и
+   `scripts/smoke_check.py`. Для media-change дополнительно проверить один
+   MAX→Telegram media delivery и отсутствие duplicate.
+6. При неуспешном health/smoke немедленно вернуть предыдущий immutable commit
+   и повторить build/up. Backup использовать только для восстановления
+   повреждённого state, а не как замену rollback кода.
+
+Минимальный server-side rollout после шагов 1–4 (значения остаются в private
+operator notes, а не в этом публичном репозитории):
 
 ```bash
 cd /opt/maxtg-bridge
-git pull
+git fetch origin
+git checkout --detach <IMMUTABLE_PUSHED_COMMIT>
 docker compose --env-file .env.host -f deploy/docker-compose.prod.yml build
 docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 docker compose --env-file .env.host -f deploy/docker-compose.prod.yml logs --tail=50
+python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 ```
+
+Не использовать здесь `git pull`: он не гарантирует точный проверенный commit.
 
 ## 9. Если домашний IP сменился
 
 1. Открыть Hetzner Cloud Firewall в панели.
-2. Заменить старый source-IP для `22/tcp` на новый `x.x.x.x/32`.
+2. Добавить новый source-IP для `22/tcp` как `x.x.x.x/32`, не удаляя старый до
+   проверки нового подключения.
 3. Если доступ на сервер потерян, зайти через Hetzner Console / LISH.
-4. На сервере обновить правило `UFW`:
+4. На сервере добавить такое же правило `UFW`, подтвердить SSH с нового IP и
+   только после этого при необходимости удалить устаревшее правило:
 
 ```bash
 sudo ufw delete allow from <OLD_IP> to any port 22 proto tcp
@@ -328,8 +369,10 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 Как обновлять bridge:
 
 ```bash
-cd /opt/maxtg-bridge
-git pull
-docker compose --env-file .env.host -f deploy/docker-compose.prod.yml build
-docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
+cd infra/ansible
+ansible-playbook deploy.yml --check --diff
+ansible-playbook deploy.yml
 ```
+
+Если Ansible transport временно недоступен, использовать только
+[контролируемый fallback](#контролируемый-fallback-без-ansible) выше.

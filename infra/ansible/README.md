@@ -40,6 +40,10 @@ ansible-playbook deploy.yml
 - `deploy.yml --check --diff` здесь не пытается симулировать `docker compose build/up`.
 - В check mode playbook работает как безопасный preflight: проверяет preconditions, текущее состояние контейнера, healthcheck и smoke-check без мутаций на сервере.
 - Реальный rollout выполняется только обычным `ansible-playbook deploy.yml`.
+- Если недоступен именно control channel Ansible, есть
+  [контролируемый fallback](../../docs/runbooks/hetzner-production.md#контролируемый-fallback-без-ansible):
+  backup-first, exact pushed commit, без передачи/пересоздания secret и state.
+  Это аварийная процедура, а не замена Ansible.
 
 ## Playbook'и
 
