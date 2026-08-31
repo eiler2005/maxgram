@@ -1413,12 +1413,28 @@ class MaxMediaService:
                 or getattr(attach, "fileId", None)
                 or getattr(attach, "id", None)
             )
-            if not file_id:
-                return None
-            local_path, filename = await self._download_file_by_id(
-                chat_id, msg_id, file_id, f"doc_{chat_id}_{msg_id}{idx}",
-                filename_hint, expected_kind="document", flow_id=flow_id,
+            url = (
+                getattr(attach, "url", None)
+                or getattr(attach, "base_url", None)
+                or getattr(attach, "baseUrl", None)
+                or getattr(attach, "baseRawUrl", None)
             )
+            local_path = None
+            filename = None
+            if url:
+                local_path, filename = await self._download_from_url(
+                    url,
+                    f"doc_{chat_id}_{msg_id}{idx}",
+                    filename_hint,
+                    expected_kind="document",
+                    flow_id=flow_id,
+                    download_source="direct_url",
+                )
+            if not local_path and file_id:
+                local_path, filename = await self._download_file_by_id(
+                    chat_id, msg_id, file_id, f"doc_{chat_id}_{msg_id}{idx}",
+                    filename_hint, expected_kind="document", flow_id=flow_id,
+                )
             if local_path:
                 return self._with_attachment_metadata(
                     MaxAttachment(
