@@ -780,6 +780,12 @@ class VideoPlayClient(LookupClient):
         return {"payload": self.payload}
 
 
+class TypedVideoClient(VideoPlayClient):
+    async def get_video_by_id(self, *, chat_id: int, message_id: int, video_id: int):
+        self.typed_request = (chat_id, message_id, video_id)
+        return SimpleNamespace(url="https://cdn.example.com/typed-video.mp4")
+
+
 def test_extract_video_url_prefers_stream_over_thumbnail(tmp_path):
     adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
 
@@ -848,6 +854,32 @@ def test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url(t
     )
 
     assert headers == {"User-Agent": MAX_CDN_USER_AGENT}
+
+
+@pytest.mark.asyncio
+async def test_download_video_by_id_prefers_typed_pymax_video_url(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    client = TypedVideoClient({"MP4_720": "https://cdn.example.com/raw-video.mp4"})
+    adapter._client = client
+    captured = {}
+
+    async def fake_download(url, *args, **kwargs):
+        captured["url"] = url
+        return "/tmp/video.mp4", "video.mp4"
+
+    adapter._download_from_url = fake_download
+
+    result = await adapter._download_video_by_id("123", "456", 789, "video_123_456")
+
+    assert result == ("/tmp/video.mp4", "video.mp4")
+    assert captured["url"] == "https://cdn.example.com/typed-video.mp4"
+    assert client.typed_request == (123, 456, 789)
+    assert client.last_request is None
 
 
 @pytest.mark.asyncio

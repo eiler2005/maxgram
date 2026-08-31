@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **372 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **380 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -151,6 +151,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_handle_raw_message_decodes_bytes_text_before_preview` | PyMax 2 `message.text` в bytes декодируется до UTF-8 string до logging preview и dispatch. |
 | `test_handle_raw_message_extracts_text_from_msgpack_bytes` | SHARE/msgpack-like `message.text` bytes распаковываются до настоящего text без `�` и raw field names. |
 | `test_handle_raw_message_normalizes_pymax_enum_edit_status` | PyMax enum/string status вроде `MessageStatus.EDITED` нормализуется в `EDITED`, чтобы edit-события не создавали разные `max_msg_id` variants. |
+| `test_handle_raw_message_preserves_reply_target` | `link.type=REPLY` сохраняет linked MAX message id в `MaxMessage.reply_to_msg_id` и не помечает reply как forward. |
 | `test_handle_raw_message_extracts_max_join_action_from_share` | `SHARE` с `https://max.ru/join/...` становится `max_join` action и больше не деградирует в один `[Вложение MAX: share]`. |
 | `test_handle_raw_message_extracts_url_from_pymax_240_share_attachment` | Реальный PyMax 2.4.0 `ShareAttachment.url` становится Telegram `open_url` action, без generic `share` fallback. |
 | `test_handle_raw_message_extracts_external_action_from_inline_keyboard` | `inline_keyboard` / nested `web_app.url` превращается в `open_url` action с безопасной label. |
@@ -267,7 +268,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_download_headers_for_url_uses_android_chrome_user_agent` | Для signed MAX CDN URL с `srcAg=CHROME_ANDROID` downloader ставит Android Chrome `User-Agent`. |
 | `test_download_headers_for_url_uses_ios_chrome_user_agent` | Для signed MAX CDN URL с `srcAg=CHROME_IPHONE` downloader ставит iOS Chrome `User-Agent`. |
 | `test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url` | Для signed MAX CDN URL без `CHROME` downloader использует mobile Safari `User-Agent`. |
-| `test_download_video_by_id_uses_raw_video_play_payload` | `_download_video_by_id()` читает сырой payload `VIDEO_PLAY` и скачивает найденный media URL напрямую, не полагаясь на хрупкий upstream parser. |
+| `test_download_video_by_id_prefers_typed_pymax_video_url` | `_download_video_by_id()` сначала использует public PyMax 2.4.1 `get_video_by_id().url` и не вызывает raw request при успехе. |
+| `test_download_video_by_id_uses_raw_video_play_payload` | Если typed PyMax API не дал URL, `_download_video_by_id()` сохраняет raw `VIDEO_PLAY` fallback и извлекает media URL из legacy payload. |
 | `test_handle_raw_message_marks_failed_video_retryable_by_video_id` | Если MAX `VIDEO` не скачался, но есть `video_id`, failure становится retryable и хранит только стабильную meta-ссылку без URL/token. |
 | `test_download_from_url_uses_mobile_safari_user_agent` | Базовый downloader создаёт `tmp_dir`, делает HTTP GET с ожидаемым `User-Agent` и сохраняет файл с корректным именем. |
 | `test_download_from_url_logs_src_ag_and_sanitized_http_error` | При CDN HTTP-ошибке downloader пишет `src_ag`, `ua_family`, `http_status`, `download_source`, но не раскрывает signed query URL в `error`. |
@@ -349,6 +351,9 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | Тест | Что проверяет |
 |------|--------------|
 | `test_forward_to_telegram_sends_media_then_rendered_system_text` | Сообщение с видео-вложением и `rendered_texts`: сначала отправляется видео (`send_video` с caption `[Имя]`), затем текст системного события (`send_text`). Возвращает `message_id` медиа. |
+| `test_forward_to_telegram_uses_native_reply_for_text` | Text reply из MAX разрешается в same-topic Telegram message и получает native `reply_to_message_id`. |
+| `test_forward_to_telegram_replies_to_first_media_part_only` | MAX reply разрешается через mapping в том же topic; `reply_to_message_id` ставится только на первую успешную media/text часть. |
+| `test_forward_to_telegram_marks_unmapped_reply_and_forward` | Ненайденный MAX reply и forward получают нейтральные markers без цитирования message content. |
 | `test_forward_to_telegram_passes_external_url_buttons` | `open_url` actions становятся Telegram URL buttons и не создают SQLite callback rows. |
 | `test_forward_to_telegram_stores_short_max_join_callback` | `max_join` action создаёт короткий `max_join:<id>` callback_data, сохраняет только MAX invite payload и привязывает row к отправленному TG message. |
 | `test_tg_callback_max_join_calls_max_and_marks_used` | Owner callback загружает durable action, вызывает `max.join_chat_by_link()`, помечает row `used` и планирует recovery scan. |
@@ -380,11 +385,12 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_delivered_duplicate_with_media_is_skipped` | Обычный delivered duplicate с media остаётся dedup-skipped и не меняет прежнее поведение. |
 | `test_delivered_duplicate_with_recorded_media_part_without_pending_is_skipped` | Duplicate с уже записанным media part и без active pending job не создаёт topic и не пересылает media повторно. |
 | `test_pending_media_worker_delivers_video_and_maps_reply` | Retry worker скачивает отложенное видео, отправляет `send_video`, закрывает job и сохраняет reply mapping на исходный MAX message. |
+| `test_pending_media_worker_stops_video_after_six_deferred_attempts` | После шестой deferred video failure job переходит в `failed`, пользователь получает terminal warning, седьмой deferred attempt не планируется. |
 | `test_pending_media_worker_falls_back_to_recovery_cache_after_reference_miss` | Если stable photo reference не дал файл, worker читает encrypted recovery cache payload и досылает media без логирования signed URL. |
 | `test_pending_media_worker_delivers_cache_only_document` | Cache-only document/file job не вызывает video reference path, скачивает вложение из cached hints и отправляет `send_document`. |
 | `test_pending_media_worker_delivers_photo_by_file_reference` | Retry worker скачивает отложенное фото через stable file reference, отправляет `send_photo`, закрывает job и сохраняет reply mapping. |
 | `test_pending_media_worker_skips_send_when_late_recovery_wins_race` | Если late duplicate успел доставить видео, пока retry worker уже скачивал тот же файл, worker закрывает job без повторного `send_video`. |
-| `test_pending_media_worker_falls_back_from_zero_media_chat` | Pending media retry для старых jobs с `media_chat_id=0` использует исходный MAX chat id, а при `not.found` пробует wrapper message id. |
+| `test_pending_media_worker_falls_back_to_wrapper_message` | Pending video retry проверяет как legacy `media_chat_id=0`, так и valid forwarded source pair, после чего пробует receiving wrapper chat/message. |
 | `test_pending_media_worker_reschedules_download_failure` | Временный сбой скачивания переводит job в `retry` с увеличенным attempts и будущим `next_attempt_at`. |
 | `test_pending_media_worker_marks_missing_reference_terminal` | Job без стабильного `video_id` становится terminal failure, отправляет финальное предупреждение и не крутится бесконечно. |
 | `test_pending_media_late_duplicate_finalizer_sends_terminal_notice` | Delayed-finalizer для photo/file после timeout отправляет финальное предупреждение, если late duplicate так и не восстановил media. |
@@ -477,7 +483,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_tg_adapter.py — входящие сообщения Telegram и system notifications (10 тестов)
+## test_tg_adapter.py — входящие сообщения Telegram и system notifications (11 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -487,6 +493,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_dispatch_incoming_message_keeps_recovery_owner_only_in_general` | `/recovery` остаётся owner-only даже в General, чтобы export/invite/admin metadata не раскрывались группе. |
 | `test_tg_retry_logs_retry_and_success` | `_tg_retry` делает повторную попытку при `TelegramRetryAfter` и логирует событие retry; после успеха возвращает корректный результат. |
 | `test_send_text_attaches_inline_url_buttons` | `send_text(..., buttons=...)` конвертирует neutral buttons в aiogram `InlineKeyboardMarkup`. |
+| `test_media_sends_preserve_reply_to_message_id` | Telegram photo/document/video/audio/voice methods все передают `reply_to_message_id` в Bot API. |
 | `test_callback_query_owner_dispatches_handler` | Owner click по `max_join:<id>` превращается в `TelegramCallbackAction` и dispatch-ится в bridge handler. |
 | `test_callback_query_non_owner_is_rejected` | Не-владелец получает короткий callback answer, handler не вызывается. |
 | `test_send_system_notification_fans_out_to_dm_and_ops_topic` | Системное уведомление уходит и в owner DM, и в ops topic, если `ops_topic_id` задан. |

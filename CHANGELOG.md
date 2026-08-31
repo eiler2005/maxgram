@@ -40,6 +40,8 @@ All notable changes to Maxgram are documented here.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
 
 ### Fixed
+- **MAX replies in Telegram** — inbound `link.type=REPLY` now reaches the bridge contract, resolves through same-chat/same-topic mappings, and becomes a native Telegram reply on the first emitted part. Forwarded messages and unmapped historical replies get short context markers without quoted content; TG-origin messages now retain their `tg_msg_id` in outbound mappings.
+- **Deferred MAX video delivery** — video URLs now use PyMax 2.4.1 `get_video_by_id()` before raw `VIDEO_PLAY`, forwarded video retries fall back from source to wrapper message coordinates, and durable video retry finishes after six three-minute attempts with a terminal warning instead of waiting forever.
 - **Per-attachment MAX edit media delivery** — delivered MAX media parts are now tracked meta-only by canonical message id, attachment index, and kind. Edited messages only send newly added/missing photo/video/audio/file parts, late duplicates can recover remaining parts after partial recovery, and delayed finalizers no longer emit false terminal warnings for already delivered attachments.
 - **Edited MAX media events** — PyMax `MessageStatus.EDITED` and `EDITED` now normalize to one edit status, and edit-event media failures no longer create a separate delayed finalizer when the base MAX message was already delivered. This prevents false `Фото MAX #N так и не удалось загрузить автоматически` warnings after message edits.
 - **MAX video duration metadata** — delayed and direct MAX video forwarding now normalizes millisecond video durations and falls back to MP4 `mvhd` metadata when MAX omits duration, preventing Telegram videos from showing `00:00` or multi-hour bogus durations.
@@ -52,6 +54,7 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added regressions for inbound MAX reply/forward normalization, native replies across text/media, missing-mapping markers, Telegram media `reply_to_message_id`, typed video URL selection, source/wrapper video fallback, and the 18-minute retry terminal state.
 - Added PyMax 2.4.1 runtime/API surface pins plus regressions for lazy hook installation, MAX CA-aware custom egress TLS, one-shot connect/disconnect waiting, and disabled automatic relogin.
 - Added coverage for encrypted media recovery cache storage/purge, sanitized MAX attachment payload hints, and media retry fallback/replay through cached payloads.
 - Added regressions for `delivered_media_parts` SQLite idempotency, per-index edit-media dedupe, partial late-media recovery continuation, edit finalizer suppression by matching part, and successful attachment metadata propagation.

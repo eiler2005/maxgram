@@ -172,6 +172,13 @@ class LookupClient:
         file_obj = await get_file(chat_id=chat_id, message_id=message_id, file_id=file_id)
         return getattr(file_obj, "url", None)
 
+    async def video_url(self, *, chat_id: int, message_id: int, video_id: int):
+        get_video = getattr(self, "get_video_by_id", None)
+        if get_video is None:
+            return None
+        video_obj = await get_video(chat_id=chat_id, message_id=message_id, video_id=video_id)
+        return getattr(video_obj, "url", None)
+
     async def video_payload(self, *, chat_id: int, message_id: int, video_id: int):
         data = await self.raw_request(
             opcode_name="VIDEO_PLAY",

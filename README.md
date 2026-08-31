@@ -62,7 +62,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
 - **Ansible-driven ops** — regular deploy, backup, recovery, fresh-VM bootstrap, and hardening are all codified as idempotent playbooks under `infra/ansible/`; the manual runbook is kept only as fallback
 - **Supervisor runtime shell** — PID1 is now a supervisor that keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
-- **Resilient delivery** — Telegram API calls retry with exponential backoff; definite unsent TG→MAX text failures and retryable MAX→TG text delivery failures are queued with lease/backoff/TTL; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; retryable MAX video/voice downloads are persisted by reference until delivered; `/status` gives live health snapshot on demand
+- **Resilient delivery** — Telegram API calls retry with exponential backoff; definite unsent TG→MAX text failures and retryable MAX→TG text delivery failures are queued with lease/backoff/TTL; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; video recovery makes six deferred attempts over 18 minutes while voice/photo stable-reference recovery keeps its existing backoff policy; `/status` gives live health snapshot on demand
 - **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
 - **Prometheus textfile metrics** — health, durable retry queues, delivery totals, worker restarts, and alert outbox depth are exported to `data/maxtg_bridge.prom` by default
 - **Account migration recovery registry** — hybrid MAX account snapshots preserve Telegram topic routing, invite/admin metadata, DM partner ids, DM contact snapshots from real dialogs only, and snapshot freshness for guided recovery after a phone/account loss
@@ -73,9 +73,10 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 
 - Automatic topic creation for every new MAX chat
 - Bidirectional messaging — replies in Telegram → delivered to MAX (including reply-to-message)
+- MAX replies become native Telegram replies when the original mapping is available; unmapped replies and forwarded messages receive short context markers without quoted content
 - Media forwarding in both directions: photos, video, audio, voice, documents
-- MAX video downloads prefer real `MP4_*` streams over `EXTERNAL` player pages and use an adaptive CDN user-agent (`CHROME` vs mobile Safari)
-- Retryable MAX video/voice failures are queued in SQLite and sent later to the same Telegram topic without storing signed URLs or tokens
+- MAX video downloads use PyMax 2.4.1 `get_video_by_id()` first, keep raw `VIDEO_PLAY` as a fallback, prefer real `MP4_*` streams over `EXTERNAL` player pages, and use an adaptive CDN user-agent (`CHROME` vs mobile Safari)
+- Retryable MAX video failures are queued by stable reference for six deferred attempts every three minutes; a terminal warning replaces indefinite waiting after 18 minutes, without storing signed URLs or tokens
 - MAX downloader validates `Content-Type` + file signature and rejects HTML/text fallbacks for expected media
 - MAX `CHANNEL`/forward wrappers are unwrapped into the real forwarded text and media instead of a generic system placeholder
 - Unknown MAX message shapes are forwarded with diagnostic metadata (`type`, `link_*`, counts, raw field names) so new formats can be fixed from the next occurrence

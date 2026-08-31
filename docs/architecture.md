@@ -212,6 +212,7 @@ Telegram adapter
 MAX WebSocket event
   └─► MAX Adapter._handle_raw_message()
         ├─ парсит поля (msg_id, chat_id, sender_id, text, attaches)
+        ├─ сохраняет reply_to_msg_id и forward marker в MaxMessage
         ├─ определяет is_dm (chat_id > 0) и is_own (sender == own_id)
         ├─ скачивает медиа в data/tmp/ (если есть)
         └─► Bridge Core._on_max_message()
@@ -224,6 +225,8 @@ MAX WebSocket event
               ├─ проверяет binding.mode (disabled → skip)
               └─► _forward_to_telegram()
                     ├─ сверяет media parts через delivered_media_parts
+                    ├─ reply_to_msg_id → message_map/tg_reply_map → native Telegram reply
+                    ├─ ненайденный reply / forward → короткий marker без цитаты
                     ├─ фото → tg.send_photo()
                     ├─ видео → tg.send_video()
                     ├─ аудио → tg.send_audio()
@@ -344,7 +347,7 @@ src.adapters.max_adapter compatibility alias
 
 - `ports.py` — internal role-based `MaxClientPort` and DTO (`MaxClientMessage`, attachments, users, chats, dialogs, send/interceptor results). Operation services depend on these views instead of the concrete client object shape.
 - `backends/base.py` — internal `MaxBackend` protocol: create a typed MAX client port; legacy helper methods remain for compatibility only.
-- `backends/pymax/` — `PymaxBackend` + тонкий `PymaxClientAdapter`; единственное место с `pymax` imports. Внутри пакет разделён на `client_factory.py`, `login.py`, `session_store.py`, `transport.py`, `events.py`, `raw_gateway.py`, `internals.py`, `models.py`, `media.py`: PyMax 2 `Client + ExtraConfig`, tolerant login validation for unknown attachment variants, v1-compatible DESKTOP login profile for existing sessions, one-time import legacy PyMax 1 `auth` session into PyMax 2 `sessions`, custom MAX egress transport, native `on_raw`, raw requests через isolated gateway, centralized private-attribute access with `PymaxInternalsContractError`, payload/file construction and conversion into our DTO. With PyMax 2.4.1, `BridgeClient` installs local auth/user/TCP hooks only after the lazy runtime exists; the adapter uses one-shot `connect()` plus the bridge-owned wait/reconnect loop, disables upstream automatic relogin, and reuses PyMax's MAX-CA-aware TLS context for custom egress sockets.
+- `backends/pymax/` — `PymaxBackend` + тонкий `PymaxClientAdapter`; единственное место с `pymax` imports. Внутри пакет разделён на `client_factory.py`, `login.py`, `session_store.py`, `transport.py`, `events.py`, `raw_gateway.py`, `internals.py`, `models.py`, `media.py`: PyMax 2 `Client + ExtraConfig`, tolerant login validation for unknown attachment variants, v1-compatible DESKTOP login profile for existing sessions, one-time import legacy PyMax 1 `auth` session into PyMax 2 `sessions`, custom MAX egress transport, native `on_raw`, raw requests через isolated gateway, centralized private-attribute access with `PymaxInternalsContractError`, payload/file construction and conversion into our DTO. With PyMax 2.4.1, `BridgeClient` installs local auth/user/TCP hooks only after the lazy runtime exists; the adapter uses one-shot `connect()` plus the bridge-owned wait/reconnect loop, disables upstream automatic relogin, reuses PyMax's MAX-CA-aware TLS context for custom egress sockets, and obtains video URLs through public `get_video_by_id()` before the isolated raw `VIDEO_PLAY` fallback.
 - `state.py` — явный mutable state по доменам: connection, outbound, raw history, empty recovery.
 - `deps.py` — explicit dependency objects for operation services; старый service registry / dynamic `__getattr__` и общий base service не используются.
 - `lifecycle.py`, `events.py`, `send.py`, `media/attachments.py`, `recovery.py`, `resolve.py`, `voice_recovery.py` — operation services. Каждый сервис владеет собственным typed deps object, не наследуется от god base class, не импортирует `pymax`, не принимает полный `MaxAdapter` и не обращается к pymax-private/client-shape methods directly.
@@ -569,7 +572,7 @@ src/logging_utils.py
 
 SQLite остаётся источником состояния и delivery metadata:
 
-- `message_map` — дедупликация и reply routing
+- `message_map` — дедупликация и reply routing; outbound rows также хранят исходный `tg_msg_id`, чтобы MAX reply на TG-origin message вернулся нативным Telegram reply
 - `tg_reply_map` — дополнительные TG message ids для reply routing поздно досланных медиа
 - `delivered_media_parts` — per-index/per-kind идемпотентность MAX media после edit/late recovery; только metadata без текста, raw payload, signed URL или token
 - `media_recovery_cache` — временный encrypted cache только для проблемных MAX media hints; открыто хранятся stable refs/filename/duration/size meta, volatile URL/payload лежит только в Fernet ciphertext и чистится по TTL

@@ -1729,6 +1729,12 @@ class MaxEventsService:
                 raw=message,
                 attachment_failures=attachment_failures,
                 actions=actions,
+                reply_to_msg_id=reply_to_msg_id,
+                is_forwarded=bool(
+                    forwarded
+                    or getattr(message, "_forward_link_type", None)
+                    or getattr(message, "_forward_source_chat_id", None)
+                ),
             )
 
             for handler in self._handlers:

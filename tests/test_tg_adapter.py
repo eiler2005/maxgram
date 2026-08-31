@@ -155,6 +155,30 @@ class FakeSystemBot:
         return SimpleNamespace(message_id=outcome)
 
 
+class FakeMediaBot:
+    def __init__(self):
+        self.calls = []
+
+    async def _send(self, kind: str, kwargs: dict):
+        self.calls.append((kind, kwargs))
+        return SimpleNamespace(message_id=len(self.calls))
+
+    async def send_photo(self, **kwargs):
+        return await self._send("photo", kwargs)
+
+    async def send_document(self, **kwargs):
+        return await self._send("document", kwargs)
+
+    async def send_video(self, **kwargs):
+        return await self._send("video", kwargs)
+
+    async def send_audio(self, **kwargs):
+        return await self._send("audio", kwargs)
+
+    async def send_voice(self, **kwargs):
+        return await self._send("voice", kwargs)
+
+
 class FakeCallbackQuery:
     def __init__(self, *, user_id: int, data: str = "max_join:cb1"):
         self.data = data
@@ -201,6 +225,29 @@ async def test_send_text_attaches_inline_url_buttons():
     button = markup.inline_keyboard[0][0]
     assert button.text == "Открыть сайт"
     assert button.url == "https://example.test/page"
+
+
+@pytest.mark.asyncio
+async def test_media_sends_preserve_reply_to_message_id(tmp_path):
+    adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
+    adapter._bot = FakeMediaBot()
+    media_path = tmp_path / "media.bin"
+    media_path.write_bytes(b"media")
+
+    await adapter.send_photo(555, str(media_path), reply_to_msg_id=777)
+    await adapter.send_document(555, str(media_path), reply_to_msg_id=777)
+    await adapter.send_video(555, str(media_path), reply_to_msg_id=777)
+    await adapter.send_audio(555, str(media_path), reply_to_msg_id=777)
+    await adapter.send_voice(555, str(media_path), reply_to_msg_id=777)
+
+    assert [kind for kind, _kwargs in adapter._bot.calls] == [
+        "photo",
+        "document",
+        "video",
+        "audio",
+        "voice",
+    ]
+    assert all(kwargs["reply_to_message_id"] == 777 for _kind, kwargs in adapter._bot.calls)
 
 
 @pytest.mark.asyncio

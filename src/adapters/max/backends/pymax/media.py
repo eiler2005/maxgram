@@ -56,6 +56,18 @@ class PymaxMediaGateway:
             url = data.get("url")
         return str(url) if url else None
 
+    async def video_url(self, *, chat_id: int, message_id: int, video_id: int) -> str | None:
+        video_obj = await self._client.get_video_by_id(
+            chat_id=chat_id,
+            message_id=message_id,
+            video_id=video_id,
+        )
+        url = getattr(video_obj, "url", None)
+        if not url:
+            data = model_dump(video_obj) or {}
+            url = data.get("url")
+        return str(url) if url else None
+
     async def video_payload(
         self, *, chat_id: int, message_id: int, video_id: int
     ) -> dict[str, Any] | None:

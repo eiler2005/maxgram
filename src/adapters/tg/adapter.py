@@ -411,7 +411,8 @@ class TelegramAdapter:
         )
 
     async def send_photo(self, topic_id: int, path: str, caption: str = "",
-                         *, flow_id: Optional[str] = None) -> Optional[int]:
+                         *, reply_to_msg_id: Optional[int] = None,
+                         flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить фото в топик."""
         return await self._tg_retry(
             lambda: self._bot.send_photo(
@@ -419,17 +420,20 @@ class TelegramAdapter:
                 photo=FSInputFile(path),
                 caption=caption[:1024] if caption else None,
                 message_thread_id=topic_id,
+                reply_to_message_id=reply_to_msg_id,
             ),
             f"send_photo topic={topic_id}",
             flow_id=flow_id,
             direction="inbound",
             tg_topic_id=topic_id,
+            tg_msg_id=reply_to_msg_id,
             media_type="photo",
         )
 
     async def send_document(self, topic_id: int, path: str,
                              caption: str = "", filename: str = "",
-                             *, flow_id: Optional[str] = None) -> Optional[int]:
+                             *, reply_to_msg_id: Optional[int] = None,
+                             flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить документ в топик."""
         return await self._tg_retry(
             lambda: self._bot.send_document(
@@ -437,11 +441,13 @@ class TelegramAdapter:
                 document=FSInputFile(path, filename=filename or Path(path).name),
                 caption=caption[:1024] if caption else None,
                 message_thread_id=topic_id,
+                reply_to_message_id=reply_to_msg_id,
             ),
             f"send_document topic={topic_id}",
             flow_id=flow_id,
             direction="inbound",
             tg_topic_id=topic_id,
+            tg_msg_id=reply_to_msg_id,
             media_type="document",
         )
 
@@ -463,7 +469,8 @@ class TelegramAdapter:
                          filename: str = "", duration: Optional[int] = None,
                          width: Optional[int] = None,
                          height: Optional[int] = None,
-                         *, flow_id: Optional[str] = None) -> Optional[int]:
+                         *, reply_to_msg_id: Optional[int] = None,
+                         flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить видео в топик."""
         return await self._tg_retry(
             lambda: self._bot.send_video(
@@ -475,17 +482,20 @@ class TelegramAdapter:
                 width=width,
                 height=height,
                 supports_streaming=True,
+                reply_to_message_id=reply_to_msg_id,
             ),
             f"send_video topic={topic_id}",
             flow_id=flow_id,
             direction="inbound",
             tg_topic_id=topic_id,
+            tg_msg_id=reply_to_msg_id,
             media_type="video",
         )
 
     async def send_audio(self, topic_id: int, path: str, caption: str = "",
                          filename: str = "", duration: Optional[int] = None,
-                         *, flow_id: Optional[str] = None) -> Optional[int]:
+                         *, reply_to_msg_id: Optional[int] = None,
+                         flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить аудио в топик."""
         return await self._tg_retry(
             lambda: self._bot.send_audio(
@@ -495,17 +505,20 @@ class TelegramAdapter:
                 message_thread_id=topic_id,
                 duration=duration,
                 title=Path(filename or path).stem,
+                reply_to_message_id=reply_to_msg_id,
             ),
             f"send_audio topic={topic_id}",
             flow_id=flow_id,
             direction="inbound",
             tg_topic_id=topic_id,
+            tg_msg_id=reply_to_msg_id,
             media_type="audio",
         )
 
     async def send_voice(self, topic_id: int, path: str,
                          caption: str = "", duration: Optional[int] = None,
-                         *, flow_id: Optional[str] = None) -> Optional[int]:
+                         *, reply_to_msg_id: Optional[int] = None,
+                         flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить voice note в топик (нативный voice bubble)."""
         return await self._tg_retry(
             lambda: self._bot.send_voice(
@@ -514,11 +527,13 @@ class TelegramAdapter:
                 caption=caption[:1024] if caption else None,
                 message_thread_id=topic_id,
                 duration=duration,
+                reply_to_message_id=reply_to_msg_id,
             ),
             f"send_voice topic={topic_id}",
             flow_id=flow_id,
             direction="inbound",
             tg_topic_id=topic_id,
+            tg_msg_id=reply_to_msg_id,
             media_type="voice",
         )
 

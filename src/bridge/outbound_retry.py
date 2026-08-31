@@ -189,6 +189,7 @@ async def process_pending_outbound_message(
                 max_msg_id=sent_id,
                 max_chat_id=job.max_chat_id,
                 tg_topic_id=job.tg_topic_id,
+                tg_msg_id=job.tg_msg_id,
             )
             await repo.log_delivery(
                 sent_id,

@@ -253,6 +253,15 @@ class PymaxClientAdapter:
             file_id=file_id,
         )
 
+    async def video_url(
+        self, *, chat_id: int, message_id: int, video_id: int
+    ) -> str | None:
+        return await self._media.video_url(
+            chat_id=chat_id,
+            message_id=message_id,
+            video_id=video_id,
+        )
+
     async def video_payload(
         self, *, chat_id: int, message_id: int, video_id: int
     ) -> dict[str, Any] | None:

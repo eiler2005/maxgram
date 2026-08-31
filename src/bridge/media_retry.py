@@ -31,6 +31,8 @@ LATE_DUPLICATE_REFERENCE_KIND = "late_duplicate"
 CACHED_PAYLOAD_REFERENCE_KIND = "cached_payload"
 DEFAULT_MEDIA_RECOVERY_CACHE_TTL_SECONDS = 48 * 60 * 60
 LATE_DUPLICATE_FINAL_DELAY_SECONDS = 180
+VIDEO_RETRY_INTERVAL_SECONDS = 180
+VIDEO_MAX_DEFERRED_ATTEMPTS = 6
 _EDIT_STATUS_SUFFIXES = (":EDITED", ":MESSAGESTATUS.EDITED")
 
 
@@ -50,7 +52,12 @@ def media_kind_label(kind: str | None, *, source_type: str | None = None) -> str
 
 def compose_pending_media_text(failure: MaxAttachmentFailure) -> str:
     label = media_kind_label(failure.kind, source_type=failure.source_type)
-    return f"⏳ {label} #{failure.index + 1} загружается и будет дослано через пару минут"
+    if failure.kind == "video":
+        return (
+            f"⏳ {label} #{failure.index + 1} загружается; "
+            "bridge будет пробовать дослать его до 18 минут"
+        )
+    return f"⏳ {label} #{failure.index + 1} загружается и будет дослано автоматически"
 
 
 def compose_terminal_media_failure_text(*, kind: str, index: int, source_type: str | None = None) -> str:
@@ -552,8 +559,10 @@ async def mark_pending_media_delivered_if_late_recovered(
     return True
 
 
-def pending_media_retry_delay(attempts_after_failure: int) -> int:
-    # Бесконечный retry с cap: 1m, 2m, 4m ... до 6h.
+def pending_media_retry_delay(kind: str, attempts_after_failure: int) -> int:
+    if kind == "video":
+        return VIDEO_RETRY_INTERVAL_SECONDS
+    # Остальные stable media refs: 1m, 2m, 4m ... до 6h.
     return exponential_backoff_seconds(
         attempts_after_failure,
         base_seconds=60,
@@ -585,7 +594,6 @@ async def enqueue_retryable_media_failures(
     enqueued = 0
     display_failures: list[MaxAttachmentFailure] = []
     now = int(time.time())
-    first_retry_at = now + 60
     legacy_edit_media_resolved = await is_edit_media_resolved_by_base_delivery(repo=repo, msg=msg)
     for failure in msg.attachment_failures:
         media_part_delivered = await is_failure_delivered(
@@ -750,7 +758,9 @@ async def enqueue_retryable_media_failures(
                 duration=failure.duration,
                 width=failure.width,
                 height=failure.height,
-                next_attempt_at=first_retry_at,
+                next_attempt_at=now + (
+                    VIDEO_RETRY_INTERVAL_SECONDS if failure.kind == "video" else 60
+                ),
                 last_error=failure.reason,
             )
         )
@@ -825,6 +835,7 @@ async def find_existing_pending_media_for_failure(
 async def mark_pending_media_retry(
     *,
     repo: Repository,
+    tg: TelegramBridgePort,
     job: PendingMediaDownload,
     error: str,
     flow_id: str,
@@ -832,7 +843,40 @@ async def mark_pending_media_retry(
     if job.id is None:
         return
     attempts_after_failure = int(job.attempts or 0) + 1
-    delay = pending_media_retry_delay(attempts_after_failure)
+    if job.kind == "video" and attempts_after_failure >= VIDEO_MAX_DEFERRED_ATTEMPTS:
+        with suppress(Exception):
+            await tg.send_text(
+                job.tg_topic_id,
+                compose_terminal_media_failure_text(
+                    kind=job.kind,
+                    index=job.attachment_index,
+                    source_type=job.source_type,
+                ),
+                flow_id=flow_id,
+            )
+        await repo.mark_pending_media_failed(
+            job.id,
+            error=f"video_retry_exhausted:{error}",
+        )
+        log_event(
+            logger,
+            logging.ERROR,
+            "bridge.media_retry.failed",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="media_retry",
+            outcome="failed",
+            reason="video_retry_exhausted",
+            max_chat_id=job.max_chat_id,
+            max_msg_id=job.max_msg_id,
+            tg_topic_id=job.tg_topic_id,
+            pending_media_id=job.id,
+            attachment_index=job.attachment_index,
+            kind=job.kind,
+            attempts=attempts_after_failure,
+        )
+        return
+    delay = pending_media_retry_delay(job.kind, attempts_after_failure)
     next_attempt_at = int(time.time()) + delay
     await repo.mark_pending_media_retry(
         job.id,
@@ -1085,7 +1129,10 @@ async def process_pending_media_download(
                 source_type=job.source_type or "VIDEO",
                 flow_id=flow_id,
             )
-            if attachment is None and source_fallback and media_msg_id != str(job.max_msg_id):
+            if attachment is None and (
+                media_chat_id != str(job.max_chat_id)
+                or media_msg_id != str(job.max_msg_id)
+            ):
                 log_event(
                     logger,
                     logging.INFO,
@@ -1094,7 +1141,7 @@ async def process_pending_media_download(
                     direction="inbound",
                     stage="media_retry",
                     outcome="retry",
-                    reason="fallback_to_wrapper_message_id",
+                    reason="fallback_to_wrapper_message",
                     max_chat_id=job.max_chat_id,
                     max_msg_id=job.max_msg_id,
                     tg_topic_id=job.tg_topic_id,
@@ -1126,6 +1173,7 @@ async def process_pending_media_download(
     except Exception as e:
         await mark_pending_media_retry(
             repo=repo,
+            tg=tg,
             job=job,
             error=f"download_exception:{e.__class__.__name__}",
             flow_id=flow_id,
@@ -1165,6 +1213,7 @@ async def process_pending_media_download(
             return
         await mark_pending_media_retry(
             repo=repo,
+            tg=tg,
             job=job,
             error="download_failed",
             flow_id=flow_id,
@@ -1222,6 +1271,7 @@ async def process_pending_media_download(
         except Exception as e:
             await mark_pending_media_retry(
                 repo=repo,
+                tg=tg,
                 job=job,
                 error=f"tg_send_exception:{e.__class__.__name__}",
                 flow_id=flow_id,
@@ -1230,6 +1280,7 @@ async def process_pending_media_download(
         if not tg_msg_id:
             await mark_pending_media_retry(
                 repo=repo,
+                tg=tg,
                 job=job,
                 error="tg_send_failed",
                 flow_id=flow_id,

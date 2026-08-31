@@ -54,11 +54,12 @@ async def save_outbound_mapping(
     max_msg_id: str,
     max_chat_id: str,
     tg_topic_id: int,
+    tg_msg_id: Optional[int] = None,
 ):
     await repo.save_message(MessageRecord(
         max_msg_id=max_msg_id,
         max_chat_id=max_chat_id,
-        tg_msg_id=None,
+        tg_msg_id=tg_msg_id,
         tg_topic_id=tg_topic_id,
         direction="outbound",
         created_at=int(time.time()),

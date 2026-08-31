@@ -256,6 +256,7 @@ async def handle_tg_reply(
         )
         queued = False
         if retry_candidate:
+            assert tg_msg_id is not None
             async with bridge_mapping.repo_transaction(repo):
                 await bridge_delivery.log_outbound_failure(
                     repo,
@@ -321,6 +322,7 @@ async def handle_tg_reply(
             max_msg_id=sent_id,
             max_chat_id=binding.max_chat_id,
             tg_topic_id=topic_id,
+            tg_msg_id=tg_msg_id,
         )
         await repo.log_delivery(sent_id, binding.max_chat_id, "outbound", "delivered")
     if media_path:

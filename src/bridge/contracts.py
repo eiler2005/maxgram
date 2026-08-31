@@ -102,6 +102,8 @@ class MaxMessage:
     raw: object                     # оригинальный объект библиотеки
     attachment_failures: list[MaxAttachmentFailure] = field(default_factory=list)
     actions: list[MaxMessageAction] = field(default_factory=list)
+    reply_to_msg_id: Optional[str] = None
+    is_forwarded: bool = False
 
 
 @dataclass
@@ -295,13 +297,23 @@ class TelegramBridgePort(Protocol):
         flow_id: Optional[str] = None,
         buttons: Optional[list[TelegramInlineButton]] = None,
     ) -> Optional[int]: ...
-    async def send_photo(self, topic_id: int, path: str, caption: str = "", flow_id: Optional[str] = None) -> Optional[int]: ...
+    async def send_photo(
+        self,
+        topic_id: int,
+        path: str,
+        caption: str = "",
+        *,
+        reply_to_msg_id: Optional[int] = None,
+        flow_id: Optional[str] = None,
+    ) -> Optional[int]: ...
     async def send_document(
         self,
         topic_id: int,
         path: str,
         caption: str = "",
         filename: str = "",
+        *,
+        reply_to_msg_id: Optional[int] = None,
         flow_id: Optional[str] = None,
     ) -> Optional[int]: ...
     async def send_video(
@@ -313,6 +325,8 @@ class TelegramBridgePort(Protocol):
         duration: Optional[int] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
+        *,
+        reply_to_msg_id: Optional[int] = None,
         flow_id: Optional[str] = None,
     ) -> Optional[int]: ...
     async def send_audio(
@@ -322,6 +336,8 @@ class TelegramBridgePort(Protocol):
         caption: str = "",
         filename: str = "",
         duration: Optional[int] = None,
+        *,
+        reply_to_msg_id: Optional[int] = None,
         flow_id: Optional[str] = None,
     ) -> Optional[int]: ...
     async def send_voice(
@@ -330,6 +346,8 @@ class TelegramBridgePort(Protocol):
         path: str,
         caption: str = "",
         duration: Optional[int] = None,
+        *,
+        reply_to_msg_id: Optional[int] = None,
         flow_id: Optional[str] = None,
     ) -> Optional[int]: ...
     async def send_owner_document(self, path: str, caption: str = "", filename: str = "") -> bool: ...

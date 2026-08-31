@@ -24,6 +24,10 @@ raw payloads, signed URLs, message text or media files.
 - Retry workers first try stable MAX references/history paths. If they fail,
   they may read encrypted cached hints and pass them back into the MAX adapter
   media downloader. Logs include only cache metadata, never URL/payload.
+- Video recovery uses public PyMax 2.4.1 `get_video_by_id()` first and keeps raw
+  `VIDEO_PLAY` only as a backend fallback. After the immediate failure it makes
+  six deferred attempts every 180 seconds, then emits a terminal warning.
+  Existing photo/audio stable-reference backoff remains unchanged.
 
 ## Rejected Alternatives
 
@@ -44,3 +48,6 @@ raw payloads, signed URLs, message text or media files.
   returns the message through history/exact lookup.
 - Operators should verify `bridge.media_recovery_cache.*` events and
   `media_recovery_cache.expires_at` when investigating media retry misses.
+- A video placeholder has a bounded 18-minute lifetime instead of promising an
+  indefinite delivery "in a couple of minutes". A failed job remains as
+  metadata for diagnostics and can be reset only by exact id after a backup.

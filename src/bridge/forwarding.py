@@ -73,15 +73,27 @@ async def send_attachment(
     topic_id: int,
     attachment: MaxAttachment,
     caption: str,
+    reply_to_msg_id: Optional[int] = None,
     flow_id: Optional[str] = None,
 ) -> Optional[int]:
     """Отправить одно вложение в Telegram."""
     if attachment.kind == "photo":
-        return await tg.send_photo(topic_id, attachment.local_path, caption, flow_id=flow_id)
+        return await tg.send_photo(
+            topic_id,
+            attachment.local_path,
+            caption,
+            reply_to_msg_id=reply_to_msg_id,
+            flow_id=flow_id,
+        )
 
     if attachment.kind == "document":
         return await tg.send_document(
-            topic_id, attachment.local_path, caption, attachment.filename or "", flow_id=flow_id
+            topic_id,
+            attachment.local_path,
+            caption,
+            attachment.filename or "",
+            reply_to_msg_id=reply_to_msg_id,
+            flow_id=flow_id,
         )
 
     if attachment.kind == "video":
@@ -93,6 +105,7 @@ async def send_attachment(
             duration=attachment.duration,
             width=attachment.width,
             height=attachment.height,
+            reply_to_msg_id=reply_to_msg_id,
             flow_id=flow_id,
         )
 
@@ -118,6 +131,7 @@ async def send_attachment(
                 return await tg.send_text(
                     topic_id,
                     compose_message_text(caption, placeholder),
+                    reply_to_msg_id=reply_to_msg_id,
                     flow_id=flow_id,
                 )
 
@@ -126,6 +140,7 @@ async def send_attachment(
                 attachment.local_path,
                 caption,
                 duration=attachment.duration,
+                reply_to_msg_id=reply_to_msg_id,
                 flow_id=flow_id,
             )
             if sent_id:
@@ -149,6 +164,7 @@ async def send_attachment(
                 caption,
                 attachment.filename or "",
                 duration=attachment.duration,
+                reply_to_msg_id=reply_to_msg_id,
                 flow_id=flow_id,
             )
         return await tg.send_audio(
@@ -157,6 +173,7 @@ async def send_attachment(
             caption,
             attachment.filename or "",
             duration=attachment.duration,
+            reply_to_msg_id=reply_to_msg_id,
             flow_id=flow_id,
         )
 
@@ -166,8 +183,46 @@ async def send_attachment(
     return await tg.send_text(
         topic_id,
         compose_message_text(caption, placeholder),
+        reply_to_msg_id=reply_to_msg_id,
         flow_id=flow_id,
     )
+
+
+async def resolve_inbound_reply_target(
+    *,
+    repo: Repository,
+    msg: MaxMessage,
+    topic_id: int,
+    flow_id: Optional[str],
+) -> Optional[int]:
+    """Resolve MAX reply to a Telegram message in the same topic."""
+    if not msg.reply_to_msg_id:
+        return None
+    try:
+        tg_msg_id = await repo.get_tg_msg_by_max(msg.chat_id, msg.reply_to_msg_id)
+        if tg_msg_id is None:
+            return None
+        mapping = await repo.get_tg_reply_mapping(tg_msg_id)
+        if (
+            mapping is not None
+            and str(mapping.max_chat_id) == str(msg.chat_id)
+            and mapping.tg_topic_id == topic_id
+        ):
+            return tg_msg_id
+    except Exception as exc:
+        log_event(
+            logger,
+            logging.WARNING,
+            "bridge.inbound.reply_resolve_failed",
+            flow_id=flow_id,
+            direction="inbound",
+            stage="routing",
+            outcome="failed",
+            max_chat_id=msg.chat_id,
+            max_msg_id=msg.msg_id,
+            error=exc.__class__.__name__,
+        )
+    return None
 
 
 def _is_late_media_recovery_candidate(latest_delivery: Optional[dict]) -> bool:
@@ -355,7 +410,20 @@ async def forward_to_telegram(
     elif not msg.is_dm and msg.sender_name:
         sender_prefix = f"[{msg.sender_name}] "
 
-    body_text = f"{sender_prefix}{msg.text}".strip() if msg.text else ""
+    reply_to_tg_msg_id = await resolve_inbound_reply_target(
+        repo=repo,
+        msg=msg,
+        topic_id=topic_id,
+        flow_id=flow_id,
+    )
+    context_marker = ""
+    if msg.reply_to_msg_id and reply_to_tg_msg_id is None:
+        context_marker = "↩️ Ответ в MAX"
+    elif msg.is_forwarded:
+        context_marker = "↪️ Переслано из MAX"
+
+    message_text = f"{sender_prefix}{msg.text}".strip() if msg.text else ""
+    body_text = compose_message_text(context_marker, message_text)
     media_caption = body_text or (sender_prefix.strip() if msg.attachments else "")
     extra_text = "\n".join(part for part in msg.rendered_texts if part).strip()
     prepared_buttons = await bridge_actions.prepare_telegram_buttons(
@@ -382,7 +450,12 @@ async def forward_to_telegram(
                 filename=attachment.filename or attachment_path.name
             )
             text = compose_message_text("" if emitted_anything else media_caption, placeholder)
-            sent_id = await tg.send_text(topic_id, text, flow_id=flow_id)
+            sent_id = await tg.send_text(
+                topic_id,
+                text,
+                reply_to_msg_id=None if emitted_anything else reply_to_tg_msg_id,
+                flow_id=flow_id,
+            )
         else:
             caption = "" if emitted_anything else media_caption
             sent_id = await send_attachment(
@@ -391,6 +464,7 @@ async def forward_to_telegram(
                 topic_id=topic_id,
                 attachment=attachment,
                 caption=caption,
+                reply_to_msg_id=None if emitted_anything else reply_to_tg_msg_id,
                 flow_id=flow_id,
             )
             delivered_media = attachment.kind in {"photo", "video", "audio", "document"}
@@ -426,6 +500,7 @@ async def forward_to_telegram(
         sent_id = await tg.send_text(
             topic_id,
             text,
+            reply_to_msg_id=None if emitted_anything else reply_to_tg_msg_id,
             flow_id=flow_id,
             buttons=prepared_buttons.buttons or None,
         )
@@ -443,6 +518,7 @@ async def forward_to_telegram(
         sent_id = await tg.send_text(
             topic_id,
             text,
+            reply_to_msg_id=None if emitted_anything else reply_to_tg_msg_id,
             flow_id=flow_id,
             buttons=prepared_buttons.buttons,
         )
@@ -464,14 +540,24 @@ async def forward_to_telegram(
     failure_text = compose_attachment_failure_text(failures_to_display)
     if failure_text:
         text = compose_message_text("" if emitted_anything else body_text, failure_text)
-        sent_id = await tg.send_text(topic_id, text, flow_id=flow_id)
+        sent_id = await tg.send_text(
+            topic_id,
+            text,
+            reply_to_msg_id=None if emitted_anything else reply_to_tg_msg_id,
+            flow_id=flow_id,
+        )
         if sent_id:
             emitted_anything = True
             if tg_msg_id is None:
                 tg_msg_id = sent_id
 
     if not emitted_anything and body_text:
-        tg_msg_id = await tg.send_text(topic_id, body_text, flow_id=flow_id)
+        tg_msg_id = await tg.send_text(
+            topic_id,
+            body_text,
+            reply_to_msg_id=reply_to_tg_msg_id,
+            flow_id=flow_id,
+        )
 
     elif not emitted_anything:
         cfg_content = cfg.content
@@ -480,6 +566,7 @@ async def forward_to_telegram(
         tg_msg_id = await tg.send_text(
             topic_id,
             compose_message_text(body_text, placeholder),
+            reply_to_msg_id=reply_to_tg_msg_id,
             flow_id=flow_id,
         )
 
@@ -505,10 +592,11 @@ async def handle_max_message(
     get_last_tg_send_error: Callable[[], Optional[str]],
 ):
     """Route one inbound MAX message into Telegram."""
-    flow_id = build_max_flow_id(msg.chat_id, msg.msg_id)
-
     if not msg.msg_id or not msg.chat_id:
         return
+
+    flow_id = build_max_flow_id(msg.chat_id, msg.msg_id)
+    assert flow_id is not None
 
     if is_probable_client_cid(msg.chat_id):
         log_event(

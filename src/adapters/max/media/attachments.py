@@ -753,30 +753,67 @@ class MaxMediaService:
     async def _download_video_by_id(self, chat_id: str, msg_id: str, video_id: int,
                                     prefix: str, filename_hint: Optional[str] = None,
                                     flow_id: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
-        """Скачать видео через pymax VIDEO_PLAY."""
+        """Скачать видео через typed PyMax API с raw fallback."""
         if not self._client:
             return None, None
+        url = None
         try:
-            raw_payload = await self._client.video_payload(
+            url = await self._client.video_url(
                 chat_id=int(chat_id),
                 message_id=int(msg_id),
                 video_id=int(video_id),
             )
-            url = self._extract_video_url(raw_payload)
-            if not url:
+        except Exception as e:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.attachment.video_fallback",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="retry",
+                reason="typed_video_api_failed",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+                error=e.__class__.__name__,
+            )
+        if not url:
+            try:
+                raw_payload = await self._client.video_payload(
+                    chat_id=int(chat_id),
+                    message_id=int(msg_id),
+                    video_id=int(video_id),
+                )
+                url = self._extract_video_url(raw_payload)
+            except Exception as e:
                 log_event(
                     logger,
                     logging.WARNING,
-                    "max.attachment.download",
+                    "max.attachment.video_fallback",
                     flow_id=flow_id,
                     direction="inbound",
                     stage="download",
                     outcome="failed",
-                    reason="video_url_missing",
+                    reason="raw_video_play_failed",
                     max_chat_id=chat_id,
                     max_msg_id=msg_id,
+                    error=e.__class__.__name__,
                 )
-                return None, None
+        if not url:
+            log_event(
+                logger,
+                logging.WARNING,
+                "max.attachment.download",
+                flow_id=flow_id,
+                direction="inbound",
+                stage="download",
+                outcome="failed",
+                reason="video_url_missing",
+                max_chat_id=chat_id,
+                max_msg_id=msg_id,
+            )
+            return None, None
+        try:
             return await self._download_from_url(
                 url,
                 prefix,

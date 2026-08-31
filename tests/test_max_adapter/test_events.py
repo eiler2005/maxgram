@@ -390,7 +390,44 @@ async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
     assert received[0].text == "Пост из канала"
     assert received[0].message_type == "TEXT"
     assert received[0].attachment_types == ["PHOTO"]
+    assert received[0].is_forwarded is True
+    assert received[0].reply_to_msg_id is None
     assert adapter.download_calls == [("-80000000000001", "901", "PHOTO", 0)]
+
+
+@pytest.mark.asyncio
+async def test_handle_raw_message_preserves_reply_target(tmp_path):
+    adapter = AdapterHarness(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    adapter._client = LookupClient(
+        users={7001: make_user("Тестовый", "Пользователь")},
+        chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")],
+    )
+    received = []
+    adapter.on_message(received.append)
+    message = SimpleNamespace(
+        id=102,
+        chat_id=-70000000000003,
+        sender=7001,
+        text="Ответ",
+        type="TEXT",
+        status=None,
+        attaches=[],
+        link=SimpleNamespace(
+            type="REPLY",
+            message=SimpleNamespace(id=77),
+        ),
+    )
+
+    await adapter._handle_raw_message(message)
+
+    assert len(received) == 1
+    assert received[0].reply_to_msg_id == "77"
+    assert received[0].is_forwarded is False
 
 
 @pytest.mark.asyncio

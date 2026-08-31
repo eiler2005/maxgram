@@ -32,7 +32,12 @@ PINS = {
         "PasswordAttemptsExceededError",
     ),
     "pymax.types": ("ContactInfo",),
-    "pymax.types.domain.attachments": ("Poll", "PollAttachment", "ShareAttachment"),
+    "pymax.types.domain.attachments": (
+        "Poll",
+        "PollAttachment",
+        "ShareAttachment",
+        "VideoRequest",
+    ),
     "pymax.client": ("Client",),
     "pymax.connection": ("ConnectionManager",),
     "pymax.connection.readers": ("TCPReader",),
@@ -88,6 +93,7 @@ def test_pymax_241_client_methods_are_pinned():
         "is_update_available",
         "change_profile_settings",
         "connect",
+        "get_video_by_id",
     ):
         assert hasattr(pymax.Client, name), f"pymax.Client.{name} is missing"
 

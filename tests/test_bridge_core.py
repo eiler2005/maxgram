@@ -715,30 +715,46 @@ class DummyTelegram:
         self.arg_commands[cmd] = handler
         self.arg_command_options[cmd] = kwargs
 
-    async def send_photo(self, topic_id, path, caption="", flow_id=None):
-        self.calls.append(("photo", caption))
+    async def send_photo(self, topic_id, path, caption="", reply_to_msg_id=None, flow_id=None):
+        call = ("photo", caption)
+        self.calls.append(call if reply_to_msg_id is None else (*call, reply_to_msg_id))
         return 1
 
-    async def send_document(self, topic_id, path, caption="", filename="", flow_id=None):
-        self.calls.append(("document", caption, filename))
+    async def send_document(
+        self, topic_id, path, caption="", filename="", reply_to_msg_id=None, flow_id=None
+    ):
+        call = ("document", caption, filename)
+        self.calls.append(call if reply_to_msg_id is None else (*call, reply_to_msg_id))
         return 2
 
-    async def send_video(self, topic_id, path, caption="", filename="", duration=None, width=None, height=None, flow_id=None):
-        self.calls.append(("video", caption, filename, duration, width, height))
+    async def send_video(
+        self, topic_id, path, caption="", filename="", duration=None, width=None,
+        height=None, reply_to_msg_id=None, flow_id=None,
+    ):
+        call = ("video", caption, filename, duration, width, height)
+        self.calls.append(call if reply_to_msg_id is None else (*call, reply_to_msg_id))
         return 3
 
-    async def send_audio(self, topic_id, path, caption="", filename="", duration=None, flow_id=None):
-        self.calls.append(("audio", caption, filename, duration))
+    async def send_audio(
+        self, topic_id, path, caption="", filename="", duration=None,
+        reply_to_msg_id=None, flow_id=None,
+    ):
+        call = ("audio", caption, filename, duration)
+        self.calls.append(call if reply_to_msg_id is None else (*call, reply_to_msg_id))
         return 4
 
-    async def send_voice(self, topic_id, path, caption="", duration=None, flow_id=None):
-        self.calls.append(("voice", caption, duration))
+    async def send_voice(
+        self, topic_id, path, caption="", duration=None, reply_to_msg_id=None, flow_id=None
+    ):
+        call = ("voice", caption, duration)
+        self.calls.append(call if reply_to_msg_id is None else (*call, reply_to_msg_id))
         if self.fail_voice:
             return None
         return 6
 
     async def send_text(self, topic_id, text, reply_to_msg_id=None, flow_id=None, buttons=None):
-        self.calls.append(("text", text, buttons) if buttons else ("text", text))
+        call = ("text", text, buttons) if buttons else ("text", text)
+        self.calls.append(call if reply_to_msg_id is None else (*call, reply_to_msg_id))
         if self.fail_text:
             self.last_send_error = "TelegramNetworkError: connection reset"
             return None
@@ -1128,6 +1144,137 @@ async def test_forward_to_telegram_sends_media_then_rendered_system_text(tmp_pat
     assert tg_adapter.calls == [
         ("video", "[Тестовый Пользователь]", "clip.mp4", 7, 640, 360),
         ("text", "Участник вышел из чата"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_forward_to_telegram_uses_native_reply_for_text():
+    repo = DummyRepo()
+    chat_id = "-70000000000003"
+    repo.max_to_tg_mappings[(chat_id, "77")] = 700
+    repo.reply_mappings[700] = SimpleNamespace(
+        tg_msg_id=700,
+        max_chat_id=chat_id,
+        max_msg_id="77",
+        tg_topic_id=99,
+        source="message_map",
+        created_at=1,
+    )
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, tg_adapter=tg_adapter)
+    msg = MaxMessage(
+        msg_id="78",
+        chat_id=chat_id,
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Автор",
+        text="Ответ",
+        attachments=[],
+        attachment_types=[],
+        rendered_texts=[],
+        message_type="TEXT",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+        reply_to_msg_id="77",
+    )
+
+    await bridge._forward_to_telegram(msg, topic_id=99)
+
+    assert tg_adapter.calls == [("text", "[Автор] Ответ", 700)]
+
+
+@pytest.mark.asyncio
+async def test_forward_to_telegram_replies_to_first_media_part_only(tmp_path):
+    repo = DummyRepo()
+    chat_id = "-70000000000003"
+    repo.max_to_tg_mappings[(chat_id, "77")] = 700
+    repo.reply_mappings[700] = SimpleNamespace(
+        tg_msg_id=700,
+        max_chat_id=chat_id,
+        max_msg_id="77",
+        tg_topic_id=99,
+        source="message_map",
+        created_at=1,
+    )
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, tg_adapter=tg_adapter)
+    video_path = Path(tmp_path) / "reply.mp4"
+    video_path.write_bytes(b"1234")
+    msg = MaxMessage(
+        msg_id="78",
+        chat_id=chat_id,
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Автор",
+        text="Ответ с видео",
+        attachments=[MaxAttachment("video", str(video_path), "reply.mp4", 2, 320, 240, "VIDEO")],
+        attachment_types=["VIDEO"],
+        rendered_texts=["Дополнение"],
+        message_type="TEXT",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+        reply_to_msg_id="77",
+    )
+
+    await bridge._forward_to_telegram(msg, topic_id=99)
+
+    assert tg_adapter.calls == [
+        ("video", "[Автор] Ответ с видео", "reply.mp4", 2, 320, 240, 700),
+        ("text", "Дополнение"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_forward_to_telegram_marks_unmapped_reply_and_forward():
+    repo = DummyRepo()
+    chat_id = "-70000000000003"
+    repo.max_to_tg_mappings[(chat_id, "stale")] = 701
+    repo.reply_mappings[701] = SimpleNamespace(
+        tg_msg_id=701,
+        max_chat_id=chat_id,
+        max_msg_id="stale",
+        tg_topic_id=100,
+        source="message_map",
+        created_at=1,
+    )
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, tg_adapter=tg_adapter)
+    base = dict(
+        chat_id=chat_id,
+        chat_title="Тестовая группа",
+        sender_id="10",
+        sender_name="Автор",
+        attachments=[],
+        attachment_types=[],
+        rendered_texts=[],
+        message_type="TEXT",
+        status=None,
+        is_dm=False,
+        is_own=False,
+        raw=None,
+    )
+
+    await bridge._forward_to_telegram(
+        MaxMessage(msg_id="80", text="Ответ", reply_to_msg_id="missing", **base),
+        topic_id=99,
+    )
+    await bridge._forward_to_telegram(
+        MaxMessage(msg_id="81", text="Пост", is_forwarded=True, **base),
+        topic_id=99,
+    )
+    await bridge._forward_to_telegram(
+        MaxMessage(msg_id="82", text="Старый topic", reply_to_msg_id="stale", **base),
+        topic_id=99,
+    )
+
+    assert tg_adapter.calls == [
+        ("text", "↩️ Ответ в MAX\n[Автор] Ответ"),
+        ("text", "↪️ Переслано из MAX\n[Автор] Пост"),
+        ("text", "↩️ Ответ в MAX\n[Автор] Старый topic"),
     ]
 
 
@@ -1943,7 +2090,7 @@ async def test_forward_to_telegram_reports_failed_attachment_download(tmp_path):
 
     assert result == 5
     assert tg_adapter.calls == [
-        ("text", "⏳ Видео MAX #1 загружается и будет дослано через пару минут"),
+            ("text", "⏳ Видео MAX #1 загружается; bridge будет пробовать дослать его до 18 минут"),
     ]
 
 
@@ -2007,11 +2154,12 @@ async def test_on_max_message_enqueues_retryable_video_failure(tmp_path):
         ],
     )
 
+    started_at = int(time.time())
     await bridge._on_max_message(msg)
 
     assert tg_adapter.calls == [
         ("photo", "[Тестовый Пользователь]"),
-        ("text", "⏳ Видео MAX #5 загружается и будет дослано через пару минут"),
+        ("text", "⏳ Видео MAX #5 загружается; bridge будет пробовать дослать его до 18 минут"),
     ]
     assert len(repo.pending_media) == 1
     job = repo.pending_media[0]
@@ -2019,6 +2167,7 @@ async def test_on_max_message_enqueues_retryable_video_failure(tmp_path):
     assert job.reference_id == "555"
     assert job.tg_topic_id == 99
     assert job.attachment_index == 4
+    assert started_at + 180 <= job.next_attempt_at <= started_at + 181
     assert "http" not in str(job)
     assert "token" not in str(job).lower()
 
@@ -2081,7 +2230,7 @@ async def test_on_max_message_enqueues_retryable_audio_failure():
     await bridge._on_max_message(msg)
 
     assert tg_adapter.calls == [
-        ("text", "⏳ Аудио MAX #1 загружается и будет дослано через пару минут"),
+        ("text", "⏳ Аудио MAX #1 загружается и будет дослано автоматически"),
     ]
     assert len(repo.pending_media) == 1
     job = repo.pending_media[0]
@@ -2129,7 +2278,7 @@ async def test_on_max_message_enqueues_photo_failure_for_delayed_final_notice():
     await bridge._on_max_message(msg)
 
     assert bridge._tg.calls == [
-        ("text", "⏳ Фото MAX #1 загружается и будет дослано через пару минут"),
+        ("text", "⏳ Фото MAX #1 загружается и будет дослано автоматически"),
     ]
     assert len(repo.pending_media) == 1
     job = repo.pending_media[0]
@@ -2183,7 +2332,7 @@ async def test_on_max_message_enqueues_retryable_photo_failure_with_file_referen
     await bridge._on_max_message(msg)
 
     assert bridge._tg.calls == [
-        ("text", "⏳ Фото MAX #1 загружается и будет дослано через пару минут"),
+        ("text", "⏳ Фото MAX #1 загружается и будет дослано автоматически"),
     ]
     assert len(repo.pending_media) == 1
     job = repo.pending_media[0]
@@ -2380,7 +2529,7 @@ async def test_edit_photo_failures_suppress_only_delivered_parts():
     await bridge._on_max_message(msg)
 
     assert tg_adapter.calls == [
-        ("text", "⏳ Фото MAX #2 загружается и будет дослано через пару минут"),
+            ("text", "⏳ Фото MAX #2 загружается и будет дослано автоматически"),
     ]
     assert len(repo.pending_media) == 1
     assert repo.pending_media[0].max_msg_id == "mx-photo-1:EDITED"
@@ -2574,6 +2723,39 @@ async def test_pending_media_worker_delivers_video_and_maps_reply(tmp_path):
     assert job.status == "delivered"
     assert job.delivered_tg_msg_id == 3
     assert not video_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_pending_media_worker_stops_video_after_six_deferred_attempts():
+    repo = DummyRepo()
+    max_adapter = DummyMax()
+    tg_adapter = DummyTelegram()
+    bridge = make_bridge(repo=repo, max_adapter=max_adapter, tg_adapter=tg_adapter)
+    job = PendingMediaDownload(
+        id=1,
+        max_chat_id="-70000000000003",
+        max_msg_id="mx-video-failed",
+        tg_topic_id=99,
+        attachment_index=0,
+        kind="video",
+        source_type="VIDEO",
+        media_chat_id="-70000000000003",
+        media_msg_id="mx-video-failed",
+        reference_kind="video_id",
+        reference_id="555",
+        status="leased",
+        attempts=5,
+    )
+    repo.pending_media.append(job)
+
+    await process_pending_media_for_bridge(bridge, job)
+
+    assert job.status == "failed"
+    assert job.attempts == 6
+    assert job.last_error == "video_retry_exhausted:download_failed"
+    assert tg_adapter.calls == [
+        ("text", "⚠️ Видео MAX #1 так и не удалось загрузить автоматически"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -2795,7 +2977,16 @@ async def test_pending_media_worker_skips_send_when_late_recovery_wins_race(tmp_
 
 
 @pytest.mark.asyncio
-async def test_pending_media_worker_falls_back_from_zero_media_chat(tmp_path):
+@pytest.mark.parametrize(
+    ("media_chat_id", "expected_first_chat"),
+    [
+        pytest.param("0", "-70000000000003", id="zero-source"),
+        pytest.param("-80000000000001", "-80000000000001", id="forward-source"),
+    ],
+)
+async def test_pending_media_worker_falls_back_to_wrapper_message(
+    tmp_path, media_chat_id, expected_first_chat
+):
     repo = DummyRepo()
 
     class FallbackVideoMax(DummyMax):
@@ -2839,7 +3030,7 @@ async def test_pending_media_worker_falls_back_from_zero_media_chat(tmp_path):
         attachment_index=0,
         kind="video",
         source_type="VIDEO",
-        media_chat_id="0",
+        media_chat_id=media_chat_id,
         media_msg_id="source-video-1",
         reference_kind="video_id",
         reference_id="555",
@@ -2849,7 +3040,7 @@ async def test_pending_media_worker_falls_back_from_zero_media_chat(tmp_path):
 
     await process_pending_media_for_bridge(bridge, job)
 
-    assert max_adapter.video_reference_calls[0]["chat_id"] == "-70000000000003"
+    assert max_adapter.video_reference_calls[0]["chat_id"] == expected_first_chat
     assert max_adapter.video_reference_calls[0]["msg_id"] == "source-video-1"
     assert max_adapter.video_reference_calls[1]["chat_id"] == "-70000000000003"
     assert max_adapter.video_reference_calls[1]["msg_id"] == "mx-video-1"
@@ -3170,6 +3361,7 @@ async def test_on_tg_reply_prefixes_sender_name_for_max():
         "mx-reply-1",
         "tg:99:555",
     )
+    assert repo.saved_record.tg_msg_id == 555
 
 
 @pytest.mark.asyncio
@@ -4131,13 +4323,18 @@ async def test_pending_outbound_worker_delivers_and_clears_text():
     assert job.text is None
     assert job.delivered_max_msg_id == "mx-out-1"
     assert repo.saved_record.max_msg_id == "mx-out-1"
+    assert repo.saved_record.tg_msg_id == 901
     assert repo.delivery_logs[-1][0][:4] == (
         "mx-out-1",
         "-70000000000003",
         "outbound",
         "delivered",
     )
-    assert tg_adapter.calls[-1] == ("text", "✅ Отложенное сообщение доставлено в MAX")
+    assert tg_adapter.calls[-1] == (
+        "text",
+        "✅ Отложенное сообщение доставлено в MAX",
+        901,
+    )
 
 
 @pytest.mark.asyncio

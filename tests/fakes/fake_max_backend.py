@@ -176,6 +176,9 @@ class FakeMaxClient:
     async def file_url(self, **kwargs) -> str | None:
         return None
 
+    async def video_url(self, **kwargs) -> str | None:
+        return None
+
     async def video_payload(self, **kwargs) -> dict[str, Any] | None:
         return None
 
