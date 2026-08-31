@@ -54,7 +54,37 @@ class PymaxMediaGateway:
         if not url:
             data = model_dump(file_obj) or {}
             url = data.get("url")
-        return str(url) if url else None
+        if url:
+            return str(url)
+
+        raw = await self._raw.request(
+            opcode_name="FILE_DOWNLOAD",
+            default_opcode=88,
+            payload={
+                "chatId": chat_id,
+                "messageId": message_id,
+                "fileId": file_id,
+            },
+            timeout=5,
+        )
+        return self._file_download_url(raw)
+
+    @staticmethod
+    def _file_download_url(response: dict[str, Any] | None) -> str | None:
+        payload = response.get("payload") if isinstance(response, dict) else None
+        queue = [payload]
+        while queue:
+            candidate = queue.pop(0)
+            if isinstance(candidate, dict):
+                url = candidate.get("url") or candidate.get("downloadUrl")
+                if isinstance(url, str) and url.startswith(("https://", "http://")):
+                    return url
+                queue.extend(
+                    value
+                    for key, value in candidate.items()
+                    if key in {"file", "data", "payload", "result"}
+                )
+        return None
 
     async def video_url(self, *, chat_id: int, message_id: int, video_id: int) -> str | None:
         video_obj = await self._client.get_video_by_id(

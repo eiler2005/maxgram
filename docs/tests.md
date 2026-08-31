@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **382 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **383 теста**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -316,6 +316,14 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pymax2_egress_transport_uses_configured_socket_connector` | Custom PyMax 2 transport использует `MaxEgressProfile.socket_connector` и сохраняет TLS server hostname. |
 | `test_pymax2_egress_client_uses_bridge_connection_manager` | Egress PyMax client строит guarded `BridgeConnectionManager` с bridge egress transport и PyMax 2.1 16-bit seq. |
 | `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |
+
+---
+
+## test_pymax_media_gateway.py — PyMax media API fallback
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_file_url_falls_back_to_raw_file_download_after_empty_typed_response` | Если typed `get_file_by_id()` вернул пустой URL, backend делает безопасный raw `FILE_DOWNLOAD` только с `chatId/messageId/fileId` и извлекает URL без записи его в логи или БД. |
 
 ---
 
