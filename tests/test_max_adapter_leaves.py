@@ -410,6 +410,37 @@ async def test_reauth_done_callback_suppresses_close_task_noise():
     pymax_reauth._ignore_close_error(task)
 
 
+@pytest.mark.asyncio
+async def test_bridge_auth_reauth_omits_fingerprint_when_calls_seed_is_missing():
+    from pymax.protocol import Opcode
+
+    from src.adapters.max.backends.pymax.login import BridgeAuthService
+
+    calls = []
+
+    class FakeApp:
+        handshake_response = SimpleNamespace(calls_seed=None)
+
+        async def invoke(self, opcode, payload):
+            calls.append((opcode, payload))
+            return SimpleNamespace(
+                payload={
+                    "token": "sms-token",
+                    "codeLength": 6,
+                    "requestMaxDuration": 60,
+                    "requestCountLeft": 2,
+                    "altActionDuration": 5,
+                }
+            )
+
+    result = await BridgeAuthService(FakeApp()).request_code("+79991234567")
+
+    assert result.token == "sms-token"
+    assert calls[0][0] == Opcode.AUTH_REQUEST
+    assert calls[0][1]["phone"] == "+79991234567"
+    assert "mode" not in calls[0][1]
+
+
 def test_max_reauth_refuses_fresh_bridge_heartbeat(tmp_path):
     import time
     from scripts import max_reauth

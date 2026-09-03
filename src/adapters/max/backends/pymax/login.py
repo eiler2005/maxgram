@@ -6,11 +6,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import ValidationError
-from pymax.api.auth.payloads import SyncPayload, WebSyncPayload
+from pymax.api.auth.payloads import RequestCodePayload, SyncPayload, WebSyncPayload
+from pymax.api.response import require_payload_model
 from pymax.api.auth.service import AuthService
 from pymax.api.session.enums import DeviceType
 from pymax.protocol import Opcode
 from pymax.types.domain.attachments.enums import AttachmentType
+from pymax.types.domain.auth import StartAuthResponse
 from pymax.types.domain.login import LoginResponse
 
 from src.logging_utils import log_event
@@ -279,6 +281,27 @@ def _log_login_payload_repaired(
 
 class BridgeAuthService(AuthService):
     """Auth service that tolerates server attachment variants missing upstream."""
+
+    async def request_code(self, phone: str) -> StartAuthResponse:
+        """Request SMS auth without a desktop fingerprint if MAX omits its seed.
+
+        MAX occasionally returns a valid mobile handshake without ``calls_seed``.
+        PyMax deliberately rejects that state for a desktop client, but a manual
+        reauth cannot continue otherwise.  ``mode`` is optional on
+        ``AUTH_REQUEST``; omit it only for this server-side omission, retaining
+        the normal upstream fingerprint path whenever a seed is available.
+        """
+        handshake = self.app.handshake_response
+        if handshake is None or handshake.calls_seed is not None:
+            return await super().request_code(phone)
+
+        logger.warning(
+            "max.pymax.reauth_missing_calls_seed; "
+            "requesting SMS code without desktop fingerprint"
+        )
+        frame = RequestCodePayload(phone=phone, mode=None)
+        response = await self.app.invoke(Opcode.AUTH_REQUEST, frame.to_payload())
+        return require_payload_model(response, StartAuthResponse)
 
     async def login(self, user_agent):
         if user_agent.device_type == DeviceType.WEB:

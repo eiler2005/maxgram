@@ -96,6 +96,12 @@ python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 Reauth deliberately disables legacy PyMax 1 `auth` import, иначе старый
 invalid token может быть импортирован обратно вместо SMS-flow.
 
+Если MAX вернул валидный mobile handshake без `calls_seed`, bridge не меняет
+device profile и не включает автоматический relogin: только для этого ручного
+SMS-запроса он опускает optional desktop fingerprint. Это совместимый fallback
+для продолжения штатного reauth; при наличии `calls_seed` остаётся обычный
+fingerprint path PyMax.
+
 Перед изменением session DB скрипт сохраняет `data/session.db.before-reauth-*`
 с правами `0600`. Это файл с token, его не копировать в логи/чат и не
 публиковать.
