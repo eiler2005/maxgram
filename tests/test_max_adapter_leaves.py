@@ -134,6 +134,8 @@ def test_users_and_downloader_helpers_are_plain_object_based():
 
 
 def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_path):
+    from pymax.versions.catalog import VersionCatalog
+
     from src.adapters.max.backends.pymax import client_factory as pymax_factory
     from src.adapters.max.backends.pymax.session_store import BridgeSessionStore
 
@@ -152,6 +154,11 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_
     assert calls["extra_config"].telemetry is False
     assert isinstance(calls["extra_config"].store, BridgeSessionStore)
     assert calls["extra_config"].user_agent.device_type.value == "DESKTOP"
+    app_version = VersionCatalog.recommended()
+    assert calls["extra_config"].user_agent.app_version == app_version
+    assert calls["extra_config"].user_agent.build_number == VersionCatalog().resolve(
+        app_version
+    ).build_number
     assert calls["extra_config"].sync.chats_sync == 0
     assert calls["extra_config"].sync.contacts_sync == 0
     assert calls["work_dir"] == str(tmp_path)

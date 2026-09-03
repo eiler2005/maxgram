@@ -102,6 +102,11 @@ SMS-запроса он опускает optional desktop fingerprint. Это с
 для продолжения штатного reauth; при наличии `calls_seed` остаётся обычный
 fingerprint path PyMax.
 
+Ошибка `client.unsupported-version` до SMS означает, что production image
+устарел: пересобери образ из уже отправленного commit, где DESKTOP profile
+берёт совместимые `app_version` и `build_number` из bundled PyMax
+`VersionCatalog`. Не повторяй SMS-flow на старом образе.
+
 Перед изменением session DB скрипт сохраняет `data/session.db.before-reauth-*`
 с правами `0600`. Это файл с token, его не копировать в логи/чат и не
 публиковать.

@@ -40,6 +40,7 @@ All notable changes to Maxgram are documented here.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
 
 ### Fixed
+- **MAX desktop version drift** — the v1-compatible DESKTOP profile now resolves its app version and build number from PyMax 2.4.1's bundled `VersionCatalog`, preventing `client.unsupported-version` before explicit SMS reauth.
 - **Manual MAX reauth without `calls_seed`** — when MAX returns a valid mobile handshake without this optional desktop-fingerprint seed, the guarded SMS flow now sends only that `AUTH_REQUEST` without a fingerprint. The stored DESKTOP device profile, normal fingerprint path, and automatic-relogin policy remain unchanged.
 - **Deferred MAX files from recovery cache** — cache-only `FILE` attachments now download from their encrypted signed URL hint first and retain the existing safe `fileId` fallback. If PyMax's typed `get_file_by_id()` has no URL, the bridge makes the same constrained raw `FILE_DOWNLOAD` request; if embedded source coordinates still do not resolve it, it retries against the receiving wrapper message.
 - **MAX replies in Telegram** — inbound `link.type=REPLY` now reaches the bridge contract, resolves through same-chat/same-topic mappings, and becomes a native Telegram reply on the first emitted part. Forwarded messages and unmapped historical replies get short context markers without quoted content; TG-origin messages now retain their `tg_msg_id` in outbound mappings.

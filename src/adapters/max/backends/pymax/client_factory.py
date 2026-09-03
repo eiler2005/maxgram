@@ -4,6 +4,7 @@ from pymax import ExtraConfig, SyncOverrides
 from pymax.api.session.enums import DeviceType
 from pymax.api.session.payloads import MobileUserAgentPayload
 from pymax.auth import AuthFlow
+from pymax.versions.catalog import VersionCatalog
 
 from ...network import MaxEgressProfile
 from .session_store import BridgeSessionStore
@@ -11,16 +12,20 @@ from .transport import BridgeClient, EgressClient
 
 
 def legacy_desktop_user_agent() -> MobileUserAgentPayload:
+    """Keep the legacy desktop shape on a version MAX still accepts."""
+    catalog = VersionCatalog()
+    app_version = catalog.recommended()
+    build_number = catalog.resolve(app_version).build_number
     return MobileUserAgentPayload(
         device_type=DeviceType.DESKTOP,
-        app_version="25.12.14",
+        app_version=app_version,
         os_version="Windows 10",
         timezone="Europe/Moscow",
         screen="1080x1920 1.0x",
         locale="ru",
         device_name="Chrome",
         device_locale="ru",
-        build_number=0x97CB,
+        build_number=build_number,
         header_user_agent=(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"

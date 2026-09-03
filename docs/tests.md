@@ -289,7 +289,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pymax_client_adapter_captures_early_startup_errors` | `PymaxClientAdapter.prepare_startup()` ловит ошибки PyMax `connect()`/`start()` до `on_start`. |
 | `test_pymax_client_adapter_uses_one_shot_connect_and_waits_for_disconnect` | PyMax 2.4.1 path вызывает `connect()` один раз и ждёт закрытия connection; outer reconnect остаётся у bridge. |
 | `test_users_and_downloader_helpers_are_plain_object_based` | `users.py` и downloader helpers работают с plain objects/URL metadata. |
-| `test_client_factory_disables_pymax_reconnect_and_telemetry` | `client_factory.py` создаёт PyMax 2 `Client` с `ExtraConfig(reconnect=False, relogin=False, telemetry=False)`, backend session store, DESKTOP user-agent и sync overrides для legacy session. |
+| `test_client_factory_disables_pymax_reconnect_and_telemetry` | `client_factory.py` создаёт PyMax 2 `Client` с `ExtraConfig(reconnect=False, relogin=False, telemetry=False)`, backend session store, DESKTOP user-agent с version/build из `VersionCatalog` и sync overrides для legacy session. |
 | `test_client_factory_passes_custom_auth_flow` | `client_factory.py` умеет принять custom auth flow для one-shot MAX reauth без изменения runtime path. |
 | `test_client_factory_can_disable_legacy_session_import` | Reauth path может отключить legacy PyMax 1 `auth` import, чтобы stale token не импортировался обратно. |
 | `test_pymax_msgpack_codec_tolerates_array_map_keys` | Backend-local PyMax codec не падает на raw msgpack map с array-like key, который встречается в некоторых `CHAT_HISTORY` ответах. |
