@@ -1283,6 +1283,11 @@ class MaxEventsService:
                 if forwarded
                 else getattr(message, "_forward_source_msg_id", None)
             )
+            forward_source_title = (
+                self._resolver.cached_forward_source_title(str(source_media_chat_id))
+                if is_usable_max_chat_id(source_media_chat_id)
+                else None
+            )
             if is_usable_max_chat_id(source_media_chat_id):
                 media_chat_id = str(source_media_chat_id)
                 media_msg_id = str(source_media_msg_id or raw_msg_id)
@@ -1735,6 +1740,7 @@ class MaxEventsService:
                     or getattr(message, "_forward_link_type", None)
                     or getattr(message, "_forward_source_chat_id", None)
                 ),
+                forward_source_title=forward_source_title,
             )
 
             for handler in self._handlers:

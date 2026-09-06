@@ -582,6 +582,13 @@ invite links или tokens. Для восстановления достаточ
 `max_chat_id`, `max_msg_id`, `tg_topic_id`, `event`, `reason`, `outcome` и safe
 field names.
 
+Для обычной пересылки Telegram показывает `↪️ Переслано из «…»`, только если
+название source chat/channel уже есть в локальном MAX cache. Bridge не делает
+live MAX lookup ради подписи, не создаёт отдельную SQLite-запись и не пишет
+название в логи; при cache miss остаётся `↪️ Переслано из MAX`. Если Telegram
+временно недоступен, marker попадает в уже существующий plaintext text-retry
+payload и удаляется по обычному delivery/TTL правилу.
+
 Полезные `event`-группы:
 
 - `max.inbound.*` — что пришло из MAX и как нормализовали

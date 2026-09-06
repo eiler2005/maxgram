@@ -75,7 +75,7 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Startup self-check** — после старта в production бот пишет результат встроенного `pytest`-прогона
 - **Устойчивое скачивание MAX-видео** — bridge сначала вызывает PyMax 2.4.1 `get_video_by_id()`, сохраняет raw `VIDEO_PLAY` fallback, предпочитает реальные `MP4_*` потоки и подбирает `User-Agent` по `srcAg`
 - **Post-validation загрузок** — после скачивания проверяются `Content-Type` и сигнатура файла, HTML/player fallback не уходит как медиа
-- **Реальная пересылка MAX channel/forward** — `CHANNEL`/forward-обёртки разворачиваются до исходного текста и медиа вместо служебной заглушки
+- **Реальная пересылка MAX channel/forward** — `CHANNEL`/forward-обёртки разворачиваются до исходного текста и медиа вместо служебной заглушки; пересылка показывает название исходного чата/канала из локального MAX-кеша, а при его отсутствии остаётся нейтральный marker
 - **Диагностика неизвестных MAX-сообщений** — новый формат MAX уходит в Telegram как подробный блок с `type`, `link_*`, счётчиками и списком полей
 - **Нативные voice bubbles** — MAX `VOICE` пересылается в Telegram через `send_voice`
 
@@ -291,6 +291,7 @@ maxgram/
 │   │   ├── contracts.py       ← transport-neutral models and ports
 │   │   ├── core.py            ← coordinator
 │   │   ├── forwarding.py
+│   │   ├── message_context.py ← подписи reply/forward
 │   │   ├── replies.py
 │   │   ├── topics.py
 │   │   ├── commands/

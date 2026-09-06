@@ -104,6 +104,9 @@ class MaxMessage:
     actions: list[MaxMessageAction] = field(default_factory=list)
     reply_to_msg_id: Optional[str] = None
     is_forwarded: bool = False
+    # Ephemeral display context for a MAX forward.  It is deliberately not
+    # persisted with the message mapping or delivery metadata.
+    forward_source_title: Optional[str] = None
 
 
 @dataclass

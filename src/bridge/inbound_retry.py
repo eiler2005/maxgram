@@ -8,6 +8,7 @@ from typing import Optional
 
 from . import mapping as bridge_mapping
 from .contracts import MaxMessage, TelegramBridgePort
+from .message_context import forwarded_context_marker
 from .retry_policy import (
     TEXT_RETRY_LEASE_SECONDS,
     TEXT_RETRY_POLL_SECONDS,
@@ -30,7 +31,9 @@ def compose_text_only_inbound_payload(msg: MaxMessage) -> str:
     elif not msg.is_dm and msg.sender_name:
         sender_prefix = f"[{msg.sender_name}] "
 
+    context_marker = forwarded_context_marker(msg.forward_source_title) if msg.is_forwarded else ""
     body_text = f"{sender_prefix}{msg.text}".strip() if msg.text else ""
+    body_text = "\n".join(part for part in (context_marker, body_text) if part)
     extra_text = "\n".join(part for part in msg.rendered_texts if part).strip()
     return "\n".join(part.strip() for part in (body_text, extra_text) if part and part.strip())
 

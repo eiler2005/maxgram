@@ -343,10 +343,12 @@ async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
         session_name="session",
         tmp_dir=str(tmp_path / "tmp"),
     )
-    adapter._client = LookupClient(
+    client = LookupClient(
         users={7001: make_user("Тестовый", "Пользователь")},
         chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")],
     )
+    client.channels = [SimpleNamespace(id=-80000000000001, title="Источник пересылки")]
+    adapter._client = client
 
     received = []
 
@@ -391,6 +393,7 @@ async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
     assert received[0].message_type == "TEXT"
     assert received[0].attachment_types == ["PHOTO"]
     assert received[0].is_forwarded is True
+    assert received[0].forward_source_title == "Источник пересылки"
     assert received[0].reply_to_msg_id is None
     assert adapter.download_calls == [("-80000000000001", "901", "PHOTO", 0)]
 

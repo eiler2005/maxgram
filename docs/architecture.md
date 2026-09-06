@@ -56,6 +56,7 @@ src/
 │   ├── mapping.py            message_map / tg_reply_map idempotency helpers
 │   ├── topics.py             topic create/bind/rename decisions
 │   ├── forwarding.py         MAX -> TG text/media delivery
+│   ├── message_context.py    rendered MAX reply/forward context labels
 │   ├── replies.py            TG replies -> MAX outbound messages
 │   ├── media_retry.py        durable MAX media retry enqueue/process/worker
 │   ├── inbound_retry.py      durable MAX→TG text retry queue/worker
@@ -212,7 +213,7 @@ Telegram adapter
 MAX WebSocket event
   └─► MAX Adapter._handle_raw_message()
         ├─ парсит поля (msg_id, chat_id, sender_id, text, attaches)
-        ├─ сохраняет reply_to_msg_id и forward marker в MaxMessage
+        ├─ сохраняет reply_to_msg_id и forward marker в MaxMessage; для forward берёт title источника только из локального MAX cache
         ├─ определяет is_dm (chat_id > 0) и is_own (sender == own_id)
         ├─ скачивает медиа в data/tmp/ (если есть)
         └─► Bridge Core._on_max_message()
@@ -226,7 +227,7 @@ MAX WebSocket event
               └─► _forward_to_telegram()
                     ├─ сверяет media parts через delivered_media_parts
                     ├─ reply_to_msg_id → message_map/tg_reply_map → native Telegram reply
-                    ├─ ненайденный reply / forward → короткий marker без цитаты
+                    ├─ ненайденный reply → короткий marker без цитаты; forward показывает cache-only title источника или нейтральный marker
                     ├─ фото → tg.send_photo()
                     ├─ видео → tg.send_video()
                     ├─ аудио → tg.send_audio()
@@ -407,7 +408,7 @@ Adapter управляет:
 
 Leaf modules:
 - `mapping.py`, `delivery.py`, `topics.py`
-- `forwarding.py`, `replies.py`, `media_retry.py`, `status.py`
+- `forwarding.py`, `message_context.py`, `replies.py`, `media_retry.py`, `status.py`
 - `commands/dispatcher.py`, `commands/dm.py`, `commands/recovery.py`
 - `recovery/scheduler.py`, `recovery/orchestrator.py`, `recovery/reporter.py`
 - `background.py`

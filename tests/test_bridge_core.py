@@ -1267,6 +1267,16 @@ async def test_forward_to_telegram_marks_unmapped_reply_and_forward():
         topic_id=99,
     )
     await bridge._forward_to_telegram(
+        MaxMessage(
+            msg_id="81-source",
+            text="Пост из источника",
+            is_forwarded=True,
+            forward_source_title="  Исходный   канал  ",
+            **base,
+        ),
+        topic_id=99,
+    )
+    await bridge._forward_to_telegram(
         MaxMessage(msg_id="82", text="Старый topic", reply_to_msg_id="stale", **base),
         topic_id=99,
     )
@@ -1274,6 +1284,7 @@ async def test_forward_to_telegram_marks_unmapped_reply_and_forward():
     assert tg_adapter.calls == [
         ("text", "↩️ Ответ в MAX\n[Автор] Ответ"),
         ("text", "↪️ Переслано из MAX\n[Автор] Пост"),
+        ("text", "↪️ Переслано из «Исходный канал»\n[Автор] Пост из источника"),
         ("text", "↩️ Ответ в MAX\n[Автор] Старый topic"),
     ]
 
@@ -1993,6 +2004,8 @@ async def test_on_max_message_queues_text_when_tg_send_fails():
         is_dm=False,
         is_own=False,
         raw=None,
+        is_forwarded=True,
+        forward_source_title="Исходный канал",
     )
 
     await bridge._on_max_message(msg)
@@ -2002,7 +2015,7 @@ async def test_on_max_message_queues_text_when_tg_send_fails():
     assert queued.max_chat_id == "-70000000000003"
     assert queued.max_msg_id == "mx-text-queued"
     assert queued.tg_topic_id == 99
-    assert queued.text == "[Тестовый Пользователь] связь шалит"
+    assert queued.text == "↪️ Переслано из «Исходный канал»\n[Тестовый Пользователь] связь шалит"
     assert repo.delivery_logs[-1][0][3] == "pending"
     assert repo.delivery_logs[-1][0][4] == "tg_send_queued"
     assert bridge._stats["failed_inbound"] == 0

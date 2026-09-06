@@ -26,6 +26,44 @@ class MaxResolveService:
     def _own_id(self):
         return self._deps.connection.own_id
 
+    def cached_forward_source_title(self, chat_id: str) -> Optional[str]:
+        """Return a forward source title from the already loaded MAX cache.
+
+        Forwarding must not make a live MAX request just to decorate a Telegram
+        message.  A source can also be unavailable to the current account, so
+        callers use ``None`` as the safe, neutral-marker fallback.
+        """
+        if not self._client:
+            return None
+        try:
+            chat_id_int = int(chat_id)
+        except (TypeError, ValueError):
+            return None
+        if chat_id_int >= 0:
+            return None
+
+        try:
+            cached_chats = (
+                *self._client.group_chats_snapshot(),
+                *self._client.channels_snapshot(),
+            )
+            chat_obj = next(
+                (
+                    chat
+                    for chat in cached_chats
+                    if getattr(chat, "id", None) == chat_id_int
+                ),
+                None,
+            )
+        except Exception:
+            return None
+
+        title = getattr(chat_obj, "title", None) or getattr(chat_obj, "name", None)
+        if not isinstance(title, str):
+            return None
+        normalized = " ".join(title.split())
+        return normalized or None
+
     async def resolve_user_name(self, user_id: str) -> Optional[str]:
         """Получить имя пользователя по ID (для DM чатов без названия).
         Сначала пробует кеш (не требует сокета), затем live-запрос.

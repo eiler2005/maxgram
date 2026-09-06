@@ -10,6 +10,7 @@ from . import actions as bridge_actions
 from . import mapping
 from . import inbound_retry
 from . import media_retry
+from .message_context import forwarded_context_marker
 from .contracts import (
     MaxAttachment,
     MaxAttachmentFailure,
@@ -420,7 +421,7 @@ async def forward_to_telegram(
     if msg.reply_to_msg_id and reply_to_tg_msg_id is None:
         context_marker = "↩️ Ответ в MAX"
     elif msg.is_forwarded:
-        context_marker = "↪️ Переслано из MAX"
+        context_marker = forwarded_context_marker(msg.forward_source_title)
 
     message_text = f"{sender_prefix}{msg.text}".strip() if msg.text else ""
     body_text = compose_message_text(context_marker, message_text)

@@ -78,7 +78,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - MAX video downloads use PyMax 2.4.1 `get_video_by_id()` first, keep raw `VIDEO_PLAY` as a fallback, prefer real `MP4_*` streams over `EXTERNAL` player pages, and use an adaptive CDN user-agent (`CHROME` vs mobile Safari)
 - Retryable MAX video failures are queued by stable reference for six deferred attempts every three minutes; a terminal warning replaces indefinite waiting after 18 minutes, without storing signed URLs or tokens
 - MAX downloader validates `Content-Type` + file signature and rejects HTML/text fallbacks for expected media
-- MAX `CHANNEL`/forward wrappers are unwrapped into the real forwarded text and media instead of a generic system placeholder
+- MAX `CHANNEL`/forward wrappers are unwrapped into the real forwarded text and media instead of a generic system placeholder; forwarded messages show their source chat/channel when its title is already present in the local MAX cache, otherwise a neutral MAX marker is used
 - Unknown MAX message shapes are forwarded with diagnostic metadata (`type`, `link_*`, counts, raw field names) so new formats can be fixed from the next occurrence
 - MAX attachment aliases (`IMAGE`, `VOICE`, `DOCUMENT`, `DOC`) are normalized consistently across dispatch and download stages
 - MAX `VOICE` attachments are delivered as native Telegram voice notes (`send_voice` bubbles)
@@ -251,6 +251,7 @@ maxgram/
 │   │   ├── contracts.py       ← transport-neutral models and ports
 │   │   ├── core.py            ← coordinator
 │   │   ├── forwarding.py
+│   │   ├── message_context.py ← reply/forward labels
 │   │   ├── replies.py
 │   │   ├── topics.py
 │   │   ├── commands/
