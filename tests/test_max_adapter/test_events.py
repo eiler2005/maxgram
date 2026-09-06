@@ -336,7 +336,16 @@ async def test_handle_raw_message_ignores_unsafe_share_url(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
+@pytest.mark.parametrize(
+    ("payload_source_title", "expected_source_title"),
+    [
+        ("Название из MAX", "Название из MAX"),
+        (None, "Кеш-источник"),
+    ],
+)
+async def test_handle_raw_message_unwraps_forward_link_content(
+    tmp_path, payload_source_title, expected_source_title
+):
     adapter = CapturingDownloadAdapter(
         phone="+7",
         data_dir=str(tmp_path),
@@ -347,7 +356,7 @@ async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
         users={7001: make_user("Тестовый", "Пользователь")},
         chats=[SimpleNamespace(id=-70000000000003, title="Тестовая группа")],
     )
-    client.channels = [SimpleNamespace(id=-80000000000001, title="Источник пересылки")]
+    client.channels = [SimpleNamespace(id=-80000000000001, title="Кеш-источник")]
     adapter._client = client
 
     received = []
@@ -381,6 +390,7 @@ async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
             type="FORWARD",
             chat_id=-80000000000001,
             message=forwarded_message,
+            chat_name=payload_source_title,
         ),
     )
 
@@ -393,7 +403,7 @@ async def test_handle_raw_message_unwraps_forward_link_content(tmp_path):
     assert received[0].message_type == "TEXT"
     assert received[0].attachment_types == ["PHOTO"]
     assert received[0].is_forwarded is True
-    assert received[0].forward_source_title == "Источник пересылки"
+    assert received[0].forward_source_title == expected_source_title
     assert received[0].reply_to_msg_id is None
     assert adapter.download_calls == [("-80000000000001", "901", "PHOTO", 0)]
 
@@ -1125,6 +1135,7 @@ async def test_empty_recovery_unwraps_forward_link_candidate_before_content_chec
         "link": {
             "type": "FORWARD",
             "chatId": -80000000000001,
+            "chatName": "Источник из raw payload",
             "message": {
                 "id": 907,
                 "time": 1,
@@ -1156,6 +1167,7 @@ async def test_empty_recovery_unwraps_forward_link_candidate_before_content_chec
     assert received[0].chat_id == "-70000000000003"
     assert received[0].text == "Связанный пересланный пост"
     assert received[0].attachment_types == ["PHOTO"]
+    assert received[0].forward_source_title == "Источник из raw payload"
     assert adapter.download_calls == [("-80000000000001", "907", "PHOTO", 0)]
 
 

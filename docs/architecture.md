@@ -213,7 +213,7 @@ Telegram adapter
 MAX WebSocket event
   └─► MAX Adapter._handle_raw_message()
         ├─ парсит поля (msg_id, chat_id, sender_id, text, attaches)
-        ├─ сохраняет reply_to_msg_id и forward marker в MaxMessage; для forward берёт title источника только из локального MAX cache
+        ├─ сохраняет reply_to_msg_id и forward marker в MaxMessage; для forward берёт title источника из payload, затем из локального MAX cache
         ├─ определяет is_dm (chat_id > 0) и is_own (sender == own_id)
         ├─ скачивает медиа в data/tmp/ (если есть)
         └─► Bridge Core._on_max_message()
@@ -227,7 +227,7 @@ MAX WebSocket event
               └─► _forward_to_telegram()
                     ├─ сверяет media parts через delivered_media_parts
                     ├─ reply_to_msg_id → message_map/tg_reply_map → native Telegram reply
-                    ├─ ненайденный reply → короткий marker без цитаты; forward показывает cache-only title источника или нейтральный marker
+                    ├─ ненайденный reply → короткий marker без цитаты; forward показывает payload/cache title источника или нейтральный marker
                     ├─ фото → tg.send_photo()
                     ├─ видео → tg.send_video()
                     ├─ аудио → tg.send_audio()

@@ -147,6 +147,13 @@ _ACTION_URL_KEYS = {
 }
 
 
+def _normalize_forward_source_title(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())
+    return normalized or None
+
+
 class MaxEventsService:
     def __init__(self, deps: EventsDeps):
         self._deps = deps
@@ -1283,11 +1290,15 @@ class MaxEventsService:
                 if forwarded
                 else getattr(message, "_forward_source_msg_id", None)
             )
-            forward_source_title = (
-                self._resolver.cached_forward_source_title(str(source_media_chat_id))
-                if is_usable_max_chat_id(source_media_chat_id)
-                else None
+            forward_source_title = _normalize_forward_source_title(
+                forwarded.chat_name
+                if forwarded
+                else getattr(message, "_forward_source_chat_name", None)
             )
+            if forward_source_title is None and is_usable_max_chat_id(source_media_chat_id):
+                forward_source_title = self._resolver.cached_forward_source_title(
+                    str(source_media_chat_id)
+                )
             if is_usable_max_chat_id(source_media_chat_id):
                 media_chat_id = str(source_media_chat_id)
                 media_msg_id = str(source_media_msg_id or raw_msg_id)

@@ -164,6 +164,7 @@ class MaxClientMessage:
     reaction_info: object | None = None
     _forward_source_chat_id: object | None = None
     _forward_source_msg_id: object | None = None
+    _forward_source_chat_name: object | None = None
     _forward_link_type: object | None = None
     _from_raw_unwrapped: bool = False
     _from_empty_recovery: bool = False

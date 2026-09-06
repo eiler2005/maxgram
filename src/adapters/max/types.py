@@ -21,6 +21,7 @@ class ForwardedPayload:
     chat_id: Optional[str]
     msg_id: Optional[str]
     link_type: Optional[str]
+    chat_name: Optional[str] = None
 
 @dataclass
 class OutboundFailureState:

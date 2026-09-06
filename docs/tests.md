@@ -169,7 +169,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 | Тест | Что проверяет |
 |------|--------------|
-| `test_handle_raw_message_unwraps_forward_link_content` | `CHANNEL`/forward с `link.message` разворачивается до исходного текста и вложений; media download использует исходные `chat_id/message_id`, а title source channel берётся только из локального cache. |
+| `test_handle_raw_message_unwraps_forward_link_content` | `CHANNEL`/forward с `link.message` разворачивается до исходного текста и вложений; media download использует исходные `chat_id/message_id`, а title source channel берётся из `ForwardLink.chat_name` с fallback на локальный cache. |
 | `test_handle_raw_message_falls_back_from_zero_forward_chat_for_media` | Typed `link.message` с source `chat_id=0` скачивает media по внешнему chat id и nested message id. |
 | `test_handle_raw_message_recovers_degraded_channel_media_before_partial` | Typed `CHANNEL` media wrapper с неполными refs не занимает `message_map` partial-сообщением: adapter сначала восстанавливает полноценный raw/history payload с фото/видео. |
 | `test_degraded_channel_photo_low_quality_recovery_waits_before_partial` | Если `get_message_precise` возвращает `PHOTO` без usable refs, adapter логирует low-quality recovery, ждёт raw/cache и только после timeout отдаёт generic partial без потери текста. |
@@ -365,7 +365,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_forward_to_telegram_sends_media_then_rendered_system_text` | Сообщение с видео-вложением и `rendered_texts`: сначала отправляется видео (`send_video` с caption `[Имя]`), затем текст системного события (`send_text`). Возвращает `message_id` медиа. |
 | `test_forward_to_telegram_uses_native_reply_for_text` | Text reply из MAX разрешается в same-topic Telegram message и получает native `reply_to_message_id`. |
 | `test_forward_to_telegram_replies_to_first_media_part_only` | MAX reply разрешается через mapping в том же topic; `reply_to_message_id` ставится только на первую успешную media/text часть. |
-| `test_forward_to_telegram_marks_unmapped_reply_and_forward` | Ненайденный MAX reply получает нейтральный marker; forward показывает нормализованное cache-only название источника либо нейтральный fallback, без цитирования message content. |
+| `test_forward_to_telegram_marks_unmapped_reply_and_forward` | Ненайденный MAX reply получает нейтральный marker; forward показывает нормализованное название источника из payload/cache либо нейтральный fallback, без цитирования message content. |
 | `test_forward_to_telegram_passes_external_url_buttons` | `open_url` actions становятся Telegram URL buttons и не создают SQLite callback rows. |
 | `test_forward_to_telegram_stores_short_max_join_callback` | `max_join` action создаёт короткий `max_join:<id>` callback_data, сохраняет только MAX invite payload и привязывает row к отправленному TG message. |
 | `test_tg_callback_max_join_calls_max_and_marks_used` | Owner callback загружает durable action, вызывает `max.join_chat_by_link()`, помечает row `used` и планирует recovery scan. |

@@ -40,6 +40,10 @@ class RawPayloadParser:
                     chat_id=str(getattr(link, "chat_id", "") or "") or None,
                     msg_id=str(linked_id) if linked_id is not None else None,
                     link_type=link_type,
+                    chat_name=(
+                        getattr(link, "chat_name", None)
+                        or getattr(link, "chatName", None)
+                    ),
                 )
 
         for attr in (
@@ -63,6 +67,7 @@ class RawPayloadParser:
                 chat_id=str(linked_chat_id) if linked_chat_id is not None else None,
                 msg_id=str(linked_id) if linked_id is not None else None,
                 link_type=attr,
+                chat_name=getattr(message, "_forward_source_chat_name", None),
             )
 
         return None
@@ -621,6 +626,12 @@ class RawPayloadParser:
             nested,
             str(source_chat_id) if source_chat_id else None,
         )
+        forward_link = self._payload_value(wrapper, "link")
+        forward_source_chat_name = (
+            self._payload_value(forward_link, "chatName", "chat_name")
+            if isinstance(forward_link, dict)
+            else None
+        )
 
         return MaxClientMessage(
             id=outer_msg_id,
@@ -646,6 +657,7 @@ class RawPayloadParser:
                 if source_chat_id is not None and nested_msg_id is not None
                 else None
             ),
+            _forward_source_chat_name=forward_source_chat_name,
             _forward_link_type=wrapper_type or "CHANNEL",
             _from_raw_unwrapped=True,
         )
