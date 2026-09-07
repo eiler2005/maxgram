@@ -239,10 +239,26 @@ METRICS_TEXTFILE_PATH=/var/lib/node_exporter/textfile_collector/maxtg_bridge.pro
 - Если домашний IP изменится, нужно будет обновить правило и в Hetzner Firewall, и в `UFW`.
 - Cloud Firewall я не менял через API, потому что для этого нужен отдельный Hetzner API token.
 - Поэтому в панели Hetzner отдельно проверь, что там нет широких правил `Any IPv4` / `Any IPv6`, а только `22/tcp` с твоего IP.
-- В production у контейнера `restart: always`, поэтому после обычного `reboot` VM bridge должен подняться сам.
-- Если сделать `docker compose down`, контейнер будет удалён; после reboot VM он уже не восстановится сам, пока не выполнить `docker compose ... up -d`.
+- В production у контейнера `restart: always`, поэтому после аварийного выхода процесса, рестарта Docker или обычного `reboot` VM bridge должен подняться сам.
+- Явный `docker compose stop` останавливает контейнер, а `docker compose down` ещё и удаляет его; оба варианта останавливают внутренние watchdog-и и не отменяются `restart: always`. Восстановление: `docker compose --project-name deploy --env-file .env.host -f deploy/docker-compose.prod.yml up -d bridge`.
 - Теперь PID1 внутри контейнера — supervisor. Даже если MAX/TG интеграция деградирует, контейнер должен оставаться `Up`, а проблема должна отражаться в `data/health_state.json` и в ops-алертах.
 - Worker restarts идут с exponential backoff + jitter и cap 300s; одинаковые health issue signatures не должны спамить owner DM, потому `RuntimeHealthStore` отправляет alert только при изменении причины, а reminder остаётся отдельным периодическим статусом.
+
+### Границы watchdog
+
+Все описанные здесь watchdog-и находятся на Hetzner production VPS:
+
+| Уровень | Где работает | Что восстанавливает | Ограничение |
+|---------|--------------|---------------------|-------------|
+| `BridgeSupervisor` | PID1 внутри `bridge` Docker-контейнера | Аварийно завершившийся bridge worker с backoff | Не работает, если контейнер остановлен |
+| MAX watchdog | Background task внутри того же worker | Зависший MAX при успешном egress probe: rate-limited self-exit, затем Docker restart | Не работает при остановленном worker/container; не делает SMS reauth и не меняет egress profile |
+| Docker `restart: always` | Docker Engine того же VPS | Unexpected process exit, restart Docker или VM | Не отменяет явный `docker compose stop`/`down` |
+| Docker `HEALTHCHECK` | Docker Engine того же VPS | Ничего: только помечает stale heartbeat как `unhealthy` | Не перезапускает unhealthy контейнер |
+
+Отдельного host-level `systemd` service/timer, который проверяет отсутствие
+контейнера и запускает его после ручной остановки, сейчас нет. Не запускай
+второй bridge instance: для восстановления используй только команду выше или
+штатный Ansible deploy.
 
 ### MAX egress / Channel M
 
@@ -461,7 +477,9 @@ Auto notifications/status:
 | MAX→TG текст не доставился из-за временного сбоя Telegram | текстовое сообщение кладётся в `pending_inbound_messages`, worker досылает его с backoff и очищает plaintext после доставки/TTL | `/status`, `pending_inbound_messages`, `delivery_log` | Нет, если Telegram восстановился до TTL |
 | TG→MAX текст точно не ушёл из-за MAX transport | текстовое сообщение кладётся в `pending_outbound_messages`, worker ждёт healthy MAX и досылает его; plaintext очищается после доставки/TTL | Telegram topic notice, `/status`, `pending_outbound_messages`, `delivery_log` | Нет, если MAX восстановился до TTL |
 | Падает сам bridge worker | supervisor перезапускает worker с backoff, контейнер остаётся `Up`, restart counter и причина попадают в health-state | owner DM, `health_state.json`, `health_events.jsonl` | Обычно нет, если crash разовый |
-| Падает или зависает сам supervisor | Docker healthcheck перестаёт видеть heartbeat, контейнер получает `unhealthy`, дальше помогает `restart: always` и ручная проверка compose/logs | `docker ps`, `docker inspect`, `health_heartbeat.json` | Да, это уже runtime-level авария |
+| PID1 supervisor аварийно завершился | Процесс контейнера завершится; Docker `restart: always` создаст новый container process | `docker ps`, `docker inspect`, `health_heartbeat.json` | Обычно нет, если restart успешен |
+| PID1 supervisor завис, но процесс не завершился | Docker healthcheck пометит контейнер `unhealthy`; автоматического restart от healthcheck нет | `docker ps`, `docker inspect`, `health_heartbeat.json` | Да: controlled `docker compose ... up -d bridge`/Ansible deploy или внешний host watchdog |
+| Bridge остановлен явным `docker compose stop`/`down` | Ничего: supervisor и MAX watchdog уже не выполняются, а Docker считает stop намеренным | `docker compose ps`, Docker events | Да: `docker compose ... up -d bridge`, затем healthcheck и smoke-check |
 | Telegram-уведомление не удалось отправить сразу | сообщение не теряется, а сохраняется в outbox и досылается позже | `alert_outbox.jsonl` | Нет, если Telegram восстановился |
 | MAX лежал долго и потом поднялся | bridge пытается восстановиться сам и шлёт `recovered`, но исторические сообщения за время простоя MAX не догружаются | owner DM, `/status`, `health_events.jsonl` | Возможно, если критично вручную проверить пропущенный период |
 

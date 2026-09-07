@@ -122,6 +122,16 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - DM history sweep должен ждать `max_adapter.is_ready()`: запуск `CHAT_HISTORY` до `MAX connected` даёт пачку `Not connected`/pending future шумов и может мешать диагностике reauth/reconnect.
 - DM history sweep должен быть бережным к MAX API: balanced config живёт в `health.dm_history_sweep` (`120s` warmup после старта/reconnect, затем `900s` steady, jitter и per-chat delay). `replay_recent_history` получает pre-dedup callback через существующий `message_map`, чтобы не нормализовать/качать повторно уже доставленные history messages; pending empty recovery не пропускать.
 
+## Границы watchdog в production
+
+Все уровни ниже работают на Hetzner production VPS, не на домашнем роутере:
+
+- `BridgeSupervisor` — PID1 внутри `bridge` Docker-контейнера. Он перезапускает аварийно завершившийся worker, пока сам контейнер жив.
+- MAX watchdog — background task того же worker. При исправном `home_ru_proxy` и зависшем MAX он делает rate-limited self-exit; Docker `restart: always` поднимает свежий контейнер.
+- Docker Engine того же VPS применяет `restart: always` после аварийного завершения процесса или рестарта Docker/VM.
+- Docker `HEALTHCHECK` только сообщает `unhealthy` по stale heartbeat; он не рестартует контейнер.
+- Отдельного host-level `systemd` service/timer, следящего за отсутствующим bridge-контейнером, сейчас нет. Явный `docker compose stop` или `docker compose down` останавливает все внутренние watchdog-и; восстановление — только явным `docker compose ... up -d bridge` или обычным Ansible deploy. Не запускать второй экземпляр bridge параллельно.
+
 ## Принципы (не нарушать)
 
 1. **Privacy first** — текст сообщений и медиа не логируются, не хранятся в DB; исключения: durable text retry queues временно держат plaintext недоставленных текстов до доставки/TTL, а `media_recovery_cache` до 48ч держит только encrypted media hints для проблемных вложений без message text/full raw

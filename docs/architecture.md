@@ -180,6 +180,20 @@ src/
 
 Supervisor never exits on MAX/TG integration failures. It restarts the worker with exponential backoff + jitter (cap 300s), persists health transitions, and keeps Docker `HEALTHCHECK` green as long as the runtime loop itself is alive.
 
+### Production watchdog boundaries
+
+The supervisor and MAX watchdog are tasks inside the `bridge` container on the
+Hetzner production VPS. Docker Engine on that same VPS provides `restart: always`
+after an unexpected process exit or Docker/VM restart. The heartbeat
+`HEALTHCHECK` is observational: it changes the container health state but does
+not restart an unhealthy container.
+
+There is currently no host-level systemd service or timer that watches for an
+absent bridge container. An explicit `docker compose stop` or `docker compose
+down` intentionally stops all in-container watchdogs; recovery then requires
+the normal Ansible deploy or an explicit `docker compose ... up -d bridge`.
+The operational rule remains one bridge instance at a time.
+
 ## Потоки данных
 
 ### MAX egress: home_ru_proxy и hetzner_direct

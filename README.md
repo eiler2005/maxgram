@@ -61,8 +61,8 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Privacy-first design** — successful message text/media is not stored; SQLite normally holds routing metadata, with one exception: failed text-only MAX→TG/TG→MAX messages can be queued temporarily in plaintext until delivered or expired
 - **Production-deployed** — running on Hetzner Cloud behind Docker Compose with UFW, fail2ban, non-root container, and SSH-key-only access
 - **Ansible-driven ops** — regular deploy, backup, recovery, fresh-VM bootstrap, and hardening are all codified as idempotent playbooks under `infra/ansible/`; the documented emergency fallback is backup-first and commit-pinned, while secrets and state remain server-only
-- **Supervisor runtime shell** — PID1 is now a supervisor that keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
-- **Resilient delivery** — Telegram API calls retry with exponential backoff; definite unsent TG→MAX text failures and retryable MAX→TG text delivery failures are queued with lease/backoff/TTL; failed outbound deliveries are written to SQLite with attempt counts; MAX watchdog alerts on offline > 60s; video recovery makes six deferred attempts over 18 minutes while voice/photo stable-reference recovery keeps its existing backoff policy; `/status` gives live health snapshot on demand
+- **Supervisor runtime shell** — PID1 inside the bridge container on the Hetzner production VPS keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
+- **Resilient delivery** — Telegram API calls retry with exponential backoff; definite unsent TG→MAX text failures and retryable MAX→TG text delivery failures are queued with lease/backoff/TTL; failed outbound deliveries are written to SQLite with attempt counts; the MAX watchdog in that same container alerts on offline > 60s; video recovery makes six deferred attempts over 18 minutes while voice/photo stable-reference recovery keeps its existing backoff policy; `/status` gives live health snapshot on demand
 - **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
 - **Prometheus textfile metrics** — health, durable retry queues, delivery totals, worker restarts, and alert outbox depth are exported to `data/maxtg_bridge.prom` by default
 - **Account migration recovery registry** — hybrid MAX account snapshots preserve Telegram topic routing, invite/admin metadata, DM partner ids, DM contact snapshots from real dialogs only, and snapshot freshness for guided recovery after a phone/account loss
@@ -191,6 +191,7 @@ Bridge is running in production on **Hetzner Cloud**.
 - Runtime: Docker Compose (non-root container, `cap_drop: ALL`, `restart: always`)
 - State: SQLite + MAX session in a bind-mounted `data/` directory
 - Health: Docker `HEALTHCHECK` uses supervisor heartbeat freshness instead of checking external integrations
+- Recovery boundary: the supervisor and MAX watchdog run inside the bridge container; Docker restart policy runs in Docker Engine on the same Hetzner VPS. There is no separate host-level systemd watchdog. `HEALTHCHECK` reports a stale heartbeat but does not restart a container itself; an explicit `docker compose stop`/`down` must be followed by `docker compose ... up -d bridge`.
 - Access: SSH key only, restricted by IP via UFW
 - Security: `fail2ban`, `unattended-upgrades`, no public HTTP ports
 - Boot signal: startup notification in Telegram owner DM includes runtime/host info plus startup `pytest` summary

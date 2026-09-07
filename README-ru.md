@@ -59,9 +59,9 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **DM contact recovery snapshot** — сохраняет только личные контакты из реальных MAX DM-диалогов или уже привязанных DM topics; полная MAX address book не копируется
 - **Тихие recovery alerts** — обычные дельты auto-scan (`unmapped`, `needs_invite`, DM contact changes) попадают в 4-часовой статус; отдельный срочный owner/ops alert остаётся только для нового MAX account / migration-required
 - **Автоматический статус-отчёт** — каждые 4 часа бот присылает сводку без команды, включая агрегаты recovery snapshot
-- **Watchdog MAX** — уведомление, если MAX недоступен более 60 секунд
+- **Watchdog MAX** — внутри bridge-контейнера на Hetzner VPS уведомляет, если MAX недоступен более 60 секунд
 - **Gap-уведомление после reconnect** — после восстановления бот предупреждает о возможном пропуске сообщений за время простоя
-- **Supervisor runtime** — контейнер остаётся `Up`, даже если MAX/TG интеграция деградировала; supervisor перезапускает worker и хранит health-state
+- **Supervisor runtime** — PID1 внутри bridge-контейнера на Hetzner VPS: контейнер остаётся `Up`, даже если MAX/TG интеграция деградировала; supervisor перезапускает worker и хранит health-state
 - **Persisted health-state** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, `health_heartbeat.json`
 - **PyMax v2 compatibility shim** — bridge сейчас работает через `maxapi-python` 2.x и typed backend adapter; история с PyMax v1 reconnect/OOM оставлена как historical note, а не текущая архитектура
 - **Явная adapter/backend boundary** — `BridgeCore` зависит от transport-neutral contracts; MAX operation services зависят от typed client ports/DTO, а `pymax` imports и форма pymax-клиента изолированы в `src/adapters/max/backends/pymax/`; это защищено surface-pin и fake-backend integration тестами
@@ -162,6 +162,7 @@ Bridge работает в production на **Hetzner Cloud**.
 - Runtime: Docker Compose (non-root контейнер, `cap_drop: ALL`, `restart: always`)
 - State: SQLite + MAX сессия в bind-mounted `data/`
 - Health: Docker `HEALTHCHECK` смотрит на heartbeat supervisor-а, а не на внешние MAX/TG интеграции
+- Граница автовосстановления: supervisor и MAX watchdog работают внутри bridge-контейнера; Docker restart policy работает в Docker Engine того же Hetzner VPS. Отдельного host-level systemd watchdog сейчас нет. `HEALTHCHECK` только помечает stale heartbeat как `unhealthy`, но сам контейнер не перезапускает; после явного `docker compose stop`/`down` нужен `docker compose ... up -d bridge`.
 - Доступ: только SSH-ключ, ограничен по IP через UFW
 - Security: `fail2ban`, `unattended-upgrades`, публичных HTTP-портов нет
 - Бот после старта присылает startup-уведомление в owner DM с runtime/host и итогом встроенного `pytest`
