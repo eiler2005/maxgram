@@ -704,3 +704,34 @@ def test_watchdog_check_targets_the_check_endpoint(monkeypatch):
     assert "сводка сейчас придёт" in cmd.request_check()
     assert captured["url"].endswith("/check")
     assert captured["sig"]
+
+
+def test_watchdog_command_message_is_plain_text():
+    """Ответы команд уходят без parse_mode — HTML приехал бы в чат как текст."""
+    import re
+    from src.bridge.commands import watchdog as cmd
+
+    text = cmd.build_message()
+    assert not re.search(r"</?[a-zA-Z]+>", text), "в сообщении команды остались HTML-теги"
+    assert "<b>" not in text and "&" not in text
+
+
+def test_all_bridge_command_replies_stay_plain_text():
+    """Транспорт команд общий, поэтому правило одно на все команды."""
+    import re
+    from pathlib import Path
+
+    adapter = Path("src/adapters/tg/adapter.py").read_text()
+    # если однажды появится parse_mode для команд, этот тест напомнит пересмотреть тексты
+    command_reply = adapter[adapter.index("async def _handle_command"):]
+    assert "parse_mode" not in command_reply[:2000]
+
+
+def test_watchdog_command_links_full_clickable_url():
+    """Относительный путь в Telegram не кликается — нужна полная ссылка."""
+    from src.bridge.commands import watchdog as cmd
+
+    text = cmd.build_message()
+    assert cmd.DOCS_URL.startswith("https://")
+    assert cmd.DOCS_URL.endswith("docs/runbooks/watchdog.md")
+    assert cmd.DOCS_URL in text

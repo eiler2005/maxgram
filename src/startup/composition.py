@@ -245,7 +245,9 @@ async def run_bridge_worker(
         async with asyncio.TaskGroup() as tg:
             tg.create_task(max_adapter.start(), name="max_adapter")
             tg.create_task(
-                dp.start_polling(bot, allowed_updates=["message"]),
+                # callback_query обязателен: без него Telegram не присылает
+                # нажатия inline-кнопок, и любая кнопка молча ничего не делает.
+                dp.start_polling(bot, allowed_updates=["message", "callback_query"]),
                 name="tg_polling",
             )
             tg.create_task(bridge.run_cleanup(), name="cleanup")

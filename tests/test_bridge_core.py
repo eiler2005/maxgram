@@ -5237,3 +5237,15 @@ async def test_on_max_message_does_not_persist_own_sender():
     await bridge._on_max_message(msg)
 
     assert "999" not in repo.saved_users
+
+
+def test_polling_allows_callback_updates():
+    """Без callback_query Telegram не присылает нажатия кнопок, и они молча не работают."""
+    import re
+    from pathlib import Path
+
+    source = Path("src/startup/composition.py").read_text()
+    match = re.search(r"allowed_updates=\[([^\]]+)\]", source)
+    assert match, "не найден allowed_updates у start_polling"
+    assert "callback_query" in match.group(1)
+    assert "message" in match.group(1)

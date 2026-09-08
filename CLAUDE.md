@@ -212,6 +212,8 @@ max:
 - pymax не воспроизводит историю при reconnect → сообщения во время downtime теряются
 - Telegram Bot API: max 30 msg/sec, файлы до 50 MB
 - Topics в Telegram: названия до 128 символов
+- `dp.start_polling(..., allowed_updates=[...])` обязан включать `callback_query`: без него Telegram не присылает нажатия inline-кнопок и любая кнопка молча не работает (ни `/watchdog`, ни MAX invite join). Закреплено тестом `test_polling_allows_callback_updates`.
+- Ответы команд уходят через `message.reply()` **без `parse_mode`**: HTML-теги приедут в чат как текст. Тексты команд — plain text со структурой на эмодзи; ссылки указывать полными URL, относительные пути в Telegram не кликаются.
 - Бот принимает команды **только от `TG_OWNER_ID`**
 - Исключение: `/dm` в General может быть public для участников группы; `/recovery ...` всегда owner-only
 - Если MAX-вложение после всех retry не скачалось, Telegram должен получить текстовый fallback, а `delivery_log.status` — `partial`, не ложный `delivered`

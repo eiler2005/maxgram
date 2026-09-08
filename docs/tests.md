@@ -575,6 +575,10 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_legacy_single_hour_variable_still_understood` | Старая переменная с одним часом ещё понимается: существующая установка не остаётся молча без сводки. |
 | `test_check_endpoint_requires_the_same_signature_as_push` | Проверка по требованию идёт по уже существующему подписанному каналу, без отдельного секрета. |
 | `test_on_demand_check_refuses_to_run_twice_at_once` | Блокировка не даёт двум оценкам прислать две копии сообщений. |
+| `test_polling_allows_callback_updates` | `allowed_updates` включает `callback_query`: без него Telegram не присылает нажатия кнопок и они молча не работают. |
+| `test_watchdog_command_message_is_plain_text` | В тексте команды нет HTML: транспорт команд шлёт plain text. |
+| `test_all_bridge_command_replies_stay_plain_text` | Напоминание пересмотреть тексты, если у команд появится `parse_mode`. |
+| `test_watchdog_command_links_full_clickable_url` | Ссылка на документацию полная: относительный путь в Telegram не кликается. |
 | `test_watchdog_command_describes_service_and_offers_button` | `/watchdog` описывает устройство сервиса и даёт кнопку проверки. |
 | `test_watchdog_command_hides_button_when_channel_not_configured` | Без общего секрета кнопка не показывается, а команда честно объясняет почему. |
 | `test_watchdog_check_targets_the_check_endpoint` | Кнопка бьёт в `/check` того же приёмника и подписывает запрос. |
