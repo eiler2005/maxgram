@@ -17,7 +17,7 @@
    - `BridgeAuthService` + `validate_login_response` — убирает неизвестные upstream variants, чинит некритичный initial-sync payload drift и сохраняет явный SMS reauth, если MAX не прислал optional fingerprint seed
    - `EgressTCPTransport` — внедряет authenticated HTTP CONNECT proxy только для MAX RU egress
    - `PymaxInternalsContractError` — централизует доступ к private PyMax attrs и падает явно при upstream drift
-4. Заменяемость архитектуры проверяется, а не просто декларируется: `tests/integration/test_bridge_end_to_end.py` гоняет полный bridge против `tests/fakes/fake_max_backend.py` в CI. Короткий walkthrough: [docs/architecture-tour.md](docs/architecture-tour.md), 30-секундное demo: `examples/swap_max_backend.py`.
+4. Заменяемость архитектуры проверяется, а не просто декларируется: `tests/integration/test_bridge_end_to_end.py` гоняет полный bridge против `tests/fakes/fake_max_backend.py` в CI. Короткий walkthrough: [docs/architecture-tour-ru.md](docs/architecture-tour-ru.md), 30-секундное demo: `examples/swap_max_backend.py`.
 
 ---
 
