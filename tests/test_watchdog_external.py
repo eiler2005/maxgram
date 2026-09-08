@@ -460,3 +460,44 @@ def test_internal_and_external_headers_do_not_collide():
     assert INTERNAL_HEADER != SOURCE_HEADER
     # внутренние сообщения уходят plain text — HTML-разметки в шапке быть не должно
     assert "<" not in INTERNAL_HEADER
+
+
+def test_daily_summary_explains_what_each_layer_watches():
+    """Список названий слоёв сам по себе ничего не говорит — нужна расшифровка."""
+    text = render_daily_summary(
+        _cfg(), [],
+        {"L1": "отвечает", "L2": "опрос проходит", "L3": "пуш 24 с назад", "L4": "работает"},
+    )
+
+    assert "что болит внутри bridge" in text
+    assert "жив ли контейнер и хост" in text
+    assert "не оборвалась ли связь с наблюдателем" in text
+    assert "жив ли сам наблюдатель" in text
+
+
+def test_every_layer_has_a_plain_language_purpose():
+    from src.watchdog_external.rules import LAYER_NAMES, LAYER_PURPOSE
+
+    assert set(LAYER_PURPOSE) == set(LAYER_NAMES) == {"L1", "L2", "L3", "L4"}
+    for purpose in LAYER_PURPOSE.values():
+        assert purpose and purpose[0].islower()  # фраза, а не заголовок
+
+
+def test_daily_summary_puts_each_problem_under_its_layer():
+    """Не просто «что-то сломано», а на каком рубеже наблюдения."""
+    text = render_daily_summary(
+        _cfg(), ["push_stale", "disk_low"],
+        {"L1": "отвечает", "L2": "опрос проходит", "L3": "молчит 420 с", "L4": "работает"},
+    )
+    # ⚠️ состоит из двух кодовых точек, поэтому сравниваем префиксом, а не символом
+    layer_lines = [l for l in text.splitlines() if l.startswith(("✅", "⚠️"))]
+    marks = {
+        l.split()[1].replace("<b>", "").replace("</b>", ""): l.startswith("⚠️")
+        for l in layer_lines
+    }
+
+    assert marks["L1"] is False and marks["L2"] is True      # disk_low живёт на L2
+    assert marks["L3"] is True and marks["L4"] is False
+    assert "└ Push-сигналы" in text
+    assert "└ Свободное место" in text
+    assert "Открытых проблем: 2" in text

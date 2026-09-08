@@ -20,6 +20,7 @@ from .config import WatchdogConfig
 from .rules import (
     CRIT,
     LAYER_NAMES,
+    LAYER_PURPOSE,
     Finding,
     Recovery,
     humanize_duration,
@@ -63,7 +64,8 @@ def render_alert(finding: Finding, cfg: WatchdogConfig) -> str:
         "",
         f"{badge} <b>{clean(finding.title, 120)}</b>",
         f"Наблюдаемый хост: {clean(cfg.target_name, 60)}",
-        f"Слой: {clean(layer, 8)} — {clean(LAYER_NAMES.get(layer, ''), 60)}",
+        f"Слой: {clean(layer, 8)} {clean(LAYER_NAMES.get(layer, ''), 60)} — "
+        f"{clean(LAYER_PURPOSE.get(layer, ''), 60)}",
         f"Класс отказа: {clean(finding.failure_class, 20)} · "
         f"<code>{clean(finding.rule, 40)}</code>",
         "",
@@ -104,26 +106,40 @@ def render_daily_summary(
     Смысл именно в перечислении слоёв: молчащий слой неотличим от сломанного,
     поэтому раз в сутки каждый должен явно отчитаться, что он живой.
     """
+    # Проблемы раскладываем по слоям: так видно не только "что-то не так",
+    # а на каком именно рубеже наблюдения это происходит.
+    by_layer: dict[str, list[str]] = {}
+    for rule in active:
+        by_layer.setdefault(rule_layer(rule), []).append(rule)
+
     lines = [
         SOURCE_HEADER,
         "",
         "🔵 <b>Ежедневная сводка: наблюдатель на связи</b>",
         f"Наблюдаемый хост: {clean(cfg.target_name, 60)}",
         "",
-        "<b>Слои наблюдения:</b>",
+        "<b>Слои наблюдения — что ловит и как себя чувствует:</b>",
     ]
     for layer in ("L1", "L2", "L3", "L4"):
         status = (layers or {}).get(layer, "нет данных")
-        lines.append(f"• {layer} {clean(LAYER_NAMES.get(layer, ''), 60)} — {clean(status, 80)}")
+        problems = by_layer.get(layer, [])
+        mark = "⚠️" if problems else "✅"
+        lines.append(
+            f"{mark} <b>{layer}</b> — {clean(LAYER_PURPOSE.get(layer, ''), 60)}: "
+            f"{clean(status, 80)}"
+        )
+        for rule in problems:
+            lines.append(
+                f"      └ {clean(rule_title(rule), 120)} "
+                f"(<code>{clean(rule, 40)}</code>)"
+            )
 
     lines.append("")
     if active:
-        lines.append("<b>Открытые проблемы:</b>")
-        lines += [
-            f"• {clean(rule_title(rule), 120)} "
-            f"({clean(rule_layer(rule), 8)}, <code>{clean(rule, 40)}</code>)"
-            for rule in active
-        ]
+        lines.append(
+            f"<b>Открытых проблем: {len(active)}</b> — они отмечены ⚠️ выше. "
+            "Разбор по слою — docs/runbooks/watchdog.md, раздел «Поддержка»."
+        )
     else:
         lines.append("Открытых проблем нет, все проверки проходят.")
     return "\n".join(lines)[:MAX_MESSAGE_CHARS]

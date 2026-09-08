@@ -221,12 +221,12 @@ Every alert names the layer that caught it, so the message itself says where to
 look. A layer that goes quiet is indistinguishable from a broken one, so all
 four report in the daily summary.
 
-| Layer | Where it runs | Interval | Catches |
-|---|---|---|---|
-| **L1** status API | `127.0.0.1:18140` in the bridge container | 300 s | MAX egress/auth issues, alert outbox backlog, egress drift, queue backlog |
-| **L2** SSH pull | observer container, read-only forced command | 60 s | stopped container, dead host, stale heartbeat, restart storm, low disk |
-| **L3** push dead-man's switch | `maxtg-watchdog-push.timer` → observer `:18151` | 60 s | tells "the bridge is dead" apart from "the observation path is dead" |
-| **L4** meta-monitoring | host monitor + mutual probes + daily summary | 5 min / 24 h | a dead observer |
+| Layer | In one line | Where it runs | Interval | Catches |
+|---|---|---|---|---|
+| **L1** status API | what hurts inside the bridge | `127.0.0.1:18140` in the bridge container | 300 s | MAX egress/auth issues, alert outbox backlog, egress drift, queue backlog |
+| **L2** SSH pull | is the container and host alive | observer container, read-only forced command | 60 s | stopped container, dead host, stale heartbeat, restart storm, low disk |
+| **L3** push dead-man's switch | did the observation path break | `maxtg-watchdog-push.timer` → observer `:18151` | 60 s | tells "the bridge is dead" apart from "the observation path is dead" |
+| **L4** meta-monitoring | is the observer itself alive | host monitor + mutual probes + daily summary | 5 min / 24 h | a dead observer |
 
 #### What an alert looks like
 
