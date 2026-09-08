@@ -114,6 +114,17 @@ LAYER_PURPOSE = {
 }
 
 
+class LayerReport(NamedTuple):
+    """Отчёт одного слоя: вердикт и конкретика, на которой он основан.
+
+    Без `checked` сводка говорит «отвечает», но не говорит, что именно
+    проверено, — и по ней нельзя понять, что система действительно смотрела.
+    """
+
+    status: str
+    checked: str = ""
+
+
 def rule_layer(rule: str) -> str:
     return RULE_LAYERS.get(rule, "L2")
 

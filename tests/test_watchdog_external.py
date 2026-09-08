@@ -413,24 +413,46 @@ def test_layer_status_reflects_broken_paths():
     broken = {"reachable": True, "ssh_ok": False, "push": {}, "probe": {}}
     st = layer_status(cfg, broken, NOW)
 
-    assert st["L2"] == "SSH-проба не проходит"
-    assert "нет данных" in st["L1"]
-    assert "ни разу" in st["L3"]
+    assert st["L2"].status == "SSH-проба не проходит"
+    assert "нет данных" in st["L1"].status
+    assert "ни разу" in st["L3"].status
 
-    healthy = {"reachable": True, "ssh_ok": True,
-               "push": {"received_at": NOW - 20},
-               "probe": {"status_api": {"overall_status": "healthy"}}}
+    healthy = {
+        "reachable": True, "ssh_ok": True,
+        "push": {"received_at": NOW - 20, "sent_at": NOW - 22},
+        "probe": {
+            "docker_ok": True,
+            "container": {"state": "running", "health": "healthy", "restart_count": 0},
+            "heartbeat": {"age_seconds": 12},
+            "disk": {"free_percent": 40},
+            "status_api": {
+                "overall_status": "healthy", "worker_restart_count": 0,
+                "subsystems": [{"name": "max_link", "status": "healthy"}],
+                "queues": {"inbound": {"pending_count": 0}},
+                "alert_outbox_size": 0, "max_egress_active": "home_ru_proxy",
+            },
+        },
+    }
     ok = layer_status(cfg, healthy, NOW)
-    assert ok["L1"] == "отвечает"
-    assert ok["L2"] == "опрос проходит"
-    assert "20 с назад" in ok["L3"]
+    assert ok["L1"].status == "отвечает, состояние healthy"
+    assert ok["L2"].status == "опрос проходит"
+    assert "20 с назад" in ok["L3"].status
+
+    # главное: рядом с вердиктом есть конкретика, на которой он основан
+    assert "подсистем healthy 1/1" in ok["L1"].checked
+    assert "egress home_ru_proxy" in ok["L1"].checked
+    assert "running/healthy" in ok["L2"].checked
+    assert "heartbeat 12 с" in ok["L2"].checked
+    assert "диск свободно 40%" in ok["L2"].checked
+    assert "задержка доставки 2 с" in ok["L3"].checked
 
 
 def test_layer_status_marks_push_layer_disabled_without_secret():
     from src.watchdog_external.__main__ import layer_status
 
     st = layer_status(_cfg(push_secret=""), {"reachable": True, "ssh_ok": True, "probe": {}}, NOW)
-    assert "выключен" in st["L3"]
+    assert "выключен" in st["L3"].status
+    assert "WATCHDOG_PUSH_SECRET" in st["L3"].checked
 
 
 def test_every_external_message_says_who_wrote_it():
@@ -498,6 +520,28 @@ def test_daily_summary_puts_each_problem_under_its_layer():
 
     assert marks["L1"] is False and marks["L2"] is True      # disk_low живёт на L2
     assert marks["L3"] is True and marks["L4"] is False
-    assert "└ Push-сигналы" in text
-    assert "└ Свободное место" in text
+    assert "⚠️ Push-сигналы" in text
+    assert "⚠️ Свободное место" in text
     assert "Открытых проблем: 2" in text
+
+
+def test_daily_summary_shows_what_was_actually_checked():
+    """Вердикта мало: рядом должны стоять факты, на которых он основан."""
+    from src.watchdog_external.rules import LayerReport
+
+    text = render_daily_summary(_cfg(), [], {
+        "L1": LayerReport("отвечает, состояние healthy", "подсистем healthy 6/6 · очереди 0"),
+        "L2": LayerReport("опрос проходит", "контейнер running/healthy · heartbeat 12 с"),
+        "L3": LayerReport("последний пуш 19 с назад", "подпись HMAC верна · задержка 4 с"),
+        "L4": LayerReport("цикл проверок работает", "опрос раз в 60 с"),
+    })
+
+    assert "итог: отвечает, состояние healthy" in text
+    assert "проверено: подсистем healthy 6/6" in text
+    assert "контейнер running/healthy" in text
+    assert "подпись HMAC верна" in text
+
+
+def test_daily_summary_accepts_plain_strings_for_backward_compatibility():
+    text = render_daily_summary(_cfg(), [], {"L1": "отвечает"})
+    assert "итог: отвечает" in text

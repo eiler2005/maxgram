@@ -21,6 +21,7 @@ from .rules import (
     CRIT,
     LAYER_NAMES,
     LAYER_PURPOSE,
+    LayerReport,
     Finding,
     Recovery,
     humanize_duration,
@@ -121,16 +122,21 @@ def render_daily_summary(
         "<b>Слои наблюдения — что ловит и как себя чувствует:</b>",
     ]
     for layer in ("L1", "L2", "L3", "L4"):
-        status = (layers or {}).get(layer, "нет данных")
+        report = (layers or {}).get(layer, "нет данных")
+        if not isinstance(report, LayerReport):
+            report = LayerReport(str(report))
         problems = by_layer.get(layer, [])
         mark = "⚠️" if problems else "✅"
         lines.append(
-            f"{mark} <b>{layer}</b> — {clean(LAYER_PURPOSE.get(layer, ''), 60)}: "
-            f"{clean(status, 80)}"
+            f"{mark} <b>{layer} {clean(LAYER_NAMES.get(layer, ''), 60)}</b> — "
+            f"{clean(LAYER_PURPOSE.get(layer, ''), 60)}"
         )
+        lines.append(f"      итог: {clean(report.status, 90)}")
+        if report.checked:
+            lines.append(f"      проверено: {clean(report.checked, 200)}")
         for rule in problems:
             lines.append(
-                f"      └ {clean(rule_title(rule), 120)} "
+                f"      ⚠️ {clean(rule_title(rule), 120)} "
                 f"(<code>{clean(rule, 40)}</code>)"
             )
 

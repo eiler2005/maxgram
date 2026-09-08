@@ -15,7 +15,7 @@ from . import receiver
 from .config import WatchdogConfig, load_config
 from .notify import SOURCE_HEADER, dispatch, render_daily_summary, send_telegram
 from .probe import collect
-from .rules import decide, evaluate
+from .rules import LayerReport, decide, evaluate
 from .state import WatchdogState
 
 logger = logging.getLogger("watchdog")
@@ -64,38 +64,74 @@ def _touch_heartbeat(cfg: WatchdogConfig) -> None:
         logger.warning("could not write watchdog heartbeat: %s", e)
 
 
-def layer_status(cfg: WatchdogConfig, observation: dict, now: int) -> dict[str, str]:
-    """Состояние каждого слоя наблюдения — для ежедневной сводки.
+def layer_status(cfg: WatchdogConfig, observation: dict, now: int) -> dict[str, LayerReport]:
+    """Отчёт каждого слоя: вердикт плюс факты, на которых он основан.
 
-    Отчитывается каждый слой отдельно: если один из них тихо отвалился, это
-    видно сразу, а не в момент, когда он понадобится.
+    Одного вердикта мало: «отвечает» не показывает, что именно система смотрела,
+    поэтому рядом идёт список проверенного — по нему видно и глубину проверки,
+    и текущие значения.
     """
     probe = observation.get("probe") or {}
     push = observation.get("push") or {}
+    status = probe.get("status_api") or {}
+    container = probe.get("container") or {}
+    heartbeat = probe.get("heartbeat") or {}
+    disk = probe.get("disk") or {}
     push_age = now - int(push.get("received_at") or 0) if push.get("received_at") else None
 
-    if probe.get("status_api"):
-        l1 = "отвечает"
+    # --- L1: что bridge рассказывает о себе ---
+    if status:
+        subsystems = status.get("subsystems") or []
+        healthy = sum(1 for x in subsystems if x.get("status") == "healthy")
+        pending = sum(int((q or {}).get("pending_count") or 0) for q in (status.get("queues") or {}).values())
+        l1 = LayerReport(
+            f"отвечает, состояние {status.get('overall_status')}",
+            f"подсистем healthy {healthy}/{len(subsystems)} · очереди {pending} · "
+            f"outbox {status.get('alert_outbox_size')} · egress {status.get('max_egress_active')} · "
+            f"рестартов worker {status.get('worker_restart_count')}",
+        )
     elif not observation.get("ssh_ok"):
-        l1 = "нет данных (сломан опрос)"
+        l1 = LayerReport("нет данных: сломан путь опроса", "status API опрашивается через SSH-канал")
     elif probe.get("status_api_error"):
-        l1 = f"ошибка: {probe['status_api_error']}"
+        l1 = LayerReport(f"ошибка: {probe['status_api_error']}", "контейнер жив, но API не ответил")
     else:
-        l1 = "в этом цикле не опрашивался"
+        l1 = LayerReport("в этом цикле не опрашивался", f"опрос раз в {cfg.status_interval_seconds} с")
 
-    l2 = "опрос проходит" if observation.get("ssh_ok") else (
-        "хост недоступен" if not observation.get("reachable") else "SSH-проба не проходит")
+    # --- L2: что видно про контейнер и хост снаружи ---
+    if observation.get("ssh_ok"):
+        l2 = LayerReport(
+            "опрос проходит",
+            f"контейнер {container.get('state')}/{container.get('health')} · "
+            f"рестартов {container.get('restart_count')} · "
+            f"heartbeat {heartbeat.get('age_seconds')} с · "
+            f"диск свободно {disk.get('free_percent')}% · "
+            f"docker daemon {'жив' if probe.get('docker_ok') else 'не отвечает'}",
+        )
+    elif not observation.get("reachable"):
+        l2 = LayerReport("хост недоступен", f"нет TCP-ответа на порту {cfg.ssh_port}")
+    else:
+        l2 = LayerReport("SSH-проба не проходит", str(observation.get("ssh_error") or "нет деталей"))
 
+    # --- L3: встречный канал ---
     if not cfg.push_secret:
-        l3 = "выключен (нет общего секрета)"
+        l3 = LayerReport("выключен", "нет общего секрета WATCHDOG_PUSH_SECRET")
     elif push_age is None:
-        l3 = "пуш ни разу не приходил"
-    elif push_age <= cfg.push_max_age_seconds:
-        l3 = f"последний пуш {push_age} с назад"
+        l3 = LayerReport("пуш ни разу не приходил", f"ждём на порту {cfg.push_port}")
     else:
-        l3 = f"молчит {push_age} с"
+        lag = int(push.get("received_at", 0)) - int(push.get("sent_at", 0))
+        verdict = f"последний пуш {push_age} с назад" if push_age <= cfg.push_max_age_seconds else f"молчит {push_age} с"
+        l3 = LayerReport(
+            verdict,
+            f"подпись HMAC верна · задержка доставки {lag} с · "
+            f"порог тишины {cfg.push_max_age_seconds} с",
+        )
 
-    l4 = "цикл проверок работает, это сообщение — его подтверждение"
+    # --- L4: жив ли сам наблюдатель ---
+    l4 = LayerReport(
+        "цикл проверок работает",
+        f"опрос раз в {cfg.poll_interval_seconds} с · само это сообщение и есть доказательство · "
+        "пропажу контейнера наблюдателя видит host-мониторинг его хоста",
+    )
     return {"L1": l1, "L2": l2, "L3": l3, "L4": l4}
 
 

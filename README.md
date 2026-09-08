@@ -248,12 +248,22 @@ The daily summary reports every layer and files each open problem under the
 layer that found it, so the marked layer is where to start digging:
 
 ```
-✅ L1 — what hurts inside the bridge: answering
-⚠️ L2 — is the container and the host alive: poll succeeds
-      └ Low disk space on the production host (disk_low)
-✅ L3 — did the observation path break: last push 24 s ago
-✅ L4 — is the observer itself alive: the check loop is running
+✅ L1 bridge status API — what hurts inside the bridge
+      verdict: answering, state healthy
+      checked: subsystems healthy 6/6 · queues 0 · outbox 0 · egress home_ru_proxy
+⚠️ L2 poll from the observer — is the container and the host alive
+      verdict: poll succeeds
+      checked: container running/healthy · heartbeat 26 s · disk free 8%
+      ⚠️ Low disk space on the production host (disk_low)
+✅ L3 push channel — did the observation path break
+      verdict: last push 9 s ago
+      checked: HMAC signature valid · delivery lag 4 s
+✅ L4 meta-monitoring — is the observer itself alive
+      verdict: the check loop is running
 ```
+
+The `checked` line carries the facts behind the verdict rather than the verdict
+alone, so it is visible that the check is real rather than a formality.
 
 > Alerts are rendered in Russian on the deployed instance — this is a personal,
 > single-operator bridge. The samples above are translated; the structure is
