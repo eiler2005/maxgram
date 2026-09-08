@@ -53,6 +53,7 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 - **Дедупликация** — сообщения не дублируются при переподключении
 - **Устойчивый reconnect** — без OOM и SSL-ошибок
 - **Команда `/status`** — аптайм, статистика сообщений, выжимка recovery snapshot, топ активных чатов; работает в группе и в личном чате с ботом
+- **Команда `/watchdog`** — устройство внешнего наблюдателя и кнопка «Проверить сейчас»: запрос уходит на второй VPS по подписанному каналу, оттуда приходит свежая сводка
 - **Команда `/chats`** — список подключённых чатов с topic id, режимом и счётчиками сообщений
 - **Recovery registry для нового телефона** — `/recovery scan`, `/recovery report`, `/recovery export`, `/recovery set`, `/recovery remap` помогают перенести существующие Telegram topics на новый MAX аккаунт без хранения текстов сообщений
 - **Hybrid recovery snapshots** — безопасный scan после успешного MAX connect/reconnect, weekly safety-net и event-driven scan при новом topic binding, переименовании title или MAX `CONTROL` событии; свежесть видна по `last_scan_at`

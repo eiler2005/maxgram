@@ -812,9 +812,17 @@ class TelegramAdapter:
         async def handle_message(message: Message):
             await self._dispatch_incoming_message(message)
 
+    #: Callback-действия, которые bridge готов принимать. Всё остальное молча
+    #: игнорируется: кнопка из чужого/старого сообщения не должна ничего запускать.
+    KNOWN_CALLBACK_ACTIONS = ("max_join", "watchdog_check")
+
     async def _dispatch_callback_query(self, callback: CallbackQuery):
         data = callback.data or ""
-        if not data.startswith("max_join:"):
+        action = next(
+            (a for a in self.KNOWN_CALLBACK_ACTIONS if data.startswith(f"{a}:")),
+            None,
+        )
+        if action is None:
             await callback.answer()
             return
         if not callback.from_user or callback.from_user.id != self._owner_id:
@@ -828,7 +836,7 @@ class TelegramAdapter:
         topic_id = getattr(message, "message_thread_id", None)
         tg_msg_id = getattr(message, "message_id", None)
         action = TelegramCallbackAction(
-            action="max_join",
+            action=action,
             action_id=action_id,
             user_id=callback.from_user.id,
             topic_id=topic_id,
@@ -847,7 +855,7 @@ class TelegramAdapter:
                 direction="callback",
                 stage="dispatch",
                 outcome="failed",
-                action="max_join",
+                action=action,
                 error_type=type(exc).__name__,
             )
             answer = "Ошибка при выполнении действия"
@@ -862,8 +870,17 @@ class TelegramAdapter:
                 reply_text = await self._arg_command_handlers[cmd](args)
                 await message.reply(reply_text)
             elif cmd in self._command_handlers:
-                reply_text = await self._command_handlers[cmd]()
-                await message.reply(reply_text)
+                result = await self._command_handlers[cmd]()
+                # Обработчик может вернуть просто текст или пару (текст, кнопки):
+                # так команда получает кнопку, не меняя контракт остальных команд.
+                if isinstance(result, tuple):
+                    reply_text, buttons = result
+                    await message.reply(
+                        reply_text,
+                        reply_markup=self._build_inline_markup(buttons),
+                    )
+                else:
+                    await message.reply(result)
             elif cmd == "reauth":
                 await message.reply(
                     "⚠️ Для повторной авторизации MAX:\n"

@@ -144,7 +144,8 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - L2 — контейнер `maxtg-watchdog` на хосте-наблюдателе: TCP-проба + SSH forced command `command="/usr/local/bin/bridge-status-probe.py",restrict`. Ключ наблюдателя физически не даёт shell и права записи на production.
 - L3 — push dead-man's switch: таймер `maxtg-watchdog-push.timer` на production → приёмник `:18151` у наблюдателя, HMAC-SHA256 + окно времени. Нужен, чтобы отличать «bridge умер» от «сломан канал наблюдения».
 - L4 — мета-мониторинг: host-мониторинг на хосте-наблюдателе видит пропажу контейнера, встречная проба между хостами видит смерть наблюдателя, плюс ежедневная сводка «watchdog жив».
-- Алерты идут ботом bridge в owner DM + ops topic с префиксом `[EXT]`; запрос уходит с хоста-наблюдателя напрямую в Telegram API, поэтому не зависит от живости процесса bridge.
+- Сводка состояния уходит 4 раза в сутки (`WATCHDOG_SUMMARY_HOURS_UTC=6,10,14,18` = 09/13/17/21 МСК); команда `/watchdog` показывает устройство сервиса и запрашивает внеочередную проверку кнопкой через тот же подписанный канал `:18151/check`. Команду обрабатывает сам bridge, поэтому при его смерти кнопка не работает — это удобство, а не механизм безопасности.
+- Алерты идут ботом bridge в owner DM + ops topic с шапкой источника; запрос уходит с хоста-наблюдателя напрямую в Telegram API, поэтому не зависит от живости процесса bridge.
 - Код внешнего watchdog — `src/watchdog_external/` (**только stdlib**, не импортирует модули bridge), деплой — `deploy/external-watchdog/`, агент production-хоста — `infra/ansible/roles/watchdog_peer/`.
 - Правила firewall (allow 22 с /32 наблюдателя на production, allow 18151 с /32 production у наблюдателя) заводятся вручную и в UFW, и в панели провайдера — автоматизации нет.
 

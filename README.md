@@ -289,7 +289,7 @@ alone, so it is visible that the check is real rather than a formality.
 > single-operator bridge. The samples above are translated; the structure is
 > exactly what arrives.
 
-Recovery reports how long the problem lasted. Alerts use hysteresis (N
+A `/watchdog` command describes the service and offers a "check now" button: the request travels to the observer over the same signed channel the push uses, and the fresh summary comes back. Summaries arrive four times a day; recovery reports how long the problem lasted. Alerts use hysteresis (N
 consecutive failures), cascade suppression, a 15-minute dedup window, and
 one-shot recovery notices — in a normal week the only message is the daily
 summary.

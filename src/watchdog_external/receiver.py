@@ -62,7 +62,7 @@ def _write_push(cfg: WatchdogConfig, payload: dict[str, Any]) -> None:
     os.replace(tmp, target)
 
 
-def _handler_factory(cfg: WatchdogConfig):
+def _handler_factory(cfg: WatchdogConfig, on_check=None):
     lock = threading.Lock()
 
     class PushHandler(BaseHTTPRequestHandler):
@@ -79,7 +79,35 @@ def _handler_factory(cfg: WatchdogConfig):
             self.end_headers()
             self.wfile.write(encoded)
 
+        def _authenticated_body(self) -> Optional[dict[str, Any]]:
+            """Общая проверка для всех POST: подпись, размер, окно времени."""
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > MAX_BODY_BYTES:
+                self._reply(400, '{"error":"bad length"}')
+                return None
+
+            body = self.rfile.read(length)
+            if not verify(cfg.push_secret, body, self.headers.get(SIGNATURE_HEADER)):
+                logger.warning("rejected %s with invalid signature", self.path)
+                self._reply(401, '{"error":"bad signature"}')
+                return None
+
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                self._reply(400, '{"error":"bad json"}')
+                return None
+
+            if abs(int(time.time()) - int(payload.get("ts") or 0)) > cfg.push_max_skew_seconds:
+                logger.warning("rejected %s outside time window", self.path)
+                self._reply(400, '{"error":"stale timestamp"}')
+                return None
+            return payload
+
         def do_POST(self) -> None:  # noqa: N802 — интерфейс stdlib
+            if self.path == "/check":
+                self._handle_check()
+                return
             if self.path != "/push":
                 self._reply(404, '{"error":"not found"}')
                 return
@@ -117,20 +145,41 @@ def _handler_factory(cfg: WatchdogConfig):
 
             self._reply(200, '{"status":"ok"}')
 
+        def _handle_check(self) -> None:
+            """Проверка по требованию: тот же цикл, что и по расписанию.
+
+            Нужна, чтобы владелец мог спросить состояние кнопкой, не дожидаясь
+            следующей сводки. Запрос приходит по тому же подписанному каналу,
+            что и push, — отдельного секрета и отдельного порта не заводим.
+            """
+            if on_check is None:
+                self._reply(503, '{"error":"check not available"}')
+                return
+            if self._authenticated_body() is None:
+                return
+            try:
+                ok = bool(on_check())
+            except Exception as e:  # noqa: BLE001 — приёмник не имеет права падать
+                logger.exception("on-demand check failed: %s", e)
+                self._reply(500, '{"error":"check failed"}')
+                return
+            self._reply(200 if ok else 409,
+                        '{"status":"sent"}' if ok else '{"status":"busy"}')
+
     return PushHandler
 
 
-def serve_forever(cfg: WatchdogConfig) -> None:
-    server = ThreadingHTTPServer((cfg.push_bind, int(cfg.push_port)), _handler_factory(cfg))
+def serve_forever(cfg: WatchdogConfig, on_check=None) -> None:
+    server = ThreadingHTTPServer((cfg.push_bind, int(cfg.push_port)), _handler_factory(cfg, on_check))
     logger.info("push receiver listening on %s:%s", cfg.push_bind, cfg.push_port)
     server.serve_forever()
 
 
-def start_background(cfg: WatchdogConfig) -> Optional[threading.Thread]:
+def start_background(cfg: WatchdogConfig, on_check=None) -> Optional[threading.Thread]:
     """Поднимает приёмник в фоне. Без секрета слой 3 просто выключен."""
     if not cfg.push_secret:
         logger.info("push receiver disabled (WATCHDOG_PUSH_SECRET not set)")
         return None
-    thread = threading.Thread(target=serve_forever, args=(cfg,), daemon=True, name="push-receiver")
+    thread = threading.Thread(target=serve_forever, args=(cfg, on_check), daemon=True, name="push-receiver")
     thread.start()
     return thread

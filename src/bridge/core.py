@@ -5,6 +5,7 @@ Transport-specific behavior stays in adapters. Business leaves live in bridge
 modules; this class wires callbacks, shared dependencies and background tasks.
 """
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ from . import outbound_retry as bridge_outbound_retry
 from . import replies as bridge_replies
 from . import status as bridge_status
 from . import topics as bridge_topics
+from .commands import watchdog as bridge_watchdog_command
 from .commands.dispatcher import BridgeCommandDispatcher
 from .contracts import (
     MAX_DM_SWEEP_BACKFILL_SECONDS,
@@ -141,6 +143,10 @@ class BridgeCore:
         await self._tg.edit_message_text(tg_msg_id, footer)
 
     async def _on_tg_callback_action(self, callback: TelegramCallbackAction) -> str:
+        if callback.action == bridge_watchdog_command.CHECK_ACTION:
+            # Сетевой запрос к другому хосту: уводим с event loop, чтобы не
+            # задерживать обработку сообщений на время таймаута.
+            return await asyncio.to_thread(bridge_watchdog_command.request_check)
         return await bridge_actions.handle_telegram_callback_action(
             repo=self._repo,
             max_adapter=self._max,

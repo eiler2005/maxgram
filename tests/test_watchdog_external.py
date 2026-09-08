@@ -595,3 +595,112 @@ def test_flow_names_both_sides_so_the_observer_is_unambiguous():
     assert "ВНЕШНИЙ" in LAYER_FLOW["L1"] and "ВНУТРЕННИЙ" in LAYER_FLOW["L1"]
     assert all("ВНЕШНИЙ" in LAYER_FLOW[l] for l in ("L1", "L2", "L3"))
     assert "сосед по хосту" in LAYER_FLOW["L4"]
+
+
+def test_summary_hours_default_to_four_times_a_day(monkeypatch):
+    from src.watchdog_external.config import load_config
+
+    for var in ("WATCHDOG_SUMMARY_HOURS_UTC", "WATCHDOG_DAILY_SUMMARY_HOUR_UTC"):
+        monkeypatch.delenv(var, raising=False)
+    assert load_config().summary_hours_utc == (6, 10, 14, 18)
+
+
+def test_summary_hours_parse_list_and_can_be_disabled(monkeypatch):
+    from src.watchdog_external.config import load_config
+
+    monkeypatch.setenv("WATCHDOG_SUMMARY_HOURS_UTC", "18, 6,10,  14 ,99")
+    assert load_config().summary_hours_utc == (6, 10, 14, 18)  # мусор отброшен, порядок нормализован
+
+    monkeypatch.setenv("WATCHDOG_SUMMARY_HOURS_UTC", "off")
+    assert load_config().summary_hours_utc == ()
+
+
+def test_legacy_single_hour_variable_still_understood(monkeypatch):
+    """Существующие развёртывания не должны молча остаться без сводки."""
+    from src.watchdog_external.config import load_config
+
+    monkeypatch.delenv("WATCHDOG_SUMMARY_HOURS_UTC", raising=False)
+    monkeypatch.setenv("WATCHDOG_DAILY_SUMMARY_HOUR_UTC", "6")
+    assert load_config().summary_hours_utc == (6,)
+
+    monkeypatch.setenv("WATCHDOG_DAILY_SUMMARY_HOUR_UTC", "-1")
+    assert load_config().summary_hours_utc == ()
+
+
+def test_check_endpoint_requires_the_same_signature_as_push():
+    """Проверка по требованию идёт по уже существующему подписанному каналу."""
+    import json as _json
+    from src.watchdog_external.receiver import sign, verify
+
+    body = _json.dumps({"ts": NOW, "reason": "manual"}).encode()
+    assert verify("secret", body, sign("secret", body)) is True
+    assert verify("secret", body, sign("wrong", body)) is False
+
+
+def test_on_demand_check_refuses_to_run_twice_at_once(tmp_path, monkeypatch):
+    """Две параллельные оценки прислали бы две копии сообщений."""
+    from src.watchdog_external import __main__ as cli
+
+    cfg = _cfg(state_path=str(tmp_path / "state.json"))
+    state = _state(tmp_path)
+    monkeypatch.setattr(cli, "collect", lambda *a, **k: _observation())
+    monkeypatch.setattr(cli.receiver, "read_push", lambda c: {})
+    monkeypatch.setattr(cli, "send_telegram", lambda *a, **k: True)
+
+    with cli.single_run(cfg) as held:
+        assert held is True
+        assert cli.run_on_demand(cfg, state) is False  # блокировка занята
+    assert cli.run_on_demand(cfg, state) is True
+
+
+def test_watchdog_command_describes_service_and_offers_button(monkeypatch):
+    """Команда — про постоянное устройство сервиса; алерты про меняющееся."""
+    from src.bridge.commands import watchdog as cmd
+
+    monkeypatch.setenv("WATCHDOG_PUSH_URL", "http://observer.invalid:18151/push")
+    monkeypatch.setenv("WATCHDOG_PUSH_SECRET", "s3cret")
+
+    text = cmd.build_message()
+    assert "ВНЕШНИЙ наблюдатель ──SSH──► production-хост" in text
+    assert "09:00, 13:00, 17:00, 21:00" in text
+    assert "Ничего не чинит" in text
+
+    buttons = cmd.build_buttons()
+    assert len(buttons) == 1
+    assert buttons[0].callback_data.startswith(cmd.CHECK_ACTION + ":")
+
+
+def test_watchdog_command_hides_button_when_channel_not_configured(monkeypatch):
+    from src.bridge.commands import watchdog as cmd
+
+    monkeypatch.delenv("WATCHDOG_PUSH_URL", raising=False)
+    monkeypatch.delenv("WATCHDOG_PUSH_SECRET", raising=False)
+
+    assert cmd.build_buttons() == []
+    assert "Кнопка недоступна" in cmd.build_message()
+    assert "Не настроено" in cmd.request_check()
+
+
+def test_watchdog_check_targets_the_check_endpoint(monkeypatch):
+    """Запрос идёт на /check того же приёмника, что принимает push."""
+    from src.bridge.commands import watchdog as cmd
+
+    monkeypatch.setenv("WATCHDOG_PUSH_URL", "http://observer.invalid:18151/push")
+    monkeypatch.setenv("WATCHDOG_PUSH_SECRET", "s3cret")
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"{}"
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        captured["sig"] = request.headers.get(cmd.SIGNATURE_HEADER.capitalize()) or \
+                          request.headers.get(cmd.SIGNATURE_HEADER)
+        return FakeResponse()
+
+    monkeypatch.setattr(cmd.urllib.request, "urlopen", fake_urlopen)
+    assert "сводка сейчас придёт" in cmd.request_check()
+    assert captured["url"].endswith("/check")
+    assert captured["sig"]

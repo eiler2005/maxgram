@@ -245,7 +245,7 @@ async def build_startup_notification(repo: Repository,
         lines.append(chats_info)
     if startup_tests is not None:
         lines.append(_format_startup_tests_line(startup_tests))
-    lines.append("Команды: /status · /chats · /dm · /help")
+    lines.append("Команды: /status · /chats · /watchdog · /dm · /help")
     return "\n".join(lines)
 
 

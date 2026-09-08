@@ -20,6 +20,29 @@ def _str(name: str, default: str = "") -> str:
     return os.environ.get(name, "").strip() or default
 
 
+def _summary_hours() -> tuple[int, ...]:
+    """Часы UTC для сводки.
+
+    По умолчанию четыре раза в сутки. Старая переменная с одним часом ещё
+    понимается, чтобы существующие развёртывания не сломались молча.
+    """
+    raw = os.environ.get("WATCHDOG_SUMMARY_HOURS_UTC", "").strip()
+    if not raw:
+        legacy = os.environ.get("WATCHDOG_DAILY_SUMMARY_HOUR_UTC", "").strip()
+        if legacy:
+            hour = _int("WATCHDOG_DAILY_SUMMARY_HOUR_UTC", -1)
+            return () if hour < 0 else (hour,)
+        return (6, 10, 14, 18)
+    if raw in {"-1", "off", "none"}:
+        return ()
+    hours = []
+    for chunk in raw.replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if chunk.isdigit() and 0 <= int(chunk) <= 23:
+            hours.append(int(chunk))
+    return tuple(sorted(set(hours)))
+
+
 @dataclass
 class TelegramTarget:
     label: str
@@ -55,7 +78,8 @@ class WatchdogConfig:
 
     # Доставка
     dedup_ttl_seconds: int = 900
-    daily_summary_hour_utc: int = -1  # -1 = выключено
+    #: Часы UTC, когда уходит сводка. Пусто = сводки выключены.
+    summary_hours_utc: tuple[int, ...] = (6, 10, 14, 18)
 
     # Push-приёмник (слой 3)
     push_bind: str = "0.0.0.0"
@@ -103,7 +127,7 @@ def load_config() -> WatchdogConfig:
         expected_egress=_str("WATCHDOG_EXPECTED_EGRESS", "home_ru_proxy"),
         push_max_age_seconds=_int("WATCHDOG_PUSH_MAX_AGE_SECONDS", 300),
         dedup_ttl_seconds=_int("WATCHDOG_DEDUP_TTL_SECONDS", 900),
-        daily_summary_hour_utc=_int("WATCHDOG_DAILY_SUMMARY_HOUR_UTC", -1),
+        summary_hours_utc=_summary_hours(),
         push_bind=_str("WATCHDOG_PUSH_BIND", "0.0.0.0"),
         push_port=_int("WATCHDOG_PUSH_PORT", 18151),
         push_secret=_str("WATCHDOG_PUSH_SECRET"),

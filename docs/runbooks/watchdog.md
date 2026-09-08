@@ -482,7 +482,7 @@ Push-канал не имеет TLS осознанно: в теле нет се�
 | Restart storm | 3 за 1800 с | `WATCHDOG_RESTART_STORM_DELTA` |
 | Grace для degraded | 900 с | `WATCHDOG_DEGRADED_GRACE_SECONDS` |
 | Ожидаемый egress | `home_ru_proxy` | `WATCHDOG_EXPECTED_EGRESS` |
-| Ежедневная сводка | час UTC, `-1` = выкл | `WATCHDOG_DAILY_SUMMARY_HOUR_UTC` |
+| Сводка состояния | 4 раза в сутки, 09/13/17/21 МСК | `WATCHDOG_SUMMARY_HOURS_UTC=6,10,14,18` |
 
 Внутренние пороги bridge (`heartbeat_interval_seconds`, `max_self_heal_grace_seconds`,
 `max_self_heal_restart_cooldown_seconds`) живут в секции `health` файла `config.yaml`.
@@ -597,6 +597,27 @@ ssh deploy@<prod_ip> 'sudo systemctl enable --now maxtg-watchdog-push.timer'
 | В ошибке пробы приходит `ssh [-Q query_option]` | Аргумент с ведущими дефисами ssh разбирает как свою опцию | флаг режима передаётся без дефисов (`with-status` / `no-status`) |
 | `ansible.posix.authorized_key` падает с `list index out of range` | В `authorized_keys` уже есть строка с `permitlisten="host:port"`, её парсер опций не разбирает | роль использует `lineinfile` с точным regexp |
 | В `authorized_keys` уехал обрезанный ключ | `ansible -e key=value` режет значение по первому пробелу | передавать переменные JSON-ом; роль проверяет форму ключа до записи |
+
+### Команда `/watchdog` и проверка по кнопке
+
+Владелец может спросить состояние, не дожидаясь очередной сводки: команда
+`/watchdog` в Telegram показывает устройство сервиса и кнопку «🔄 Проверить
+сейчас». Нажатие уходит по уже существующему подписанному каналу:
+
+```
+Telegram ──► bridge ──HMAC POST /check──► наблюдатель ──► сводка в Telegram
+```
+
+Отдельный секрет и отдельный порт не заводились: используется тот же
+`WATCHDOG_PUSH_SECRET` и тот же приёмник `:18151`, что принимает push.
+Проверка берёт ту же блокировку, что и обычный цикл, поэтому две параллельные
+оценки невозможны — занятый наблюдатель ответит `409`, а bridge покажет
+«уже выполняет проверку».
+
+**Граница, которую важно понимать.** Команду обрабатывает сам bridge, то есть
+наблюдаемая система. Если bridge мёртв, кнопка не сработает — и это не дефект,
+а ровно тот случай, ради которого наблюдатель живёт на другом хосте и пишет
+сам. Кнопка — удобство, а не механизм безопасности.
 
 ## 7. Проверка
 

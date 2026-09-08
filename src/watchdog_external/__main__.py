@@ -148,12 +148,13 @@ def _maybe_daily_summary(
     layers: dict[str, str] | None = None,
 ) -> None:
     """Мета-мониторинг: молчащий watchdog неотличим от сломанного (класс F14)."""
-    if cfg.daily_summary_hour_utc < 0:
+    if not cfg.summary_hours_utc:
         return
     today = datetime.datetime.fromtimestamp(now, datetime.timezone.utc)
-    if today.hour != cfg.daily_summary_hour_utc:
+    if today.hour not in cfg.summary_hours_utc:
         return
-    marker = today.strftime("%Y-%m-%d")
+    # Маркер включает час: иначе вторая сводка за сутки не уйдёт никогда.
+    marker = today.strftime("%Y-%m-%dT%H")
     if state.get("daily_summary_date") == marker:
         return
     text = render_daily_summary(cfg, state.active_alerts(), layers)
@@ -186,8 +187,24 @@ def run_once(cfg: WatchdogConfig, state: WatchdogState, *, with_status: bool) ->
     return 2 if any(f.severity == "crit" for f in decision.alerts) else 0
 
 
+def run_on_demand(cfg: WatchdogConfig, state: WatchdogState) -> bool:
+    """Свежая проверка и сводка вне расписания — по запросу владельца.
+
+    Берёт ту же блокировку, что и обычный цикл: две параллельные оценки
+    прислали бы две копии сообщений.
+    """
+    with single_run(cfg) as acquired:
+        if not acquired:
+            return False
+        now = int(time.time())
+        observation = collect(cfg, with_status=True, push=receiver.read_push(cfg))
+        layers = layer_status(cfg, observation, now, int(state.get("last_run_at") or 0))
+        text = render_daily_summary(cfg, state.active_alerts(), layers)
+        return send_telegram(cfg, text, silent=True)
+
+
 def run_loop(cfg: WatchdogConfig, state: WatchdogState) -> int:
-    receiver.start_background(cfg)
+    receiver.start_background(cfg, on_check=lambda: run_on_demand(cfg, state))
     last_status_poll = 0
     while True:
         now = int(time.time())
