@@ -245,6 +245,9 @@ pytest tests/test_status_api.py tests/test_watchdog_external.py -q
 status API не попадают тексты исключений, а watchdog не обрастает
 зависимостями от bridge.
 
+Как устроены механизмы — процессы, контейнеры, что делает каждый цикл, файлы
+состояния и модель безопасности: [runbook §3](docs/runbooks/watchdog.md#3-как-это-устроено-механизмы-процессы-контейнеры).
+
 Полная модель отказов (F1–F16), каталог алертов, пороги, установка, грабли и
 квартальные учения: [docs/runbooks/watchdog.md](docs/runbooks/watchdog.md) ·
 карта конфигурации: [deploy/external-watchdog/CONFIGURATION.md](deploy/external-watchdog/CONFIGURATION.md) ·

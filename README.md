@@ -273,6 +273,9 @@ escalation, message rendering, HMAC verification, and two architectural
 guarantees: the status payload never carries exception causes, and the
 watchdog never grows a dependency on the bridge.
 
+How the mechanisms actually work — processes, containers, what each cycle does,
+state files and the security model: [runbook §3](docs/runbooks/watchdog.md#3-как-это-устроено-механизмы-процессы-контейнеры).
+
 Full failure model (F1–F16), alert catalogue, thresholds, setup, install traps
 and quarterly drills: [docs/runbooks/watchdog.md](docs/runbooks/watchdog.md) ·
 configuration map: [deploy/external-watchdog/CONFIGURATION.md](deploy/external-watchdog/CONFIGURATION.md) ·

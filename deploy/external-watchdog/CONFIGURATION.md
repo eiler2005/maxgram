@@ -68,7 +68,7 @@ status_api:
 | `WATCHDOG_DAILY_SUMMARY_HOUR_UTC` | час ежедневной сводки, `-1` выключает |
 
 Пороги (`WATCHDOG_POLL_INTERVAL_SECONDS` и прочие) — см. таблицу в
-[docs/runbooks/watchdog.md](../../docs/runbooks/watchdog.md#4-пороги); в
+[docs/runbooks/watchdog.md](../../docs/runbooks/watchdog.md#5-пороги); в
 `.env.secrets` их задают только при отклонении от умолчаний.
 
 ### Файлы
