@@ -571,6 +571,13 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_alert_text_carries_class_and_action_without_private_data` | Текст алерта содержит класс отказа, правило и команду восстановления. |
 | `test_push_signature_round_trip` | HMAC-подпись приёмника принимает только валидную подпись и отвергает пустой секрет. |
 | `test_watchdog_depends_only_on_stdlib_and_itself` | Архитектурная граница: внешний watchdog не импортирует ни модули bridge, ни сторонние библиотеки. |
+| `test_every_rule_is_assigned_to_a_layer` | Каждое правило привязано к слою наблюдения, и все три активных слоя представлены — иначе из алерта неясно, что чинить. |
+| `test_alert_names_its_layer_and_where_to_look` | В тексте алерта есть слой и команда для разбора. |
+| `test_daily_summary_reports_all_four_layers` | Ежедневная сводка отчитывается по всем четырём слоям: молчащий слой неотличим от сломанного. |
+| `test_layer_status_reflects_broken_paths` | Состояние слоёв корректно отражает сломанный опрос, отсутствующий push и выключенный слой. |
+| `test_recovery_message_is_human_readable_and_reports_duration` | Recovery называет проблему по-человечески и сообщает длительность. |
+| `test_alert_text_collapses_noisy_error_output` | stderr чужих утилит не уезжает в сообщение многострочным мусором. |
+| `test_rule_titles_exist_for_every_rule` | У каждого правила есть человекочитаемое название. |
 
 ---
 

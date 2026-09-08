@@ -66,6 +66,52 @@ def rule_title(rule: str) -> str:
     return RULE_TITLES.get(rule, rule)
 
 
+#: Каким слоем наблюдения поймано правило. Из слоя сразу следует, что чинить:
+#: у каждого слоя свой набор компонентов и своя команда для проверки.
+RULE_LAYERS = {
+    # L1 — данные пришли из status API самого bridge
+    "overall_degraded": "L1",
+    "subsystem_issue": "L1",
+    "alert_outbox_backlog": "L1",
+    "queue_backlog": "L1",
+    "egress_mode_unexpected": "L1",
+    "status_api_unreachable": "L1",
+    # L2 — данные пришли из опроса хоста снаружи
+    "host_unreachable": "L2",
+    "ssh_probe_failed": "L2",
+    "container_down": "L2",
+    "container_unhealthy": "L2",
+    "heartbeat_stale": "L2",
+    "restart_storm": "L2",
+    "disk_low": "L2",
+    # L3 — встречный push-канал
+    "push_stale": "L3",
+}
+
+#: Что смотреть при разборе, в порядке «от самого вероятного».
+LAYER_DIAGNOSTICS = {
+    "L1": "status API bridge — docker logs deploy-bridge-1 | grep status_api; curl localhost:18140/healthz",
+    "L2": "опрос с наблюдателя — docker compose logs watchdog; ssh -i <ключ> deploy@<prod> (должен вернуть JSON)",
+    "L3": "push с production — systemctl status maxtg-watchdog-push.timer; journalctl -u maxtg-watchdog-push",
+    "L4": "сам наблюдатель — docker ps | grep maxtg-watchdog на хосте-наблюдателе",
+}
+
+LAYER_NAMES = {
+    "L1": "status API bridge",
+    "L2": "опрос с наблюдателя",
+    "L3": "push-канал",
+    "L4": "мета-мониторинг",
+}
+
+
+def rule_layer(rule: str) -> str:
+    return RULE_LAYERS.get(rule, "L2")
+
+
+def layer_hint(rule: str) -> str:
+    return LAYER_DIAGNOSTICS.get(rule_layer(rule), "")
+
+
 def humanize_duration(seconds: int | None) -> str:
     if not seconds or seconds < 0:
         return "меньше минуты"

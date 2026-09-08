@@ -215,8 +215,67 @@ read-only probe, so recovery stays a human action.
 | **The bridge's own Telegram alerting is broken** | **external watchdog only** — it has an independent network path | depends on cause |
 | The external watchdog itself dies | host monitoring on its VPS + mutual host probes + a daily summary | manual |
 
-Full failure model, alert catalogue, thresholds and quarterly drills:
-[docs/runbooks/watchdog.md](docs/runbooks/watchdog.md) ·
+#### Four observation layers
+
+Every alert names the layer that caught it, so the message itself says where to
+look. A layer that goes quiet is indistinguishable from a broken one, so all
+four report in the daily summary.
+
+| Layer | Where it runs | Interval | Catches |
+|---|---|---|---|
+| **L1** status API | `127.0.0.1:18140` in the bridge container | 300 s | MAX egress/auth issues, alert outbox backlog, egress drift, queue backlog |
+| **L2** SSH pull | observer container, read-only forced command | 60 s | stopped container, dead host, stale heartbeat, restart storm, low disk |
+| **L3** push dead-man's switch | `maxtg-watchdog-push.timer` → observer `:18151` | 60 s | tells "the bridge is dead" apart from "the observation path is dead" |
+| **L4** meta-monitoring | host monitor + mutual probes + daily summary | 5 min / 24 h | a dead observer |
+
+#### What an alert looks like
+
+```
+🔴 [EXT] Контейнер bridge не работает
+Хост: maxtg-bridge-prod · проверка с внешнего VPS
+Слой: L2 — опрос с наблюдателя
+Класс отказа: F8 · container_down
+
+Что произошло: Контейнер deploy-bridge-1: exited, exit code 137.
+Что делать: Docker restart: always не действует на явную остановку.
+  Подними вручную: docker compose --project-name deploy -f ... up -d bridge
+Где смотреть: опрос с наблюдателя — docker compose logs watchdog; ssh -i <key> deploy@<prod>
+```
+
+Recovery reports how long the problem lasted; the daily summary lists the state
+of all four layers. Alerts use hysteresis (N consecutive failures), cascade
+suppression, a 15-minute dedup window, and one-shot recovery notices — in a
+normal week the only message is the daily summary.
+
+#### Where the code lives
+
+| Path | What |
+|---|---|
+| `src/runtime/status_api.py` | L1 — the bridge's own status endpoint |
+| `src/watchdog_external/rules.py` | the rule catalogue: thresholds, layers, failure classes, alert text |
+| `src/watchdog_external/probe.py` · `receiver.py` | L2 pull · L3 push receiver |
+| `src/watchdog_external/notify.py` | Telegram rendering and delivery |
+| `infra/ansible/roles/watchdog_peer/` | production-side probe and push timer |
+| `deploy/external-watchdog/` | observer stack + `deploy.sh` + `CONFIGURATION.md` |
+
+Everything under `src/watchdog_external/` is standard library only and imports
+no bridge module — an observer that shares dependencies with the observed is
+not an observer.
+
+#### Tests
+
+```bash
+pytest tests/test_status_api.py tests/test_watchdog_external.py -q   # 27 + 4 cases
+```
+
+They cover hysteresis, cascade suppression, the push fallback, severity
+escalation, message rendering, HMAC verification, and two architectural
+guarantees: the status payload never carries exception causes, and the
+watchdog never grows a dependency on the bridge.
+
+Full failure model (F1–F16), alert catalogue, thresholds, setup, install traps
+and quarterly drills: [docs/runbooks/watchdog.md](docs/runbooks/watchdog.md) ·
+configuration map: [deploy/external-watchdog/CONFIGURATION.md](deploy/external-watchdog/CONFIGURATION.md) ·
 decision record: [ADR-012](docs/decisions/ADR-012-external-watchdog.md).
 
 ---

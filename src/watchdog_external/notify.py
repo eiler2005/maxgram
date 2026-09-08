@@ -17,7 +17,16 @@ import urllib.request
 from typing import Optional
 
 from .config import WatchdogConfig
-from .rules import CRIT, Finding, Recovery, humanize_duration, rule_title
+from .rules import (
+    CRIT,
+    LAYER_NAMES,
+    Finding,
+    Recovery,
+    humanize_duration,
+    layer_hint,
+    rule_layer,
+    rule_title,
+)
 from .state import WatchdogState
 
 logger = logging.getLogger("watchdog.notify")
@@ -43,14 +52,17 @@ def clean(text: str, limit: int = 300) -> str:
 
 def render_alert(finding: Finding, cfg: WatchdogConfig) -> str:
     badge = SEVERITY_BADGE.get(finding.severity, "🟡")
+    layer = rule_layer(finding.rule)
     lines = [
         f"{badge} <b>[EXT] {clean(finding.title, 120)}</b>",
         f"Хост: {clean(cfg.target_name, 60)} · проверка с внешнего VPS",
+        f"Слой: {clean(layer, 8)} — {clean(LAYER_NAMES.get(layer, ''), 60)}",
         f"Класс отказа: {clean(finding.failure_class, 20)} · "
         f"<code>{clean(finding.rule, 40)}</code>",
         "",
         f"<b>Что произошло:</b> {clean(finding.detail, 400)}",
         f"<b>Что делать:</b> {clean(finding.hint, 400)}",
+        f"<b>Где смотреть:</b> {clean(layer_hint(finding.rule), 300)}",
     ]
     return "\n".join(lines)[:MAX_MESSAGE_CHARS]
 
@@ -58,7 +70,8 @@ def render_alert(finding: Finding, cfg: WatchdogConfig) -> str:
 def render_recovery(recovery: Recovery, cfg: WatchdogConfig) -> str:
     lines = [
         f"✅ <b>[EXT] Норма: {clean(rule_title(recovery.rule), 120)}</b>",
-        f"Хост: {clean(cfg.target_name, 60)} · <code>{clean(recovery.rule, 40)}</code>",
+        f"Хост: {clean(cfg.target_name, 60)} · {clean(rule_layer(recovery.rule), 8)} · "
+        f"<code>{clean(recovery.rule, 40)}</code>",
         "",
     ]
     if recovery.duration_seconds:
@@ -71,15 +84,34 @@ def render_recovery(recovery: Recovery, cfg: WatchdogConfig) -> str:
     return "\n".join(lines)[:MAX_MESSAGE_CHARS]
 
 
-def render_daily_summary(cfg: WatchdogConfig, active: list[str]) -> str:
+def render_daily_summary(
+    cfg: WatchdogConfig,
+    active: list[str],
+    layers: Optional[dict[str, str]] = None,
+) -> str:
+    """Ежедневная сводка. Показывает все четыре слоя, а не только проблемы.
+
+    Смысл именно в перечислении слоёв: молчащий слой неотличим от сломанного,
+    поэтому раз в сутки каждый должен явно отчитаться, что он живой.
+    """
     lines = [
         "🔵 <b>[EXT] Внешний watchdog на связи</b>",
         f"Хост под наблюдением: {clean(cfg.target_name, 60)}",
         "",
+        "<b>Слои наблюдения:</b>",
     ]
+    for layer in ("L1", "L2", "L3", "L4"):
+        status = (layers or {}).get(layer, "нет данных")
+        lines.append(f"• {layer} {clean(LAYER_NAMES.get(layer, ''), 60)} — {clean(status, 80)}")
+
+    lines.append("")
     if active:
         lines.append("<b>Открытые проблемы:</b>")
-        lines += [f"• {clean(rule_title(rule), 120)} (<code>{clean(rule, 40)}</code>)" for rule in active]
+        lines += [
+            f"• {clean(rule_title(rule), 120)} "
+            f"({clean(rule_layer(rule), 8)}, <code>{clean(rule, 40)}</code>)"
+            for rule in active
+        ]
     else:
         lines.append("Открытых проблем нет, все проверки проходят.")
     return "\n".join(lines)[:MAX_MESSAGE_CHARS]

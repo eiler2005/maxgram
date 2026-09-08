@@ -420,7 +420,94 @@ pytest tests/test_status_api.py tests/test_watchdog_external.py -q
 
 ---
 
-## 7. Границы: чего watchdog не делает
+## 7. Поддержка: куда копать
+
+Слой в алерте указан не для красоты — он сразу сужает область поиска.
+Ниже: что проверять и чем править, по слоям.
+
+### Пришёл алерт слоя L1 (status API)
+
+Данные пришли от самого bridge, значит он жив и что-то про себя сообщает.
+
+```bash
+ssh deploy@<prod_ip>
+docker logs deploy-bridge-1 2>&1 | grep status_api | tail
+curl -s localhost:18140/healthz
+TOKEN=$(grep '^BRIDGE_STATUS_TOKEN=' /opt/maxtg-bridge/.env.secrets | cut -d= -f2)
+curl -s -H "Authorization: Bearer $TOKEN" localhost:18140/status | jq .
+```
+
+Править: `src/runtime/status_api.py` (что отдаём) и `src/config/loader.py`
+(`StatusApiConfig`). После правки конфига нужен **restart**, а не `up -d`:
+файл смонтирован, и процесс не перечитывает его сам.
+
+### Пришёл алерт слоя L2 (опрос)
+
+```bash
+ssh deploy@<observer_ip>
+cd /opt/maxtg-watchdog && docker compose logs --tail 50 watchdog
+# проверить сам канал опроса — должен вернуть JSON, а не shell:
+docker compose exec -T watchdog ssh -i /app/ssh/watchdog_key deploy@<prod_ip>
+```
+
+Править: `src/watchdog_external/probe.py` (как опрашиваем) и
+`infra/ansible/roles/watchdog_peer/templates/bridge-status-probe.py.j2`
+(что отдаёт production). Проба ставится ролью, **править на сервере руками
+бесполезно** — следующий прогон плейбука затрёт.
+
+### Пришёл алерт слоя L3 (push)
+
+```bash
+ssh deploy@<prod_ip>
+systemctl status maxtg-watchdog-push.timer
+journalctl -u maxtg-watchdog-push.service -n 20 --no-pager
+# частая причина: закрыт исходящий 18151 в firewall провайдера
+python3 -c "import socket;s=socket.socket();s.settimeout(5);s.connect(('<observer_ip>',18151));print('OPEN')"
+```
+
+Править: `maxtg-watchdog-push.py.j2` (отправка) и
+`src/watchdog_external/receiver.py` (приём, проверка подписи). Секрет
+`WATCHDOG_PUSH_SECRET` обязан совпадать на обоих хостах — сверить хеши можно
+через `scripts/watchdog_snapshot.sh`, не раскрывая значение.
+
+### Тихо — а должно было прийти
+
+```bash
+# 1. жив ли наблюдатель
+ssh deploy@<observer_ip> 'docker ps | grep maxtg-watchdog'
+# 2. что он решает прямо сейчас
+ssh deploy@<observer_ip> 'cd /opt/maxtg-watchdog && docker compose logs --tail 20 watchdog'
+# 3. не съел ли dedup (тот же алерт не чаще 900 с)
+ssh deploy@<observer_ip> 'cd /opt/maxtg-watchdog && docker compose exec -T watchdog cat /app/state/state.json'
+# 4. работает ли доставка вообще
+ssh deploy@<observer_ip> 'cd /opt/maxtg-watchdog && docker compose exec -T watchdog python -m src.watchdog_external --test-alert'
+```
+
+`state.json` — ключ к разбору: `fail_count` показывает, сколько подряд
+неудачных проверок уже накоплено, `alerting` — по каким правилам алерт уже
+активен, `last_sent` — когда последний раз отправляли.
+
+### Хочу изменить правило или порог
+
+Один файл: `src/watchdog_external/rules.py`.
+
+| Что менять | Где |
+|---|---|
+| порог срабатывания | `FAIL_AFTER` или `fail_after()` для grace в секундах |
+| severity, текст, подсказку | конструктор `Finding` внутри нужной проверки |
+| название для человека | `RULE_TITLES` |
+| слой и подсказку «где смотреть» | `RULE_LAYERS`, `LAYER_DIAGNOSTICS` |
+| интервалы и пороги без правки кода | env в `.env.secrets` наблюдателя |
+
+После правки: `pytest tests/test_watchdog_external.py -q`, затем
+`WATCHDOG_DEPLOY_HOST=deploy@<observer_ip> ./deploy/external-watchdog/deploy.sh`.
+Тесты `test_every_rule_is_assigned_to_a_layer` и
+`test_rule_titles_exist_for_every_rule` упадут, если новое правило добавлено,
+а название или слой для него забыты.
+
+---
+
+## 8. Границы: чего watchdog не делает
 
 Честный список, чтобы не возникало ложной уверенности.
 

@@ -184,11 +184,70 @@ read-only пробу, поднимает контейнер человек.
 | Завис worker (контейнер жив, heartbeat протух) | внешний watchdog | вручную |
 | **Контейнер остановлен** (`docker compose stop/down`) | **только внешний watchdog** — `restart: always` на явный stop не действует | вручную |
 | **Лёг хост / VM / Docker daemon** | **только внешний watchdog** | вручную |
-| **Сломана собственная доставка алертов bridge в Telegram** | **только внешний watchdog** — у него независимый сетевой путь | по причине |
+| **Сломана собственная доставка алертов bridge** | **только внешний watchdog** — у него независимый сетевой путь | по причине |
 | Умер сам внешний watchdog | мониторинг его хоста + встречная проба + ежедневная сводка | вручную |
 
-Полная модель отказов, каталог алертов, пороги и квартальные учения:
-[docs/runbooks/watchdog.md](docs/runbooks/watchdog.md) ·
+#### Четыре слоя наблюдения
+
+Каждый алерт называет слой, которым пойман, — по сообщению сразу видно, куда
+копать. Молчащий слой неотличим от сломанного, поэтому в ежедневной сводке
+отчитываются все четыре.
+
+| Слой | Где работает | Интервал | Что ловит |
+|---|---|---|---|
+| **L1** status API | `127.0.0.1:18140` в контейнере bridge | 300 с | проблемы MAX egress/auth, рост alert outbox, дрейф egress, очереди |
+| **L2** опрос по SSH | контейнер наблюдателя, forced read-only команда | 60 с | остановленный контейнер, мёртвый хост, протухший heartbeat, restart storm, диск |
+| **L3** push dead-man's switch | `maxtg-watchdog-push.timer` → наблюдатель `:18151` | 60 с | отличает «bridge умер» от «сломан путь наблюдения» |
+| **L4** мета-мониторинг | host-мониторинг + встречные пробы + сводка | 5 мин / 24 ч | смерть самого наблюдателя |
+
+#### Как выглядит алерт
+
+```
+🔴 [EXT] Контейнер bridge не работает
+Хост: maxtg-bridge-prod · проверка с внешнего VPS
+Слой: L2 — опрос с наблюдателя
+Класс отказа: F8 · container_down
+
+Что произошло: Контейнер deploy-bridge-1: exited, exit code 137.
+Что делать: Docker restart: always не действует на явную остановку.
+  Подними вручную: docker compose --project-name deploy -f ... up -d bridge
+Где смотреть: опрос с наблюдателя — docker compose logs watchdog; ssh -i <ключ> deploy@<prod>
+```
+
+Восстановление сообщает, сколько длилась проблема; ежедневная сводка
+перечисляет состояние всех четырёх слоёв. Работают гистерезис (N подряд
+неудачных проверок), подавление каскадов, dedup 15 минут и одноразовые
+recovery — в обычную неделю единственное сообщение это сводка.
+
+#### Где лежит код
+
+| Путь | Что это |
+|---|---|
+| `src/runtime/status_api.py` | L1 — собственный status-эндпоинт bridge |
+| `src/watchdog_external/rules.py` | каталог правил: пороги, слои, классы отказов, тексты |
+| `src/watchdog_external/probe.py` · `receiver.py` | L2 опрос · L3 приёмник push |
+| `src/watchdog_external/notify.py` | рендеринг и доставка в Telegram |
+| `infra/ansible/roles/watchdog_peer/` | проба и push-таймер на production |
+| `deploy/external-watchdog/` | стек наблюдателя + `deploy.sh` + `CONFIGURATION.md` |
+
+Всё в `src/watchdog_external/` написано только на стандартной библиотеке и не
+импортирует модули bridge: наблюдатель, делящий зависимости с наблюдаемым, —
+не наблюдатель.
+
+#### Тесты
+
+```bash
+pytest tests/test_status_api.py tests/test_watchdog_external.py -q
+```
+
+Покрыты гистерезис, подавление каскадов, откат на push, эскалация severity,
+рендеринг сообщений, проверка HMAC и две архитектурные гарантии: в payload
+status API не попадают тексты исключений, а watchdog не обрастает
+зависимостями от bridge.
+
+Полная модель отказов (F1–F16), каталог алертов, пороги, установка, грабли и
+квартальные учения: [docs/runbooks/watchdog.md](docs/runbooks/watchdog.md) ·
+карта конфигурации: [deploy/external-watchdog/CONFIGURATION.md](deploy/external-watchdog/CONFIGURATION.md) ·
 решение: [ADR-012](docs/decisions/ADR-012-external-watchdog.md).
 
 ---

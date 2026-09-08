@@ -64,7 +64,47 @@ def _touch_heartbeat(cfg: WatchdogConfig) -> None:
         logger.warning("could not write watchdog heartbeat: %s", e)
 
 
-def _maybe_daily_summary(cfg: WatchdogConfig, state: WatchdogState, now: int) -> None:
+def layer_status(cfg: WatchdogConfig, observation: dict, now: int) -> dict[str, str]:
+    """Состояние каждого слоя наблюдения — для ежедневной сводки.
+
+    Отчитывается каждый слой отдельно: если один из них тихо отвалился, это
+    видно сразу, а не в момент, когда он понадобится.
+    """
+    probe = observation.get("probe") or {}
+    push = observation.get("push") or {}
+    push_age = now - int(push.get("received_at") or 0) if push.get("received_at") else None
+
+    if probe.get("status_api"):
+        l1 = "отвечает"
+    elif not observation.get("ssh_ok"):
+        l1 = "нет данных (сломан опрос)"
+    elif probe.get("status_api_error"):
+        l1 = f"ошибка: {probe['status_api_error']}"
+    else:
+        l1 = "в этом цикле не опрашивался"
+
+    l2 = "опрос проходит" if observation.get("ssh_ok") else (
+        "хост недоступен" if not observation.get("reachable") else "SSH-проба не проходит")
+
+    if not cfg.push_secret:
+        l3 = "выключен (нет общего секрета)"
+    elif push_age is None:
+        l3 = "пуш ни разу не приходил"
+    elif push_age <= cfg.push_max_age_seconds:
+        l3 = f"последний пуш {push_age} с назад"
+    else:
+        l3 = f"молчит {push_age} с"
+
+    l4 = "цикл проверок работает, это сообщение — его подтверждение"
+    return {"L1": l1, "L2": l2, "L3": l3, "L4": l4}
+
+
+def _maybe_daily_summary(
+    cfg: WatchdogConfig,
+    state: WatchdogState,
+    now: int,
+    layers: dict[str, str] | None = None,
+) -> None:
     """Мета-мониторинг: молчащий watchdog неотличим от сломанного (класс F14)."""
     if cfg.daily_summary_hour_utc < 0:
         return
@@ -74,7 +114,8 @@ def _maybe_daily_summary(cfg: WatchdogConfig, state: WatchdogState, now: int) ->
     marker = today.strftime("%Y-%m-%d")
     if state.get("daily_summary_date") == marker:
         return
-    if send_telegram(cfg, render_daily_summary(cfg, state.active_alerts()), silent=True):
+    text = render_daily_summary(cfg, state.active_alerts(), layers)
+    if send_telegram(cfg, text, silent=True):
         state.set("daily_summary_date", marker)
 
 
@@ -92,7 +133,7 @@ def run_once(cfg: WatchdogConfig, state: WatchdogState, *, with_status: bool) ->
         logger.info("all checks passed (status polled: %s)", with_status)
 
     dispatch(cfg, state, alerts=decision.alerts, recoveries=decision.recoveries, now=now)
-    _maybe_daily_summary(cfg, state, now)
+    _maybe_daily_summary(cfg, state, now, layer_status(cfg, observation, now))
     state.set("last_run_at", now)
     state.save()
     _touch_heartbeat(cfg)

@@ -351,3 +351,70 @@ def test_rule_titles_exist_for_every_rule():
     assert known <= set(RULE_TITLES), known - set(RULE_TITLES)
     for rule in known:
         assert rule_title(rule) != rule
+
+
+def test_every_rule_is_assigned_to_a_layer():
+    """Из алерта должно быть видно, каким слоем поймано — иначе неясно, что чинить."""
+    from src.watchdog_external.rules import FAIL_AFTER, RULE_LAYERS, rule_layer
+
+    known = set(FAIL_AFTER) | {"overall_degraded", "alert_outbox_backlog"}
+    assert known <= set(RULE_LAYERS), known - set(RULE_LAYERS)
+    assert {rule_layer(r) for r in known} == {"L1", "L2", "L3"}
+
+
+def test_alert_names_its_layer_and_where_to_look(tmp_path):
+    cfg = _cfg()
+    state = _state(tmp_path)
+    probe = _healthy_probe(
+        container={"found": True, "state": "exited", "health": "none", "exit_code": 0}
+    )
+    finding = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg, NOW).alerts[0]
+
+    text = render_alert(finding, cfg)
+    assert "Слой: L2" in text
+    assert "опрос с наблюдателя" in text
+    assert "Где смотреть:" in text
+    assert "docker compose logs watchdog" in text
+
+
+def test_daily_summary_reports_all_four_layers():
+    """Молчащий слой неотличим от сломанного, поэтому раз в сутки отчитываются все."""
+    layers = {
+        "L1": "отвечает",
+        "L2": "опрос проходит",
+        "L3": "последний пуш 30 с назад",
+        "L4": "цикл проверок работает",
+    }
+    text = render_daily_summary(_cfg(), [], layers)
+
+    for layer in ("L1", "L2", "L3", "L4"):
+        assert layer in text
+    assert "последний пуш 30 с назад" in text
+    assert "Открытых проблем нет" in text
+
+
+def test_layer_status_reflects_broken_paths():
+    from src.watchdog_external.__main__ import layer_status
+
+    cfg = _cfg(push_secret="s3cret")
+    broken = {"reachable": True, "ssh_ok": False, "push": {}, "probe": {}}
+    st = layer_status(cfg, broken, NOW)
+
+    assert st["L2"] == "SSH-проба не проходит"
+    assert "нет данных" in st["L1"]
+    assert "ни разу" in st["L3"]
+
+    healthy = {"reachable": True, "ssh_ok": True,
+               "push": {"received_at": NOW - 20},
+               "probe": {"status_api": {"overall_status": "healthy"}}}
+    ok = layer_status(cfg, healthy, NOW)
+    assert ok["L1"] == "отвечает"
+    assert ok["L2"] == "опрос проходит"
+    assert "20 с назад" in ok["L3"]
+
+
+def test_layer_status_marks_push_layer_disabled_without_secret():
+    from src.watchdog_external.__main__ import layer_status
+
+    st = layer_status(_cfg(push_secret=""), {"reachable": True, "ssh_ok": True, "probe": {}}, NOW)
+    assert "выключен" in st["L3"]
