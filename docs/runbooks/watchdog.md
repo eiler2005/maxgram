@@ -741,6 +741,30 @@ ssh deploy@<observer_ip> 'cd /opt/maxtg-watchdog && docker compose exec -T watch
 неудачных проверок уже накоплено, `alerting` — по каким правилам алерт уже
 активен, `last_sent` — когда последний раз отправляли.
 
+### Кнопка «Проверить сейчас» не сработала
+
+Нажатие проходит два независимых участка, и по логам видно, какой из них молчит.
+
+```bash
+# 1. дошло ли нажатие до bridge (участок Telegram → bridge)
+ssh deploy@<prod_ip> 'docker logs --since 10m deploy-bridge-1 | grep tg.callback'
+
+# 2. дошёл ли запрос до наблюдателя (участок bridge → наблюдатель)
+ssh deploy@<observer_ip> \
+  'cd /opt/maxtg-watchdog && docker compose logs --since 10m watchdog | grep on-demand'
+```
+
+| Что в логах | Где сломано | Что делать |
+|---|---|---|
+| пусто на обоих хостах | Telegram не доставляет нажатие | проверить `allowed_updates` в `start_polling` — там обязан быть `callback_query` |
+| есть `tg.callback.received`, нет `on-demand check requested` | не доходит запрос до наблюдателя | исходящий 18151 в firewall production, `WATCHDOG_PUSH_URL`, живость контейнера наблюдателя |
+| есть `on-demand check requested`, нет `sent` | наблюдатель занят или упал на проверке | `busy` — идёт обычный цикл, повторить через минуту; иначе смотреть traceback рядом |
+| всё есть, сводки нет | сломана доставка в Telegram | `--test-alert` у наблюдателя, проверить bot token |
+
+Обе стороны пишут в лог и приход, и исход именно ради этой таблицы: без записей
+«кнопка не сработала» и «событие не доехало» выглядят одинаково, а это разные
+поломки с разным лечением.
+
 ### Хочу изменить правило или порог
 
 Один файл: `src/watchdog_external/rules.py`.
