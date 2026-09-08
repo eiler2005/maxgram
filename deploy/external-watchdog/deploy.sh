@@ -48,11 +48,14 @@ echo "==> Готовлю ${REMOTE_DIR} на ${WATCHDOG_DEPLOY_HOST}"
 run_remote "sudo mkdir -p ${REMOTE_DIR}/secrets && sudo chown -R \$(id -u):\$(id -g) ${REMOTE_DIR} && chmod 700 ${REMOTE_DIR}/secrets"
 
 echo "==> Копирую исходники и compose"
-rsync -az --delete -e "ssh ${SSH_OPTS[*]}" \
-  "${REPO_ROOT}/src/watchdog_external/" "${WATCHDOG_DEPLOY_HOST}:${REMOTE_DIR}/src/watchdog_external/"
-rsync -az -e "ssh ${SSH_OPTS[*]}" \
-  "${HERE}/Dockerfile" "${HERE}/docker-compose.yml" \
-  "${WATCHDOG_DEPLOY_HOST}:${REMOTE_DIR}/"
+# tar через ssh вместо rsync: на хосте-наблюдателе rsync может отсутствовать,
+# а ставить пакеты ради деплоя одного контейнера не хочется.
+# Каталог с кодом пересоздаётся целиком, чтобы не оставлять устаревшие модули.
+run_remote "rm -rf ${REMOTE_DIR}/src/watchdog_external && mkdir -p ${REMOTE_DIR}/src"
+tar -C "${REPO_ROOT}/src" -czf - watchdog_external \
+  | run_remote "tar -C ${REMOTE_DIR}/src -xzf -"
+tar -C "${HERE}" -czf - Dockerfile docker-compose.yml \
+  | run_remote "tar -C ${REMOTE_DIR} -xzf -"
 
 echo "==> Копирую секреты (0600)"
 scp "${SSH_OPTS[@]}" -q "${HERE}/.env.secrets" "${WATCHDOG_DEPLOY_HOST}:${REMOTE_DIR}/.env.secrets"

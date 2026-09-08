@@ -118,19 +118,40 @@ def test_unreachable_host_suppresses_every_dependent_rule(tmp_path):
     assert {"container_down", "heartbeat_stale", "disk_low"} <= evaluation.skipped
 
 
-def test_broken_ssh_with_live_push_is_reported_as_observer_path_failure(tmp_path):
-    """F13: наблюдатель обязан отличать смерть объекта от смерти пути наблюдения."""
+def test_broken_ssh_with_live_push_falls_back_to_push_data(tmp_path):
+    """F13: сломан путь опроса, но push несёт тот же снимок — наблюдение продолжается."""
     cfg = _cfg(push_secret="s3cret")
     state = _state(tmp_path)
-    obs = _observation(ssh_ok=False, ssh_error="Connection timed out", push={"received_at": NOW - 30})
+    down = _healthy_probe(
+        container={"found": True, "state": "exited", "health": "none", "exit_code": 137}
+    )
+    obs = _observation(
+        ssh_ok=False,
+        ssh_error="Connection timed out",
+        push={"received_at": NOW - 30, "payload": {"ts": NOW - 30, "probe": down}},
+    )
+    obs.pop("probe")
 
     evaluation = evaluate(obs, state, cfg, NOW)
 
-    assert "ssh_probe_failed" in evaluation.findings
+    # путь опроса — предупреждение, потому что данные всё ещё есть
+    assert evaluation.findings["ssh_probe_failed"].severity == "warn"
+    assert "push" in evaluation.findings["ssh_probe_failed"].detail
     assert "push_stale" not in evaluation.findings
-    finding = evaluation.findings["ssh_probe_failed"]
-    assert "приложение живо" in finding.title
-    assert "push продолжает приходить" in finding.detail
+    # и главное: реальная поломка из push-снимка не потерялась
+    assert evaluation.findings["container_down"].severity == "crit"
+
+
+def test_broken_ssh_without_push_is_critical_and_blinds_dependent_rules(tmp_path):
+    cfg = _cfg(push_secret="s3cret")
+    obs = _observation(ssh_ok=False, ssh_error="Connection timed out")
+    obs.pop("probe")
+
+    evaluation = evaluate(obs, _state(tmp_path), cfg, NOW)
+
+    assert evaluation.findings["ssh_probe_failed"].severity == "crit"
+    assert "container_down" in evaluation.skipped
+    assert "heartbeat_stale" in evaluation.skipped
 
 
 def test_missing_push_triggers_dead_man_switch(tmp_path):

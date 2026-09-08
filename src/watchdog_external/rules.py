@@ -287,36 +287,44 @@ def evaluate(
         skipped.update(host_rules | status_rules)
         return Evaluation(findings, skipped)
 
+    probe = obs.get("probe") or {}
+
     if not obs.get("ssh_ok", False):
+        # Пуш несёт тот же снимок состояния, поэтому при живом push мы не слепнем:
+        # опрос деградирует до резервного источника, а не до полного отсутствия данных.
         push_age = _push_age(obs, now)
-        alive = push_age is not None and push_age <= cfg.push_max_age_seconds
+        fresh = push_age is not None and push_age <= cfg.push_max_age_seconds
+        fallback = ((obs.get("push") or {}).get("payload") or {}).get("probe") or {}
+        usable = fresh and isinstance(fallback, dict) and not fallback.get("probe_failed")
+
         findings["ssh_probe_failed"] = Finding(
             rule="ssh_probe_failed",
             failure_class=F_OBSERVER_PATH,
-            severity=CRIT,
+            severity=WARN if usable else CRIT,
             title=(
-                "Сломан путь наблюдения, приложение живо" if alive
+                "Сломан путь опроса, данные идут через push" if usable
                 else "Не удаётся опросить production-хост"
             ),
             detail=(
                 (
                     f"SSH-проба не проходит ({obs.get('ssh_error', 'нет деталей')}), "
-                    f"но push продолжает приходить ({_minutes(push_age)} назад) — "
-                    "значит хост и bridge живы, сломан только канал опроса."
+                    f"но push приходит ({_minutes(push_age)} назад) — состояние bridge "
+                    "оцениваем по нему."
                 )
-                if alive
+                if usable
                 else f"SSH-проба не проходит: {obs.get('ssh_error', 'нет деталей')}."
             ),
             hint=(
                 "Проверь UFW/Cloud Firewall на 22 порт, fail2ban и sshd. "
-                "Пока путь сломан, watchdog видит хост только через push."
+                "Наблюдение продолжается через push, но резерва у него уже нет."
             ),
         )
-        skipped.update(host_rules - {"ssh_probe_failed"})
-        skipped.update(status_rules)
-        return Evaluation(findings, skipped)
 
-    probe = obs.get("probe") or {}
+        if not usable:
+            skipped.update(host_rules - {"ssh_probe_failed"})
+            skipped.update(status_rules)
+            return Evaluation(findings, skipped)
+        probe = fallback
 
     findings.update(_evaluate_container(probe, cfg))
     if "container_down" in findings:

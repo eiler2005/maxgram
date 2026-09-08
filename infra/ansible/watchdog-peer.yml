@@ -2,7 +2,11 @@
 # Агент production-хоста для внешнего watchdog (docs/runbooks/watchdog.md).
 #
 # Запуск:
-#   ansible-playbook watchdog-peer.yml -e watchdog_peer_pubkey="$(cat ~/.ssh/watchdog_key.pub)"
+#   ansible-playbook watchdog-peer.yml \
+#     -e "{\"watchdog_peer_pubkey\": \"$(cat ~/.ssh/watchdog_key.pub)\"}"
+#
+# Именно JSON-форма: при -e key=value ansible режет значение по первому пробелу,
+# и в authorized_keys уедет обрезанный ключ.
 #
 # Роль ставит read-only пробу и push-таймер. Она не перезапускает bridge и не
 # трогает .env.secrets: BRIDGE_STATUS_TOKEN, WATCHDOG_PUSH_URL и

@@ -37,7 +37,8 @@ services:
       - ../config.yaml:/app/config.yaml:ro
       - ../config.local.yaml:/app/config.local.yaml:ro
     ports:
-      # Read-only status API для внешнего watchdog. Только loopback хоста:
-      # наружу он уходит исключительно через SSH-канал (docs/runbooks/watchdog.md).
-      # Публичного bind-а у bridge по-прежнему нет.
+      # Read-only status API для внешнего watchdog. Слева 127.0.0.1 — это и есть
+      # ограничение доступа: порт виден только с самого хоста, наружу уходит
+      # через SSH-канал (docs/runbooks/watchdog.md). Внутри контейнера сервер
+      # обязан слушать 0.0.0.0, иначе publish до него не достучится.
       - "127.0.0.1:18140:18140"

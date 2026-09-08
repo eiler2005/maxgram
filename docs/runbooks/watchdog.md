@@ -162,9 +162,14 @@ shell на production-хосте.
 **Где:** таймер `maxtg-watchdog-push.timer` на production-хосте → приёмник
 `:18151` внутри контейнера наблюдателя.
 
-Ценность не в данных (их же приносит L2), а в **направлении**. Когда путь
-наблюдатель → production ломается, push продолжает идти, и watchdog говорит не
-«bridge умер», а «сломан канал наблюдения, приложение живо».
+Ценность в **направлении**. Когда путь наблюдатель → production ломается, push
+продолжает идти, и watchdog говорит не «bridge умер», а «сломан канал опроса».
+
+Push несёт тот же снимок состояния, что и L2, поэтому он работает не только как
+сигнал жизни, но и как **резервный источник данных**: при сломанном опросе
+правила продолжают считаться по push-снимку, и `ssh_probe_failed` понижается до
+🟡 — мы всё ещё видим состояние bridge, просто без резерва. Если push тоже
+пропал, наблюдение слепнет, и это уже 🔴.
 
 Payload подписан HMAC-SHA256, защищён окном времени (±300 с) и проверкой на
 повтор. TLS не используется осознанно: секретов внутри нет, целостность даёт
@@ -194,7 +199,7 @@ Payload подписан HMAC-SHA256, защищён окном времени (
 | Правило | Класс | Срабатывает | Подряд | Severity | Действие |
 |---|---|---|---|---|---|
 | `host_unreachable` | F9 | нет TCP-ответа на SSH-порт | 2 | 🔴 | консоль провайдера: хост, сеть, firewall |
-| `ssh_probe_failed` | F13 | проба не отработала | 2 | 🔴 | UFW / Cloud Firewall / fail2ban / sshd. При живом push — bridge в порядке |
+| `ssh_probe_failed` | F13 | проба не отработала | 2 | 🟡/🔴 | UFW / Cloud Firewall / fail2ban / sshd. При живом push 🟡: данные идут через него. Без push 🔴: наблюдение слепое |
 | `container_down` | F8 | контейнера нет или `exited` | 1 | 🔴 | `docker compose --project-name deploy -f deploy/docker-compose.prod.yml up -d bridge` |
 | `container_unhealthy` | F2 | docker health `unhealthy` | 3 | 🟡 | смотреть логи; сам по себе не рестартует |
 | `heartbeat_stale` | F2 | heartbeat старше 180 с | 2 | 🔴 | ручной перезапуск контейнера |
@@ -308,12 +313,50 @@ WATCHDOG_DEPLOY_HOST=deploy@<observer_ip> ./deploy/external-watchdog/deploy.sh
 
 | Шаг | Где | Зачем |
 |---|---|---|
-| `/32` наблюдателя в allow на 22 порт | UFW **и** firewall провайдера production-хоста | иначе L2 не пройдёт |
-| `/32` production-хоста в allow на 18151 | UFW **и** firewall провайдера наблюдателя | иначе L3 не пройдёт |
+| `/32` наблюдателя в allow на 22 порт (**входящий**) | UFW **и** firewall провайдера production-хоста | иначе L2 не пройдёт |
+| Порт 18151 к `/32` наблюдателя (**исходящий**) | firewall провайдера production-хоста | иначе L3 не пройдёт |
+| `/32` production-хоста в allow на 18151 | UFW наблюдателя | принять push |
 | Разложить `.env.secrets` на обоих хостах | `scp` | секреты в репозиторий не попадают |
 | `WATCHDOG_PUSH_URL` и общий `WATCHDOG_PUSH_SECRET` | `.env.secrets` production-хоста | связывает L3 |
 
 Firewall провайдера и UFW — независимые контроли: правило нужно завести в обоих.
+
+> **Проверено на живом стенде.** У production-хоста Cloud Firewall провайдера
+> ограничивает не только входящий, но и **исходящий** трафик: наружу открыт
+> практически только `443/tcp`. Симптом — с production таймаутятся даже
+> `github.com:22` и `1.1.1.1:80`, при этом `https://api.telegram.org` работает.
+> UFW тут ни при чём (`Default: allow (outgoing)`), и по SSH это не чинится —
+> нужны правила в панели провайдера. Поэтому **оба** слоя, L2 и L3, требуют по
+> одному правилу в панели: входящее 22 с `/32` наблюдателя и исходящее 18151 к
+> `/32` наблюдателя.
+
+Диагностика в одну команду — она сразу показывает, какой слой упирается в firewall:
+
+```bash
+# с production-хоста
+python3 -c "
+import socket
+for host, port in [('<observer_ip>', 22), ('<observer_ip>', 18151), ('github.com', 443)]:
+    s = socket.socket(); s.settimeout(6)
+    try: s.connect((host, port)); print(host, port, 'OPEN')
+    except Exception as e: print(host, port, type(e).__name__)
+    finally: s.close()
+"
+```
+
+Пока правила не заведены, наблюдатель честно репортит `ssh_probe_failed` и
+`push_stale`. Чтобы не шуметь на известном ожидании, оба слоя можно поставить на
+паузу и включить после открытия firewall:
+
+```bash
+# пауза
+ssh deploy@<observer_ip> 'cd /opt/maxtg-watchdog && docker compose stop watchdog'
+ssh deploy@<prod_ip> 'sudo systemctl disable --now maxtg-watchdog-push.timer'
+
+# включение
+ssh deploy@<observer_ip> 'cd /opt/maxtg-watchdog && docker compose start watchdog'
+ssh deploy@<prod_ip> 'sudo systemctl enable --now maxtg-watchdog-push.timer'
+```
 
 ---
 

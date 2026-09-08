@@ -28,7 +28,9 @@ health:
 # через SSH-канал. Токен берётся из BRIDGE_STATUS_TOKEN в .env.secrets.
 status_api:
   enabled: true
-  host: "127.0.0.1"
+  # В контейнере слушаем 0.0.0.0; наружу порт публикуется только на
+  # 127.0.0.1 хоста (deploy/docker-compose.prod.yml).
+  host: "0.0.0.0"
   port: 18140
 
 max:
