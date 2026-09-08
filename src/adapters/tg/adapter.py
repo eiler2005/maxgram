@@ -818,11 +818,11 @@ class TelegramAdapter:
 
     async def _dispatch_callback_query(self, callback: CallbackQuery):
         data = callback.data or ""
-        action = next(
+        action_name = next(
             (a for a in self.KNOWN_CALLBACK_ACTIONS if data.startswith(f"{a}:")),
             None,
         )
-        if action is None:
+        if action_name is None:
             await callback.answer()
             return
         if not callback.from_user or callback.from_user.id != self._owner_id:
@@ -836,7 +836,7 @@ class TelegramAdapter:
         topic_id = getattr(message, "message_thread_id", None)
         tg_msg_id = getattr(message, "message_id", None)
         action = TelegramCallbackAction(
-            action=action,
+            action=action_name,
             action_id=action_id,
             user_id=callback.from_user.id,
             topic_id=topic_id,
@@ -851,7 +851,7 @@ class TelegramAdapter:
             direction="callback",
             stage="dispatch",
             outcome="accepted",
-            action=action,
+            action=action_name,
         )
         answer = "Действие не обработано"
         try:
@@ -866,7 +866,7 @@ class TelegramAdapter:
                 direction="callback",
                 stage="dispatch",
                 outcome="failed",
-                action=action,
+                action=action_name,
                 error_type=type(exc).__name__,
             )
             answer = "Ошибка при выполнении действия"

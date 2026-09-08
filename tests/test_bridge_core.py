@@ -5249,3 +5249,16 @@ def test_polling_allows_callback_updates():
     assert match, "не найден allowed_updates у start_polling"
     assert "callback_query" in match.group(1)
     assert "message" in match.group(1)
+
+
+def test_callback_log_records_action_name_not_the_dataclass():
+    """Переиспользование переменной однажды уже утащило в лог весь repr объекта."""
+    from pathlib import Path
+
+    source = Path("src/adapters/tg/adapter.py").read_text()
+    dispatch = source[source.index("async def _dispatch_callback_query"):]
+    dispatch = dispatch[: dispatch.index("async def _handle_command")]
+
+    # в логи уходит имя действия; сам объект туда попадать не должен
+    assert "action=action_name," in dispatch
+    assert "action=action," not in dispatch
