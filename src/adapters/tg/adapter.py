@@ -842,6 +842,17 @@ class TelegramAdapter:
             topic_id=topic_id,
             tg_msg_id=tg_msg_id,
         )
+        # Успешный callback тоже логируем: иначе «кнопка не сработала»
+        # неотличимо от «событие не доехало» — а это разные поломки.
+        log_event(
+            logger,
+            logging.INFO,
+            "tg.callback.received",
+            direction="callback",
+            stage="dispatch",
+            outcome="accepted",
+            action=action,
+        )
         answer = "Действие не обработано"
         try:
             for handler in self._callback_handlers:

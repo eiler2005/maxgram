@@ -157,12 +157,16 @@ def _handler_factory(cfg: WatchdogConfig, on_check=None):
                 return
             if self._authenticated_body() is None:
                 return
+            # Логируем и приход, и исход: если кнопка снова перестанет работать,
+            # по логам должно быть видно, дошёл ли запрос вообще.
+            logger.info("on-demand check requested")
             try:
                 ok = bool(on_check())
             except Exception as e:  # noqa: BLE001 — приёмник не имеет права падать
                 logger.exception("on-demand check failed: %s", e)
                 self._reply(500, '{"error":"check failed"}')
                 return
+            logger.info("on-demand check %s", "sent" if ok else "skipped: busy")
             self._reply(200 if ok else 409,
                         '{"status":"sent"}' if ok else '{"status":"busy"}')
 
