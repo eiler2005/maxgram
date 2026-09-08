@@ -19,6 +19,7 @@ from typing import Optional
 from .config import WatchdogConfig
 from .rules import (
     CRIT,
+    LAYER_FLOW,
     LAYER_NAMES,
     LAYER_PURPOSE,
     LayerReport,
@@ -65,8 +66,8 @@ def render_alert(finding: Finding, cfg: WatchdogConfig) -> str:
         "",
         f"{badge} <b>{clean(finding.title, 120)}</b>",
         f"Наблюдаемый хост: {clean(cfg.target_name, 60)}",
-        f"Слой: {clean(layer, 8)} {clean(LAYER_NAMES.get(layer, ''), 60)} — "
-        f"{clean(LAYER_PURPOSE.get(layer, ''), 60)}",
+        f"Слой: {clean(layer, 8)}  {clean(LAYER_FLOW.get(layer, ''), 70)}",
+        f"           {clean(LAYER_PURPOSE.get(layer, ''), 60)}",
         f"Класс отказа: {clean(finding.failure_class, 20)} · "
         f"<code>{clean(finding.rule, 40)}</code>",
         "",
@@ -128,9 +129,9 @@ def render_daily_summary(
         problems = by_layer.get(layer, [])
         mark = "⚠️" if problems else "✅"
         lines.append(
-            f"{mark} <b>{layer} {clean(LAYER_NAMES.get(layer, ''), 60)}</b> — "
-            f"{clean(LAYER_PURPOSE.get(layer, ''), 60)}"
+            f"{mark} <b>{layer}</b>  {clean(LAYER_FLOW.get(layer, ''), 70)}"
         )
+        lines.append(f"      что ловит: {clean(LAYER_PURPOSE.get(layer, ''), 60)}")
         lines.append(f"      итог: {clean(report.status, 90)}")
         if report.checked:
             lines.append(f"      проверено: {clean(report.checked, 200)}")

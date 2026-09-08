@@ -228,6 +228,21 @@ four report in the daily summary.
 | **L3** push dead-man's switch | did the observation path break | `maxtg-watchdog-push.timer` → observer `:18151` | 60 s | tells "the bridge is dead" apart from "the observation path is dead" |
 | **L4** meta-monitoring | is the observer itself alive | host monitor + mutual probes + daily summary | 5 min / 24 h | a dead observer |
 
+#### Direction of each check
+
+```
+L1:  observer ──HTTP──► bridge status API      (we ask what hurts inside)
+L2:  observer ──SSH──► production              (we ask whether container and host are alive)
+L3:  production ──HMAC POST──► observer        (production reports on its own)
+L4:  host monitor ──► observer container       (who watches the watchman)
+```
+
+The direction is not decoration. It says which end to fix: L1 and L2 are
+initiated by the observer, so anything on the observer → production path breaks
+them (firewall, sshd, fail2ban). L3 travels the other way, so it survives that
+path breaking — which is exactly how it tells "the bridge died" apart from "the
+polling path died".
+
 #### What an alert looks like
 
 ```

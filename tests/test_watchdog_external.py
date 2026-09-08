@@ -545,3 +545,38 @@ def test_daily_summary_shows_what_was_actually_checked():
 def test_daily_summary_accepts_plain_strings_for_backward_compatibility():
     text = render_daily_summary(_cfg(), [], {"L1": "отвечает"})
     assert "итог: отвечает" in text
+
+
+def test_every_layer_declares_the_direction_of_its_check():
+    """Стрелка показывает, кто кого спрашивает: из неё видно, какой конец чинить."""
+    from src.watchdog_external.rules import LAYER_FLOW, LAYER_NAMES
+
+    assert set(LAYER_FLOW) == set(LAYER_NAMES)
+    # L2 инициирует наблюдатель, L3 — наоборот, сам production
+    assert LAYER_FLOW["L2"].startswith("наблюдатель")
+    assert LAYER_FLOW["L3"].startswith("production")
+    assert all("──" in flow for flow in LAYER_FLOW.values())
+
+
+def test_summary_and_alert_both_show_the_direction():
+    from src.watchdog_external.rules import LayerReport
+
+    summary = render_daily_summary(_cfg(), [], {"L2": LayerReport("опрос проходит", "heartbeat 5 с")})
+    assert "наблюдатель ──SSH──► production" in summary
+    assert "production ──HMAC POST──► наблюдатель" in summary
+
+    alert = render_alert(
+        Finding(rule="container_down", failure_class="F8", severity="crit",
+                title="Контейнер bridge не работает", detail="exited", hint="up -d"),
+        _cfg(),
+    )
+    assert "наблюдатель ──SSH──► production" in alert
+
+
+def test_meta_layer_reports_only_changing_facts():
+    """Постоянное описание механизма ушло в стрелку — в статусе только цифры."""
+    from src.watchdog_external.__main__ import layer_status
+
+    st = layer_status(_cfg(), {"reachable": True, "ssh_ok": True, "probe": {}}, NOW, NOW - 11)
+    assert "предыдущий прогон 11 с назад" in st["L4"].checked
+    assert "host-мониторинг" not in st["L4"].checked  # это теперь в стрелке

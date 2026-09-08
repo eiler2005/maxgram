@@ -64,7 +64,12 @@ def _touch_heartbeat(cfg: WatchdogConfig) -> None:
         logger.warning("could not write watchdog heartbeat: %s", e)
 
 
-def layer_status(cfg: WatchdogConfig, observation: dict, now: int) -> dict[str, LayerReport]:
+def layer_status(
+    cfg: WatchdogConfig,
+    observation: dict,
+    now: int,
+    last_run_at: int = 0,
+) -> dict[str, LayerReport]:
     """Отчёт каждого слоя: вердикт плюс факты, на которых он основан.
 
     Одного вердикта мало: «отвечает» не показывает, что именно система смотрела,
@@ -127,10 +132,11 @@ def layer_status(cfg: WatchdogConfig, observation: dict, now: int) -> dict[str, 
         )
 
     # --- L4: жив ли сам наблюдатель ---
+    # Только меняющееся: постоянное описание механизма ушло в стрелку и runbook.
+    seen = f" · предыдущий прогон {now - last_run_at} с назад" if last_run_at else ""
     l4 = LayerReport(
         "цикл проверок работает",
-        f"опрос раз в {cfg.poll_interval_seconds} с · само это сообщение и есть доказательство · "
-        "пропажу контейнера наблюдателя видит host-мониторинг его хоста",
+        f"опрос раз в {cfg.poll_interval_seconds} с{seen}",
     )
     return {"L1": l1, "L2": l2, "L3": l3, "L4": l4}
 
@@ -169,7 +175,10 @@ def run_once(cfg: WatchdogConfig, state: WatchdogState, *, with_status: bool) ->
         logger.info("all checks passed (status polled: %s)", with_status)
 
     dispatch(cfg, state, alerts=decision.alerts, recoveries=decision.recoveries, now=now)
-    _maybe_daily_summary(cfg, state, now, layer_status(cfg, observation, now))
+    _maybe_daily_summary(
+        cfg, state, now,
+        layer_status(cfg, observation, now, int(state.get("last_run_at") or 0)),
+    )
     state.set("last_run_at", now)
     state.save()
     _touch_heartbeat(cfg)
