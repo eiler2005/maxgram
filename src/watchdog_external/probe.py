@@ -65,8 +65,11 @@ def ssh_probe(cfg: WatchdogConfig, *, with_status: bool) -> tuple[Optional[dict[
         return None, e.__class__.__name__
 
     if result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", "replace").strip().splitlines()
-        return None, (stderr[-1][:200] if stderr else f"exit code {result.returncode}")
+        # Берём последнюю содержательную строку stderr и схлопываем пробелы:
+        # ssh умеет отвечать многострочным usage, и он не должен уезжать в алерт.
+        lines = [" ".join(l.split()) for l in result.stderr.decode("utf-8", "replace").splitlines()]
+        lines = [l for l in lines if l]
+        return None, (lines[-1][:200] if lines else f"exit code {result.returncode}")
 
     raw = result.stdout.decode("utf-8", "replace").strip()
     try:

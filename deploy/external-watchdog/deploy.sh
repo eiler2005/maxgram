@@ -74,7 +74,11 @@ run_remote "cd ${REMOTE_DIR} && docker compose build --quiet && docker compose u
 
 echo "==> Проверка"
 run_remote "cd ${REMOTE_DIR} && docker compose ps"
-run_remote "cd ${REMOTE_DIR} && docker compose exec -T watchdog python -m src.watchdog_external --once || true"
+# Намеренно НЕ запускаем здесь второй прогон: параллельная оценка состояния
+# рядом с работающим циклом присылает вторую копию каждого сообщения.
+# Достаточно посмотреть, что цикл в контейнере отработал.
+sleep 8
+run_remote "cd ${REMOTE_DIR} && docker compose logs --tail 6 watchdog"
 
 BUILD_SHA="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 run_remote "echo ${BUILD_SHA} > ${REMOTE_DIR}/BUILD_INFO"

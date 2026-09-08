@@ -42,6 +42,42 @@ F_QUEUES = "F16"
 CRIT = "crit"
 WARN = "warn"
 
+#: Человекочитаемые названия правил. Нужны там, где сообщение адресовано человеку
+#: (recovery, сводка): "container_down" ничего не говорит, "Контейнер bridge" — говорит.
+RULE_TITLES = {
+    "host_unreachable": "Production-хост",
+    "ssh_probe_failed": "Путь опроса production-хоста",
+    "container_down": "Контейнер bridge",
+    "container_unhealthy": "Docker healthcheck контейнера",
+    "heartbeat_stale": "Heartbeat bridge",
+    "restart_storm": "Перезапуски контейнера",
+    "disk_low": "Свободное место на production-хосте",
+    "status_api_unreachable": "Status API bridge",
+    "overall_degraded": "Общее состояние bridge",
+    "subsystem_issue": "Подсистемы bridge",
+    "alert_outbox_backlog": "Доставка алертов bridge",
+    "queue_backlog": "Очереди доставки",
+    "egress_mode_unexpected": "Режим MAX egress",
+    "push_stale": "Push-сигналы с production-хоста",
+}
+
+
+def rule_title(rule: str) -> str:
+    return RULE_TITLES.get(rule, rule)
+
+
+def humanize_duration(seconds: int | None) -> str:
+    if not seconds or seconds < 0:
+        return "меньше минуты"
+    if seconds < 90:
+        return f"{int(seconds)} с"
+    minutes = int(seconds) // 60
+    if minutes < 90:
+        return f"{minutes} мин"
+    hours = minutes // 60
+    return f"{hours} ч {minutes % 60:02d} мин"
+
+
 #: Правила, для которых порог подряд идущих сбоев фиксирован.
 FAIL_AFTER = {
     "host_unreachable": 2,
@@ -75,9 +111,15 @@ class Evaluation(NamedTuple):
     skipped: set[str]
 
 
+class Recovery(NamedTuple):
+    rule: str
+    #: сколько проблема продержалась; 0 — если начало неизвестно
+    duration_seconds: int
+
+
 class Decision(NamedTuple):
     alerts: list[Finding]
-    recoveries: list[str]
+    recoveries: list[Recovery]
 
 
 def fail_after(rule: str, cfg: WatchdogConfig) -> int:
@@ -409,10 +451,15 @@ def evaluate(
     return Evaluation(findings, skipped)
 
 
-def decide(evaluation: Evaluation, state: WatchdogState, cfg: WatchdogConfig) -> Decision:
+def decide(
+    evaluation: Evaluation,
+    state: WatchdogState,
+    cfg: WatchdogConfig,
+    now: int = 0,
+) -> Decision:
     """Применяет гистерезис: превращает мгновенные срабатывания в алерты и recovery."""
     alerts: list[Finding] = []
-    recoveries: list[str] = []
+    recoveries: list[Recovery] = []
 
     known = set(FAIL_AFTER) | {"overall_degraded", "alert_outbox_backlog"}
     for rule in sorted(known):
@@ -424,13 +471,14 @@ def decide(evaluation: Evaluation, state: WatchdogState, cfg: WatchdogConfig) ->
             count = state.bump_fail(rule)
             if count >= fail_after(rule, cfg):
                 # Повторные срабатывания приглушает dedup TTL в notify.
-                state.set_alerting(rule, True)
+                state.set_alerting(rule, True, now=now)
                 alerts.append(finding)
             continue
 
         state.clear_fail(rule)
         if state.is_alerting(rule):
+            started = state.alert_started_at(rule)
             state.set_alerting(rule, False)
-            recoveries.append(rule)
+            recoveries.append(Recovery(rule, max(0, now - started) if started else 0))
 
     return Decision(alerts, recoveries)

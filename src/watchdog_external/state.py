@@ -51,12 +51,18 @@ class WatchdogState:
     def is_alerting(self, rule: str) -> bool:
         return bool(self._data.get("alerting", {}).get(rule))
 
-    def set_alerting(self, rule: str, value: bool) -> None:
+    def set_alerting(self, rule: str, value: bool, *, now: int | None = None) -> None:
         alerting = self._data.setdefault("alerting", {})
+        started = self._data.setdefault("alert_started_at", {})
         if value:
             alerting[rule] = True
+            started.setdefault(rule, int(now or 0))
         else:
             alerting.pop(rule, None)
+            started.pop(rule, None)
+
+    def alert_started_at(self, rule: str) -> int:
+        return int(self._data.get("alert_started_at", {}).get(rule, 0))
 
     def active_alerts(self) -> list[str]:
         return sorted(self._data.get("alerting", {}))

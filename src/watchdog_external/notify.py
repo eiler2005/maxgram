@@ -17,7 +17,7 @@ import urllib.request
 from typing import Optional
 
 from .config import WatchdogConfig
-from .rules import CRIT, Finding
+from .rules import CRIT, Finding, Recovery, humanize_duration, rule_title
 from .state import WatchdogState
 
 logger = logging.getLogger("watchdog.notify")
@@ -28,42 +28,61 @@ MAX_MESSAGE_CHARS = 3800
 SEVERITY_BADGE = {"crit": "🔴", "warn": "🟡", "info": "🔵"}
 
 
+def clean(text: str, limit: int = 300) -> str:
+    """Схлопывает пробелы и режет длину.
+
+    Тексты ошибок приходят из stderr чужих утилит: там бывают табы, переводы
+    строк и куски usage. В сообщении оператору это выглядит как мусор, поэтому
+    нормализуем перед вставкой.
+    """
+    collapsed = " ".join(str(text or "").split())
+    if len(collapsed) > limit:
+        collapsed = collapsed[: limit - 1].rstrip() + "…"
+    return html.escape(collapsed)
+
+
 def render_alert(finding: Finding, cfg: WatchdogConfig) -> str:
     badge = SEVERITY_BADGE.get(finding.severity, "🟡")
     lines = [
-        f"{badge} <b>[EXT] {html.escape(finding.title)}</b>",
-        f"Наблюдаемый хост: {html.escape(cfg.target_name)} (проверка с внешнего VPS)",
-        f"Класс отказа: {html.escape(finding.failure_class)} · правило "
-        f"<code>{html.escape(finding.rule)}</code>",
+        f"{badge} <b>[EXT] {clean(finding.title, 120)}</b>",
+        f"Хост: {clean(cfg.target_name, 60)} · проверка с внешнего VPS",
+        f"Класс отказа: {clean(finding.failure_class, 20)} · "
+        f"<code>{clean(finding.rule, 40)}</code>",
         "",
-        f"<b>Что сломано:</b> {html.escape(finding.detail)}",
-        f"<b>Что делать:</b> {html.escape(finding.hint)}",
+        f"<b>Что произошло:</b> {clean(finding.detail, 400)}",
+        f"<b>Что делать:</b> {clean(finding.hint, 400)}",
     ]
     return "\n".join(lines)[:MAX_MESSAGE_CHARS]
 
 
-def render_recovery(rule: str, cfg: WatchdogConfig) -> str:
-    return "\n".join(
-        [
-            f"✅ <b>[EXT] Восстановлено: {html.escape(rule)}</b>",
-            f"Наблюдаемый хост: {html.escape(cfg.target_name)}",
-            "Проверка снова проходит.",
-        ]
-    )[:MAX_MESSAGE_CHARS]
+def render_recovery(recovery: Recovery, cfg: WatchdogConfig) -> str:
+    lines = [
+        f"✅ <b>[EXT] Норма: {clean(rule_title(recovery.rule), 120)}</b>",
+        f"Хост: {clean(cfg.target_name, 60)} · <code>{clean(recovery.rule, 40)}</code>",
+        "",
+    ]
+    if recovery.duration_seconds:
+        lines.append(
+            f"Проверка снова проходит. Проблема длилась "
+            f"{clean(humanize_duration(recovery.duration_seconds), 40)}."
+        )
+    else:
+        lines.append("Проверка снова проходит.")
+    return "\n".join(lines)[:MAX_MESSAGE_CHARS]
 
 
 def render_daily_summary(cfg: WatchdogConfig, active: list[str]) -> str:
+    lines = [
+        "🔵 <b>[EXT] Внешний watchdog на связи</b>",
+        f"Хост под наблюдением: {clean(cfg.target_name, 60)}",
+        "",
+    ]
     if active:
-        body = "Открытые проблемы: " + ", ".join(html.escape(rule) for rule in active) + "."
+        lines.append("<b>Открытые проблемы:</b>")
+        lines += [f"• {clean(rule_title(rule), 120)} (<code>{clean(rule, 40)}</code>)" for rule in active]
     else:
-        body = "Открытых проблем нет."
-    return "\n".join(
-        [
-            "🔵 <b>[EXT] Внешний watchdog жив</b>",
-            f"Наблюдаемый хост: {html.escape(cfg.target_name)}",
-            body,
-        ]
-    )
+        lines.append("Открытых проблем нет, все проверки проходят.")
+    return "\n".join(lines)[:MAX_MESSAGE_CHARS]
 
 
 def send_telegram(cfg: WatchdogConfig, text: str, *, silent: bool = False) -> bool:
@@ -104,16 +123,22 @@ def dispatch(
     state: WatchdogState,
     *,
     alerts: list[Finding],
-    recoveries: list[str],
+    recoveries: list[Recovery],
     now: Optional[int] = None,
 ) -> int:
     """Отправляет алерты с dedup и recovery без dedup. Возвращает число сообщений."""
     moment = int(now if now is not None else time.time())
     sent = 0
 
-    for rule in recoveries:
-        if send_telegram(cfg, render_recovery(rule, cfg), silent=True):
-            state.mark_sent(f"recovery:{rule}", moment)
+    for recovery in recoveries:
+        # Recovery отправляется без dedup, но не дважды подряд: повтор в пределах
+        # одного цикла опроса означает гонку двух процессов, а не второе событие.
+        key = f"recovery:{recovery.rule}"
+        if moment - state.last_sent_at(key) < max(30, cfg.poll_interval_seconds):
+            logger.info("recovery %s уже отправлен только что — пропускаю", recovery.rule)
+            continue
+        if send_telegram(cfg, render_recovery(recovery, cfg), silent=True):
+            state.mark_sent(key, moment)
             sent += 1
 
     for finding in alerts:

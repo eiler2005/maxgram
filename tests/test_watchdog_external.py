@@ -7,9 +7,9 @@ import time
 import pytest
 
 from src.watchdog_external.config import TelegramTarget, WatchdogConfig
-from src.watchdog_external.notify import render_alert, render_recovery
+from src.watchdog_external.notify import clean, render_alert, render_daily_summary, render_recovery
 from src.watchdog_external.receiver import sign, verify
-from src.watchdog_external.rules import decide, evaluate
+from src.watchdog_external.rules import Recovery, decide, evaluate, humanize_duration, rule_title
 from src.watchdog_external.state import WatchdogState
 
 NOW = int(time.time())
@@ -75,19 +75,19 @@ def test_alert_needs_consecutive_failures_then_recovers(tmp_path):
     state = _state(tmp_path)
     probe = _healthy_probe(heartbeat={"present": True, "ts": NOW - 900, "age_seconds": 900})
 
-    first = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg)
+    first = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg, NOW)
     assert first.alerts == []
 
-    second = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg)
+    second = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg, NOW)
     assert [f.rule for f in second.alerts] == ["heartbeat_stale"]
     assert second.alerts[0].failure_class == "F2"
 
-    healed = decide(evaluate(_observation(), state, cfg, NOW), state, cfg)
-    assert healed.recoveries == ["heartbeat_stale"]
+    healed = decide(evaluate(_observation(), state, cfg, NOW), state, cfg, NOW)
+    assert [r.rule for r in healed.recoveries] == ["heartbeat_stale"]
     assert healed.alerts == []
 
     # recovery отправляется ровно один раз
-    again = decide(evaluate(_observation(), state, cfg, NOW), state, cfg)
+    again = decide(evaluate(_observation(), state, cfg, NOW), state, cfg, NOW)
     assert again.recoveries == []
 
 
@@ -245,14 +245,14 @@ def test_alert_text_carries_class_and_action_without_private_data(tmp_path):
     probe = _healthy_probe(
         container={"found": True, "state": "exited", "health": "none", "exit_code": 0}
     )
-    finding = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg).alerts[0]
+    finding = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg, NOW).alerts[0]
 
     text = render_alert(finding, cfg)
     assert "[EXT]" in text
     assert "F8" in text
     assert "container_down" in text
     assert "up -d bridge" in text
-    assert "[EXT]" in render_recovery("container_down", cfg)
+    assert "[EXT]" in render_recovery(Recovery("container_down", 240), cfg)
 
 
 def test_push_signature_round_trip():
@@ -306,3 +306,48 @@ def test_telegram_targets_include_owner_and_ops_topic():
 
     assert cfg.telegram_configured is True
     assert [t.label for t in cfg.targets] == ["owner_dm", "ops_topic"]
+
+
+def test_recovery_message_is_human_readable_and_reports_duration():
+    """Оператору нужно название проблемы и сколько она длилась, а не имя правила."""
+    text = render_recovery(Recovery("container_down", 245), _cfg())
+
+    assert "Контейнер bridge" in text          # человекочитаемое название
+    assert "container_down" in text            # техническое имя тоже остаётся
+    assert "4 мин" in text
+    assert "Восстановлено: container_down" not in text
+
+
+def test_alert_text_collapses_noisy_error_output():
+    """stderr чужих утилит не должен уезжать в сообщение многострочным мусором."""
+    noisy = "usage: ssh [-46AA]\n\t\t [-Q query_option]\n   [-b bind]"
+
+    assert clean(noisy) == "usage: ssh [-46AA] [-Q query_option] [-b bind]"
+    assert clean("x" * 500, 100).endswith("…")
+    assert len(clean("x" * 500, 100)) == 100
+
+
+def test_daily_summary_lists_open_problems_by_name():
+    empty = render_daily_summary(_cfg(), [])
+    assert "Открытых проблем нет" in empty
+
+    busy = render_daily_summary(_cfg(), ["container_down", "disk_low"])
+    assert "Контейнер bridge" in busy
+    assert "Свободное место" in busy
+
+
+def test_duration_humanizer_covers_ranges():
+    assert humanize_duration(0) == "меньше минуты"
+    assert humanize_duration(45) == "45 с"
+    assert humanize_duration(600) == "10 мин"
+    assert humanize_duration(7800) == "2 ч 10 мин"
+
+
+def test_rule_titles_exist_for_every_rule():
+    """Иначе в recovery снова уедет техническое имя правила."""
+    from src.watchdog_external.rules import FAIL_AFTER, RULE_TITLES
+
+    known = set(FAIL_AFTER) | {"overall_degraded", "alert_outbox_backlog"}
+    assert known <= set(RULE_TITLES), known - set(RULE_TITLES)
+    for rule in known:
+        assert rule_title(rule) != rule

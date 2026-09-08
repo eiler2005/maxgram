@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fcntl
 import logging
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import receiver
@@ -19,6 +21,29 @@ from .state import WatchdogState
 logger = logging.getLogger("watchdog")
 
 HEARTBEAT_FILE = "watchdog_heartbeat"
+LOCK_FILE = "watchdog.lock"
+
+
+@contextmanager
+def single_run(cfg: WatchdogConfig):
+    """Не даёт двум процессам оценивать состояние одновременно.
+
+    Иначе `--once` рядом с работающим циклом присылает вторую копию каждого
+    сообщения: оба процесса независимо видят переход и оба его отправляют.
+    """
+    path = Path(cfg.state_path).parent / LOCK_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "w", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            logger.warning("другой процесс watchdog уже выполняет проверку — пропускаю цикл")
+            yield False
+            return
+        yield True
+    finally:
+        handle.close()
 
 
 def _setup_logging() -> None:
@@ -57,12 +82,12 @@ def run_once(cfg: WatchdogConfig, state: WatchdogState, *, with_status: bool) ->
     now = int(time.time())
     observation = collect(cfg, with_status=with_status, push=receiver.read_push(cfg))
     evaluation = evaluate(observation, state, cfg, now)
-    decision = decide(evaluation, state, cfg)
+    decision = decide(evaluation, state, cfg, now)
 
     for finding in decision.alerts:
         logger.warning("[%s] %s — %s", finding.severity, finding.rule, finding.detail)
-    for rule in decision.recoveries:
-        logger.info("recovered: %s", rule)
+    for recovery in decision.recoveries:
+        logger.info("recovered: %s (длилось %ss)", recovery.rule, recovery.duration_seconds)
     if not decision.alerts and not decision.recoveries:
         logger.info("all checks passed (status polled: %s)", with_status)
 
@@ -82,9 +107,11 @@ def run_loop(cfg: WatchdogConfig, state: WatchdogState) -> int:
         now = int(time.time())
         with_status = (now - last_status_poll) >= cfg.status_interval_seconds
         try:
-            run_once(cfg, state, with_status=with_status)
-            if with_status:
-                last_status_poll = now
+            with single_run(cfg) as acquired:
+                if acquired:
+                    run_once(cfg, state, with_status=with_status)
+                    if with_status:
+                        last_status_poll = now
         except Exception as e:  # noqa: BLE001 — наблюдатель не имеет права падать
             logger.exception("watchdog cycle failed: %s", e)
         time.sleep(max(10, cfg.poll_interval_seconds))
@@ -119,7 +146,10 @@ def main(argv: list[str] | None = None) -> int:
 
     state = WatchdogState(cfg.state_path)
     if args.once:
-        return run_once(cfg, state, with_status=True)
+        with single_run(cfg) as acquired:
+            if not acquired:
+                return 0
+            return run_once(cfg, state, with_status=True)
     return run_loop(cfg, state)
 
 

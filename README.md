@@ -63,6 +63,8 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 - **Ansible-driven ops** — regular deploy, backup, recovery, fresh-VM bootstrap, and hardening are all codified as idempotent playbooks under `infra/ansible/`; the documented emergency fallback is backup-first and commit-pinned, while secrets and state remain server-only
 - **Supervisor runtime shell** — PID1 inside the bridge container on the Hetzner production VPS keeps the container `Up`, restarts the bridge worker with backoff, and persists health state even when MAX/TG integration degrades
 - **Resilient delivery** — Telegram API calls retry with exponential backoff; definite unsent TG→MAX text failures and retryable MAX→TG text delivery failures are queued with lease/backoff/TTL; failed outbound deliveries are written to SQLite with attempt counts; the MAX watchdog in that same container alerts on offline > 60s; video recovery makes six deferred attempts over 18 minutes while voice/photo stable-reference recovery keeps its existing backoff policy; `/status` gives live health snapshot on demand
+- **External watchdog on a second VPS** — an observer outside the bridge's failure domain covers the three classes nothing inside can report: a stopped container, a dead host, and the bridge's own Telegram alerting being broken. It only reports: its SSH key is pinned to a read-only probe, so recovery stays a human action. Rules carry hysteresis, cascade suppression and one-shot recovery notices; each names the failure class it covers ([runbook](docs/runbooks/watchdog.md))
+- **Read-only status API** — `GET /healthz` and token-gated `GET /status` on loopback expose subsystem issue codes, queue depth, alert outbox size and active MAX egress, without message text, chat titles or exception causes
 - **Persistent health model** — `health_state.json`, `health_events.jsonl`, `alert_outbox.jsonl`, and `health_heartbeat.json` make degraded-vs-dead runtime states explicit
 - **Prometheus textfile metrics** — health, durable retry queues, delivery totals, worker restarts, and alert outbox depth are exported to `data/maxtg_bridge.prom` by default
 - **Account migration recovery registry** — hybrid MAX account snapshots preserve Telegram topic routing, invite/admin metadata, DM partner ids, DM contact snapshots from real dialogs only, and snapshot freshness for guided recovery after a phone/account loss
@@ -281,8 +283,10 @@ maxgram/
 │   ├── config/loader.py
 │   ├── runtime/
 │   │   ├── health/           ← persisted health snapshot/events/outbox/heartbeat
+│   │   ├── status_api.py     ← read-only loopback status API for the observer
 │   │   ├── supervisor.py     ← worker restart loop + alert integration
 │   │   └── healthcheck.py    ← Docker healthcheck entry point
+│   ├── watchdog_external/    ← external watchdog (stdlib only, second VPS)
 │   └── db/
 │       ├── models.py          ← SQLite schema: bindings, messages, health/retry, recovery registry
 │       ├── repository.py      ← public facade
@@ -291,13 +295,14 @@ maxgram/
 ├── docs/
 │   ├── architecture.md
 │   ├── roadmap.md
-│   ├── decisions/             ← ADR-001…006
-│   └── runbooks/
+│   ├── decisions/             ← ADR-001…012
+│   └── runbooks/              ← operations, deployment, watchdog
 │
 ├── deploy/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
-│   └── docker-compose.prod.yml
+│   ├── docker-compose.prod.yml
+│   └── external-watchdog/     ← observer stack: Dockerfile, compose, deploy.sh
 │
 ├── infra/
 │   └── ansible/               ← deploy / backup / recover / bootstrap / hardening

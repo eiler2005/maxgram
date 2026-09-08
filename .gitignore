@@ -11,6 +11,8 @@ deploy/server.local.md
 # External watchdog: приватный ключ наблюдателя и его локальные deploy-настройки
 deploy/external-watchdog/secrets/
 deploy/external-watchdog/.deploy.env
+# Полный снимок конфигурации с реальными адресами — только локально
+deploy/external-watchdog/CONFIGURATION.local.md
 
 # Ansible — реальный inventory с IP сервера, lab inventory, локальные бэкапы
 infra/ansible/inventory/production.ini
