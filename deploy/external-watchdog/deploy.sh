@@ -80,8 +80,14 @@ run_remote "cd ${REMOTE_DIR} && docker compose ps"
 sleep 8
 run_remote "cd ${REMOTE_DIR} && docker compose logs --tail 6 watchdog"
 
+# BUILD_INFO должен отвечать на вопрос "что здесь развёрнуто" честно.
+# При деплое незакоммиченной работы sha сам по себе врёт: код на сервере уже
+# другой. Помечаем такие сборки суффиксом -dirty и пишем время деплоя.
 BUILD_SHA="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-run_remote "echo ${BUILD_SHA} > ${REMOTE_DIR}/BUILD_INFO"
+if ! git -C "${REPO_ROOT}" diff --quiet HEAD -- "${REPO_ROOT}/src/watchdog_external" 2>/dev/null; then
+  BUILD_SHA="${BUILD_SHA}-dirty"
+fi
+run_remote "printf '%s\n%s\n' '${BUILD_SHA}' 'deployed: $(date -u '+%Y-%m-%dT%H:%M:%SZ')' > ${REMOTE_DIR}/BUILD_INFO"
 
 echo "==> Готово. Тест доставки в Telegram:"
 echo "    ssh ${WATCHDOG_DEPLOY_HOST} 'cd ${REMOTE_DIR} && docker compose exec -T watchdog python -m src.watchdog_external --test-alert'"
