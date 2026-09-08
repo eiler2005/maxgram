@@ -231,10 +231,11 @@ four report in the daily summary.
 #### Direction of each check
 
 ```
-L1:  observer ──HTTP──► bridge status API      (we ask what hurts inside)
-L2:  observer ──SSH──► production              (we ask whether container and host are alive)
-L3:  production ──HMAC POST──► observer        (production reports on its own)
-L4:  host monitor ──► observer container       (who watches the watchman)
+L0:  inside the bridge container                 (supervisor, MAX watchdog, HEALTHCHECK)
+L1:  EXTERNAL observer ──HTTP──► INTERNAL bridge status API
+L2:  EXTERNAL observer ──SSH──► production host
+L3:  production host ──HMAC POST──► EXTERNAL observer
+L4:  host monitor (neighbour on that host) ──► observer container
 ```
 
 The direction is not decoration. It says which end to fix: L1 and L2 are
@@ -242,6 +243,10 @@ initiated by the observer, so anything on the observer → production path break
 them (firewall, sshd, fail2ban). L3 travels the other way, so it survives that
 path breaking — which is exactly how it tells "the bridge died" apart from "the
 polling path died".
+
+L0 never appears in the daily summary: it lives inside the container and reports
+on itself under the `🌉 BRIDGE` header. When the container is dead, L0 is silent
+— which is the entire reason L2 and L3 exist.
 
 #### What an alert looks like
 

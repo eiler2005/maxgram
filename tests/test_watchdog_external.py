@@ -553,8 +553,8 @@ def test_every_layer_declares_the_direction_of_its_check():
 
     assert set(LAYER_FLOW) == set(LAYER_NAMES)
     # L2 инициирует наблюдатель, L3 — наоборот, сам production
-    assert LAYER_FLOW["L2"].startswith("наблюдатель")
-    assert LAYER_FLOW["L3"].startswith("production")
+    assert LAYER_FLOW["L2"].startswith("ВНЕШНИЙ наблюдатель")
+    assert LAYER_FLOW["L3"].startswith("production-хост")
     assert all("──" in flow for flow in LAYER_FLOW.values())
 
 
@@ -562,15 +562,15 @@ def test_summary_and_alert_both_show_the_direction():
     from src.watchdog_external.rules import LayerReport
 
     summary = render_daily_summary(_cfg(), [], {"L2": LayerReport("опрос проходит", "heartbeat 5 с")})
-    assert "наблюдатель ──SSH──► production" in summary
-    assert "production ──HMAC POST──► наблюдатель" in summary
+    assert "ВНЕШНИЙ наблюдатель ──SSH──► production-хост" in summary
+    assert "production-хост ──HMAC POST──► ВНЕШНИЙ наблюдатель" in summary
 
     alert = render_alert(
         Finding(rule="container_down", failure_class="F8", severity="crit",
                 title="Контейнер bridge не работает", detail="exited", hint="up -d"),
         _cfg(),
     )
-    assert "наблюдатель ──SSH──► production" in alert
+    assert "ВНЕШНИЙ наблюдатель ──SSH──► production-хост" in alert
 
 
 def test_meta_layer_reports_only_changing_facts():
@@ -580,3 +580,18 @@ def test_meta_layer_reports_only_changing_facts():
     st = layer_status(_cfg(), {"reachable": True, "ssh_ok": True, "probe": {}}, NOW, NOW - 11)
     assert "предыдущий прогон 11 с назад" in st["L4"].checked
     assert "host-мониторинг" not in st["L4"].checked  # это теперь в стрелке
+
+
+def test_summary_explains_why_internal_layer_is_absent():
+    """L0 не в сводке, потому что он внутри контейнера — иначе это выглядит как пропуск."""
+    text = render_daily_summary(_cfg(), [], {})
+    assert "L0" in text
+    assert "🌉 BRIDGE" in text
+
+
+def test_flow_names_both_sides_so_the_observer_is_unambiguous():
+    from src.watchdog_external.rules import LAYER_FLOW
+
+    assert "ВНЕШНИЙ" in LAYER_FLOW["L1"] and "ВНУТРЕННИЙ" in LAYER_FLOW["L1"]
+    assert all("ВНЕШНИЙ" in LAYER_FLOW[l] for l in ("L1", "L2", "L3"))
+    assert "сосед по хосту" in LAYER_FLOW["L4"]

@@ -142,6 +142,13 @@ def render_daily_summary(
             )
 
     lines.append("")
+    # L0 сюда не попадает не по забывчивости: он внутри контейнера и о себе
+    # рассказывает сам. Без этой строки его отсутствие выглядит как пропуск.
+    lines.append(
+        "<i>L0 (supervisor, MAX watchdog, HEALTHCHECK) живёт внутри контейнера "
+        "и пишет сам — сообщениями с шапкой 🌉 BRIDGE.</i>"
+    )
+    lines.append("")
     if active:
         lines.append(
             f"<b>Открытых проблем: {len(active)}</b> — они отмечены ⚠️ выше. "
