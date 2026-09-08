@@ -7,7 +7,7 @@ All notable changes to Maxgram are documented here.
 ## Unreleased
 
 ### Added
-- **External watchdog on a second VPS** — an observer container now watches the bridge from outside its failure domain and reports to owner DM and the ops topic with an `[EXT]` prefix. It covers the three classes nothing could observe before: a stopped container (`restart: always` does not apply to an explicit stop), a dead host, and a broken Telegram alert path of the bridge itself. Rules use hysteresis, cascade suppression, a dedup window and one-shot recovery notices; each rule names the failure class it covers. The observer only reports — its SSH key is pinned to a read-only probe.
+- **External watchdog on a second VPS** — an observer container now watches the bridge from outside its failure domain and reports to owner DM and the ops topic under a header naming the source, so an external alert is never confused with one the bridge sent about itself. It covers the three classes nothing could observe before: a stopped container (`restart: always` does not apply to an explicit stop), a dead host, and a broken Telegram alert path of the bridge itself. Rules use hysteresis, cascade suppression, a dedup window and one-shot recovery notices; each rule names the failure class it covers. The observer only reports — its SSH key is pinned to a read-only probe. Every alert names the observation layer that caught it and the command to start from, and a daily summary reports all four layers with open problems filed under the layer that found them.
 - **Read-only status API** — `GET /healthz` and token-authenticated `GET /status` on `127.0.0.1:18140`, exposing health snapshot, subsystem issue codes, queue depth, alert outbox size and the active MAX egress. Loopback only, so the bridge still opens no public port; message text, chat titles and exception `raw_cause` are excluded by construction.
 - **Watchdog runbook and ADR-012** — `docs/runbooks/watchdog.md` documents the full failure model (F1–F16), the four observation layers, the alert-to-action table, thresholds, setup and quarterly drills.
 - **Encrypted MAX media recovery cache** — failed/unsupported MAX attachments now keep metadata-only stable refs plus Fernet-encrypted volatile payload hints for a short TTL (default 48h). The media retry worker can replay cache-only failures and cleanup purges expired rows automatically.
@@ -87,11 +87,11 @@ All notable changes to Maxgram are documented here.
 ## [1.1.7] — 2026-04-24
 
 ### Added
-- **Ansible automation для prod-операций** — `infra/ansible/` с пятью playbook'ами (`deploy`, `backup`, `recover`, `bootstrap`, `hardening`), повторяющими ручной runbook без отклонений: rsync релиз-бандла, `docker compose build/up -d` без `down`, polling Docker healthcheck до `healthy`, smoke check по `bridge.db`. `bootstrap`/`hardening` — только для новых VM, текущий prod не трогается. Inventory с реальным IP — в `.gitignore`. Quickstart — в `infra/ansible/README.md`.
+- **Ansible automation for production operations** — `infra/ansible/` with five playbooks (`deploy`, `backup`, `recover`, `bootstrap`, `hardening`) that reproduce the manual runbook without deviation: rsync of the release bundle, `docker compose build/up -d` without `down`, polling the Docker healthcheck until `healthy`, and a smoke check against `bridge.db`. `bootstrap`/`hardening` are for fresh VMs only and never touch the current production host. The inventory holding the real IP stays in `.gitignore`. Quickstart lives in `infra/ansible/README.md`.
 
 ### Changed
-- Раздел "Запуск через Ansible" добавлен в `docs/runbooks/operations.md`; `infra/ansible/` упомянут в карте файлов `CLAUDE.md`.
-- `deploy.yml --check --diff` теперь явно документирован как preflight verify текущего состояния без `docker compose build/up`, чтобы dry-run semantics не обещали несуществующую симуляцию контейнерного rollout.
+- An "Ansible deployment" section was added to `docs/runbooks/operations.md`, and `infra/ansible/` is listed in the file map in `CLAUDE.md`.
+- `deploy.yml --check --diff` is now explicitly documented as a preflight verification of current state that does not run `docker compose build/up`, so the dry-run semantics stop implying a container rollout simulation that does not exist.
 
 ---
 

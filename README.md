@@ -231,23 +231,38 @@ four report in the daily summary.
 #### What an alert looks like
 
 ```
-🛰 ВНЕШНИЙ WATCHDOG · проверка со стороннего VPS
+🛰 EXTERNAL WATCHDOG · checked from a separate VPS
 
-🔴 Контейнер bridge не работает
-Наблюдаемый хост: maxtg-bridge-prod
-Слой: L2 — опрос с наблюдателя
-Класс отказа: F8 · container_down
+🔴 The bridge container is not running
+Observed host: maxtg-bridge-prod
+Layer: L2 poll from the observer — is the container and the host alive
+Failure class: F8 · container_down
 
-Что произошло: Контейнер deploy-bridge-1: exited, exit code 137.
-Что делать: Docker restart: always не действует на явную остановку.
-  Подними вручную: docker compose --project-name deploy -f ... up -d bridge
-Где смотреть: опрос с наблюдателя — docker compose logs watchdog; ssh -i <key> deploy@<prod>
+What happened: Container deploy-bridge-1: exited, exit code 137.
+What to do: Docker restart: always does not apply to an explicit stop.
+  Bring it back: docker compose --project-name deploy -f ... up -d bridge
+Where to look: poll from the observer — docker compose logs watchdog; ssh -i <key> deploy@<prod>
 ```
 
-Recovery reports how long the problem lasted; the daily summary lists the state
-of all four layers. Alerts use hysteresis (N consecutive failures), cascade
-suppression, a 15-minute dedup window, and one-shot recovery notices — in a
-normal week the only message is the daily summary.
+The daily summary reports every layer and files each open problem under the
+layer that found it, so the marked layer is where to start digging:
+
+```
+✅ L1 — what hurts inside the bridge: answering
+⚠️ L2 — is the container and the host alive: poll succeeds
+      └ Low disk space on the production host (disk_low)
+✅ L3 — did the observation path break: last push 24 s ago
+✅ L4 — is the observer itself alive: the check loop is running
+```
+
+> Alerts are rendered in Russian on the deployed instance — this is a personal,
+> single-operator bridge. The samples above are translated; the structure is
+> exactly what arrives.
+
+Recovery reports how long the problem lasted. Alerts use hysteresis (N
+consecutive failures), cascade suppression, a 15-minute dedup window, and
+one-shot recovery notices — in a normal week the only message is the daily
+summary.
 
 #### Where the code lives
 
