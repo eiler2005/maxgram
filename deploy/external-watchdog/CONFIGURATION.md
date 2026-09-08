@@ -65,7 +65,7 @@ status_api:
 | `TG_OPS_TOPIC_ID` | необязательно; без него алерты идут только в owner DM |
 | `WATCHDOG_PUSH_SECRET` | **тот же**, что на production |
 | `WATCHDOG_PUSH_BIND_ADDRESS` / `WATCHDOG_PUSH_PORT` | `0.0.0.0` / `18151` |
-| `WATCHDOG_DAILY_SUMMARY_HOUR_UTC` | час ежедневной сводки, `-1` выключает |
+| `WATCHDOG_SUMMARY_HOURS_UTC` | часы UTC через запятую: `6,10,14,18` = 09/13/17/21 МСК; `off` выключает |
 
 Пороги (`WATCHDOG_POLL_INTERVAL_SECONDS` и прочие) — см. таблицу в
 [docs/runbooks/watchdog.md](../../docs/runbooks/watchdog.md#5-пороги); в

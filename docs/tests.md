@@ -570,10 +570,26 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_status_rules_are_skipped_when_status_not_polled` | В циклах без опроса status API счётчики status-правил не обнуляются. |
 | `test_alert_text_carries_class_and_action_without_private_data` | Текст алерта содержит класс отказа, правило и команду восстановления. |
 | `test_push_signature_round_trip` | HMAC-подпись приёмника принимает только валидную подпись и отвергает пустой секрет. |
+| `test_summary_hours_default_to_four_times_a_day` | Сводка по умолчанию уходит 4 раза в сутки (09/13/17/21 МСК). |
+| `test_summary_hours_parse_list_and_can_be_disabled` | Список часов нормализуется, мусор отбрасывается, `off` выключает сводку. |
+| `test_legacy_single_hour_variable_still_understood` | Старая переменная с одним часом ещё понимается: существующая установка не остаётся молча без сводки. |
+| `test_check_endpoint_requires_the_same_signature_as_push` | Проверка по требованию идёт по уже существующему подписанному каналу, без отдельного секрета. |
+| `test_on_demand_check_refuses_to_run_twice_at_once` | Блокировка не даёт двум оценкам прислать две копии сообщений. |
+| `test_watchdog_command_describes_service_and_offers_button` | `/watchdog` описывает устройство сервиса и даёт кнопку проверки. |
+| `test_watchdog_command_hides_button_when_channel_not_configured` | Без общего секрета кнопка не показывается, а команда честно объясняет почему. |
+| `test_watchdog_check_targets_the_check_endpoint` | Кнопка бьёт в `/check` того же приёмника и подписывает запрос. |
+| `test_every_layer_declares_the_direction_of_its_check` | У каждого слоя есть направление проверки: из него видно, какой конец чинить. |
+| `test_summary_and_alert_both_show_the_direction` | Направление попадает и в сводку, и в алерт. |
+| `test_meta_layer_reports_only_changing_facts` | В статусе L4 остаются только меняющиеся цифры; описание механизма живёт в стрелке. |
+| `test_summary_explains_why_internal_layer_is_absent` | Сводка объясняет, почему в ней нет L0, — иначе это выглядит как пропуск. |
+| `test_flow_names_both_sides_so_the_observer_is_unambiguous` | Стрелка называет обе стороны: видно, внешний наблюдатель или внутренний API. |
+| `test_daily_summary_shows_what_was_actually_checked` | Рядом с вердиктом стоят факты, на которых он основан. |
+| `test_every_external_message_says_who_wrote_it` | У каждого внешнего сообщения есть шапка источника. |
+| `test_internal_and_external_headers_do_not_collide` | Шапки внутренних и внешних алертов различимы; внутренняя без HTML-разметки. |
 | `test_watchdog_depends_only_on_stdlib_and_itself` | Архитектурная граница: внешний watchdog не импортирует ни модули bridge, ни сторонние библиотеки. |
 | `test_every_rule_is_assigned_to_a_layer` | Каждое правило привязано к слою наблюдения, и все три активных слоя представлены — иначе из алерта неясно, что чинить. |
 | `test_alert_names_its_layer_and_where_to_look` | В тексте алерта есть слой и команда для разбора. |
-| `test_daily_summary_reports_all_four_layers` | Ежедневная сводка отчитывается по всем четырём слоям: молчащий слой неотличим от сломанного. |
+| `test_daily_summary_reports_all_four_layers` | Сводка отчитывается по всем четырём слоям: молчащий слой неотличим от сломанного. |
 | `test_layer_status_reflects_broken_paths` | Состояние слоёв корректно отражает сломанный опрос, отсутствующий push и выключенный слой. |
 | `test_recovery_message_is_human_readable_and_reports_duration` | Recovery называет проблему по-человечески и сообщает длительность. |
 | `test_alert_text_collapses_noisy_error_output` | stderr чужих утилит не уезжает в сообщение многострочным мусором. |

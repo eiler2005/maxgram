@@ -204,7 +204,7 @@ second VPS:
 | L1 status API (`src/runtime/status_api.py`) | `127.0.0.1:18140` in the container, host loopback only | MAX egress/auth issues, alert outbox backlog, egress drift, queue backlog | anything that stops the process |
 | L2 SSH pull with a forced read-only command | container on the observer VPS, every 60 s | stopped container, dead host, stale heartbeat, restart storm, low disk | a broken observer→production path |
 | L3 HMAC push dead-man's switch | `maxtg-watchdog-push.timer` on production → observer `:18151` | distinguishes "bridge is dead" from "the observation path is dead" | observer host death |
-| L4 meta-monitoring | `vps-monitor` on the observer host, mutual host probes, daily summary | a dead observer | simultaneous death of both hosts |
+| L4 meta-monitoring | `vps-monitor` on the observer host, mutual host probes, summary four times a day | a dead observer | simultaneous death of both hosts |
 
 The observer only reads and reports: the pinned key runs a read-only probe, so
 recovery stays a human action. The full failure model, thresholds and drills are

@@ -213,20 +213,20 @@ read-only probe, so recovery stays a human action.
 | **Container stopped** (`docker compose stop/down`) | **external watchdog only** — `restart: always` does not apply to an explicit stop | manual |
 | **Host / VM / Docker daemon down** | **external watchdog only** | manual |
 | **The bridge's own Telegram alerting is broken** | **external watchdog only** — it has an independent network path | depends on cause |
-| The external watchdog itself dies | host monitoring on its VPS + mutual host probes + a daily summary | manual |
+| The external watchdog itself dies | host monitoring on its VPS + mutual host probes + a summary four times a day | manual |
 
 #### Four observation layers
 
 Every alert names the layer that caught it, so the message itself says where to
 look. A layer that goes quiet is indistinguishable from a broken one, so all
-four report in the daily summary.
+four report in the summary.
 
 | Layer | In one line | Where it runs | Interval | Catches |
 |---|---|---|---|---|
 | **L1** status API | what hurts inside the bridge | `127.0.0.1:18140` in the bridge container | 300 s | MAX egress/auth issues, alert outbox backlog, egress drift, queue backlog |
 | **L2** SSH pull | is the container and host alive | observer container, read-only forced command | 60 s | stopped container, dead host, stale heartbeat, restart storm, low disk |
 | **L3** push dead-man's switch | did the observation path break | `maxtg-watchdog-push.timer` → observer `:18151` | 60 s | tells "the bridge is dead" apart from "the observation path is dead" |
-| **L4** meta-monitoring | is the observer itself alive | host monitor + mutual probes + daily summary | 5 min / 24 h | a dead observer |
+| **L4** meta-monitoring | is the observer itself alive | host monitor + mutual probes + summary | 5 min / 4 h | a dead observer |
 
 #### Direction of each check
 
@@ -244,7 +244,7 @@ them (firewall, sshd, fail2ban). L3 travels the other way, so it survives that
 path breaking — which is exactly how it tells "the bridge died" apart from "the
 polling path died".
 
-L0 never appears in the daily summary: it lives inside the container and reports
+L0 never appears in the summary: it lives inside the container and reports
 on itself under the `🌉 BRIDGE` header. When the container is dead, L0 is silent
 — which is the entire reason L2 and L3 exist.
 
@@ -264,7 +264,7 @@ What to do: Docker restart: always does not apply to an explicit stop.
 Where to look: poll from the observer — docker compose logs watchdog; ssh -i <key> deploy@<prod>
 ```
 
-The daily summary reports every layer and files each open problem under the
+The summary — four times a day — reports every layer and files each open problem under the
 layer that found it, so the marked layer is where to start digging:
 
 ```
