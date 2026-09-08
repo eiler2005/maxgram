@@ -7,9 +7,22 @@ import time
 import pytest
 
 from src.watchdog_external.config import TelegramTarget, WatchdogConfig
-from src.watchdog_external.notify import clean, render_alert, render_daily_summary, render_recovery
+from src.watchdog_external.notify import (
+    SOURCE_HEADER,
+    clean,
+    render_alert,
+    render_daily_summary,
+    render_recovery,
+)
 from src.watchdog_external.receiver import sign, verify
-from src.watchdog_external.rules import Recovery, decide, evaluate, humanize_duration, rule_title
+from src.watchdog_external.rules import (
+    Finding,
+    Recovery,
+    decide,
+    evaluate,
+    humanize_duration,
+    rule_title,
+)
 from src.watchdog_external.state import WatchdogState
 
 NOW = int(time.time())
@@ -248,11 +261,11 @@ def test_alert_text_carries_class_and_action_without_private_data(tmp_path):
     finding = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg, NOW).alerts[0]
 
     text = render_alert(finding, cfg)
-    assert "[EXT]" in text
+    assert "ВНЕШНИЙ WATCHDOG" in text
     assert "F8" in text
     assert "container_down" in text
     assert "up -d bridge" in text
-    assert "[EXT]" in render_recovery(Recovery("container_down", 240), cfg)
+    assert "ВНЕШНИЙ WATCHDOG" in render_recovery(Recovery("container_down", 240), cfg)
 
 
 def test_push_signature_round_trip():
@@ -418,3 +431,32 @@ def test_layer_status_marks_push_layer_disabled_without_secret():
 
     st = layer_status(_cfg(push_secret=""), {"reachable": True, "ssh_ok": True, "probe": {}}, NOW)
     assert "выключен" in st["L3"]
+
+
+def test_every_external_message_says_who_wrote_it():
+    """Источник виден в первой строке: внутренние алерты bridge при его смерти
+    не приходят вовсе, поэтому важно понимать, кому верить."""
+    cfg = _cfg()
+    finding = Finding(
+        rule="container_down", failure_class="F8", severity="crit",
+        title="Контейнер bridge не работает", detail="exited", hint="подними вручную",
+    )
+    messages = [
+        render_alert(finding, cfg),
+        render_recovery(Recovery("container_down", 60), cfg),
+        render_daily_summary(cfg, [], {"L1": "ok", "L2": "ok", "L3": "ok", "L4": "ok"}),
+    ]
+    for text in messages:
+        assert text.startswith(SOURCE_HEADER), text[:60]
+        assert "ВНЕШНИЙ WATCHDOG" in text
+
+
+def test_internal_and_external_headers_do_not_collide():
+    """Две шапки должны быть отличимы с одного взгляда."""
+    from src.runtime.health.rendering import SOURCE_HEADER as INTERNAL_HEADER
+
+    assert "ВНЕШНИЙ WATCHDOG" in SOURCE_HEADER
+    assert "BRIDGE" in INTERNAL_HEADER
+    assert INTERNAL_HEADER != SOURCE_HEADER
+    # внутренние сообщения уходят plain text — HTML-разметки в шапке быть не должно
+    assert "<" not in INTERNAL_HEADER

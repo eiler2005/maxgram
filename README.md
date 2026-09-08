@@ -231,8 +231,10 @@ four report in the daily summary.
 #### What an alert looks like
 
 ```
-🔴 [EXT] Контейнер bridge не работает
-Хост: maxtg-bridge-prod · проверка с внешнего VPS
+🛰 ВНЕШНИЙ WATCHDOG · проверка со стороннего VPS
+
+🔴 Контейнер bridge не работает
+Наблюдаемый хост: maxtg-bridge-prod
 Слой: L2 — опрос с наблюдателя
 Класс отказа: F8 · container_down
 

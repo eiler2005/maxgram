@@ -14,6 +14,13 @@ from .state import (
 )
 
 
+#: Шапка внутренних алертов. Их шлёт сам bridge из своего же контейнера,
+#: поэтому при его смерти они и не приходят — в отличие от внешних, которые
+#: начинаются с "🛰 ВНЕШНИЙ WATCHDOG". По первой строке видно, кому верить.
+#: Внутренние сообщения уходят plain text, поэтому без HTML-разметки.
+SOURCE_HEADER = "🌉 BRIDGE · внутренняя диагностика (тот же контейнер)"
+
+
 def format_timestamp(ts: Optional[int]) -> str:
     if ts is None:
         return "—"
@@ -81,7 +88,7 @@ def build_operator_alert(change: HealthChange) -> str:
         downtime = None
         if previous_issue is not None:
             downtime = max(0, _now_ts() - previous_issue.first_seen_at)
-        lines = [f"✅ Bridge восстановлен: {subsystem}"]
+        lines = [SOURCE_HEADER, "", f"✅ Bridge восстановлен: {subsystem}"]
         if previous_issue is not None:
             lines.append(f"Что восстановилось: {previous_issue.summary}")
             lines.append(f"Простой: ~{humanize_duration(downtime)}")
@@ -95,10 +102,10 @@ def build_operator_alert(change: HealthChange) -> str:
         return "\n".join(lines)
 
     if issue is None:
-        return f"⚠️ Bridge degraded: {subsystem}"
+        return f"{SOURCE_HEADER}\n\n⚠️ Bridge degraded: {subsystem}"
 
     icon = "🚨" if issue.severity == Severity.CRITICAL else "⚠️"
-    lines = [f"{icon} Bridge degraded: {subsystem}"]
+    lines = [SOURCE_HEADER, "", f"{icon} Bridge degraded: {subsystem}"]
     lines.append(f"Что сломано: {issue.summary}")
     if issue.impact:
         lines.append(f"Влияние: {issue.impact}")

@@ -36,6 +36,11 @@ MAX_MESSAGE_CHARS = 3800
 
 SEVERITY_BADGE = {"crit": "🔴", "warn": "🟡", "info": "🔵"}
 
+#: Шапка. Первое, что читает оператор: кто это написал и откуда смотрел.
+#: Внутренние алерты самого bridge начинаются с "🌉 BRIDGE", внешние — с этой
+#: строки, поэтому источник виден до того, как прочитан текст.
+SOURCE_HEADER = "🛰 <b>ВНЕШНИЙ WATCHDOG</b> · проверка со стороннего VPS"
+
 
 def clean(text: str, limit: int = 300) -> str:
     """Схлопывает пробелы и режет длину.
@@ -54,8 +59,10 @@ def render_alert(finding: Finding, cfg: WatchdogConfig) -> str:
     badge = SEVERITY_BADGE.get(finding.severity, "🟡")
     layer = rule_layer(finding.rule)
     lines = [
-        f"{badge} <b>[EXT] {clean(finding.title, 120)}</b>",
-        f"Хост: {clean(cfg.target_name, 60)} · проверка с внешнего VPS",
+        SOURCE_HEADER,
+        "",
+        f"{badge} <b>{clean(finding.title, 120)}</b>",
+        f"Наблюдаемый хост: {clean(cfg.target_name, 60)}",
         f"Слой: {clean(layer, 8)} — {clean(LAYER_NAMES.get(layer, ''), 60)}",
         f"Класс отказа: {clean(finding.failure_class, 20)} · "
         f"<code>{clean(finding.rule, 40)}</code>",
@@ -69,8 +76,11 @@ def render_alert(finding: Finding, cfg: WatchdogConfig) -> str:
 
 def render_recovery(recovery: Recovery, cfg: WatchdogConfig) -> str:
     lines = [
-        f"✅ <b>[EXT] Норма: {clean(rule_title(recovery.rule), 120)}</b>",
-        f"Хост: {clean(cfg.target_name, 60)} · {clean(rule_layer(recovery.rule), 8)} · "
+        SOURCE_HEADER,
+        "",
+        f"✅ <b>Норма: {clean(rule_title(recovery.rule), 120)}</b>",
+        f"Наблюдаемый хост: {clean(cfg.target_name, 60)}",
+        f"Слой: {clean(rule_layer(recovery.rule), 8)} · "
         f"<code>{clean(recovery.rule, 40)}</code>",
         "",
     ]
@@ -95,8 +105,10 @@ def render_daily_summary(
     поэтому раз в сутки каждый должен явно отчитаться, что он живой.
     """
     lines = [
-        "🔵 <b>[EXT] Внешний watchdog на связи</b>",
-        f"Хост под наблюдением: {clean(cfg.target_name, 60)}",
+        SOURCE_HEADER,
+        "",
+        "🔵 <b>Ежедневная сводка: наблюдатель на связи</b>",
+        f"Наблюдаемый хост: {clean(cfg.target_name, 60)}",
         "",
         "<b>Слои наблюдения:</b>",
     ]

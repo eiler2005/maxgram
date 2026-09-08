@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import receiver
 from .config import WatchdogConfig, load_config
-from .notify import dispatch, render_daily_summary, send_telegram
+from .notify import SOURCE_HEADER, dispatch, render_daily_summary, send_telegram
 from .probe import collect
 from .rules import decide, evaluate
 from .state import WatchdogState
@@ -171,7 +171,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.test_alert:
         ok = send_telegram(
             cfg,
-            f"🧪 <b>[EXT] Тест доставки</b>\nВнешний watchdog для {cfg.target_name} на связи.",
+            f"{SOURCE_HEADER}\n\n🧪 <b>Тест доставки</b>\n"
+            f"Наблюдаемый хост: {cfg.target_name}\nКанал доставки работает.",
             silent=True,
         )
         print("delivered" if ok else "FAILED — проверь TG_BOT_TOKEN / TG_OWNER_ID")
