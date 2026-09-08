@@ -49,7 +49,8 @@ def ssh_probe(cfg: WatchdogConfig, *, with_status: bool) -> tuple[Optional[dict[
         f"{cfg.ssh_user}@{cfg.target_host}",
     ]
     # Forced command игнорирует аргументы, но пробрасывает их в SSH_ORIGINAL_COMMAND.
-    command.append("--with-status" if with_status else "--no-status")
+    # Без ведущих дефисов: ssh разбирает "--no-status" как свою опцию и печатает usage.
+    command.append("with-status" if with_status else "no-status")
 
     try:
         result = subprocess.run(

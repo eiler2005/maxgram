@@ -124,7 +124,7 @@ def status_api():
 def main():
     # Forced command игнорирует аргументы клиента, но SSH кладёт их сюда.
     requested = os.environ.get("SSH_ORIGINAL_COMMAND", "") or " ".join(sys.argv[1:])
-    with_status = "--no-status" not in requested
+    with_status = "no-status" not in requested
 
     payload = {
         "schema_version": SCHEMA_VERSION,

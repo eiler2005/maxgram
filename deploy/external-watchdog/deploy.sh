@@ -58,9 +58,16 @@ tar -C "${HERE}" -czf - Dockerfile docker-compose.yml \
   | run_remote "tar -C ${REMOTE_DIR} -xzf -"
 
 echo "==> Копирую секреты (0600)"
+# Ключ принадлежит uid контейнера, поэтому перед перезаписью возвращаем его себе.
+run_remote "test -f ${REMOTE_DIR}/secrets/watchdog_key && sudo chown \$(id -u):\$(id -g) ${REMOTE_DIR}/secrets/watchdog_key || true"
 scp "${SSH_OPTS[@]}" -q "${HERE}/.env.secrets" "${WATCHDOG_DEPLOY_HOST}:${REMOTE_DIR}/.env.secrets"
 scp "${SSH_OPTS[@]}" -q "${HERE}/secrets/watchdog_key" "${WATCHDOG_DEPLOY_HOST}:${REMOTE_DIR}/secrets/watchdog_key"
 run_remote "chmod 600 ${REMOTE_DIR}/.env.secrets ${REMOTE_DIR}/secrets/watchdog_key"
+# Контейнер работает под непривилегированным uid 10001 (см. Dockerfile). Ключ
+# должен принадлежать именно ему: иначе ssh внутри контейнера не сможет его
+# прочитать и упадёт с "Permission denied (publickey)" — сообщение, которое
+# выглядит как проблема с самим ключом, хотя дело в правах на файл.
+run_remote "sudo chown ${WATCHDOG_UID:-10001}:${WATCHDOG_UID:-10001} ${REMOTE_DIR}/secrets/watchdog_key"
 
 echo "==> Сборка и запуск"
 run_remote "cd ${REMOTE_DIR} && docker compose build --quiet && docker compose up -d"
