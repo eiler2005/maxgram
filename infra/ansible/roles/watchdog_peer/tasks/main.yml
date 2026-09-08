@@ -1,0 +1,89 @@
+---
+# Ставит на production-хост read-only пробу для внешнего watchdog и push-таймер.
+# Сам bridge не трогает: ни compose, ни .env.secrets, ни данные.
+
+- name: watchdog_peer | deploy read-only status probe
+  ansible.builtin.template:
+    src: bridge-status-probe.py.j2
+    dest: "{{ watchdog_peer_probe_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  tags: [watchdog, probe]
+
+# Ключ наблюдателя жёстко привязан к пробе: shell по нему получить нельзя,
+# форварды и pty запрещены (restrict).
+- name: watchdog_peer | authorize observer key for the probe only
+  ansible.posix.authorized_key:
+    user: "{{ deploy_user }}"
+    key: "{{ watchdog_peer_pubkey }}"
+    key_options: 'command="{{ watchdog_peer_probe_path }}",restrict'
+    comment: "maxtg external watchdog (read-only probe)"
+    state: present
+    exclusive: false
+  become: true
+  when: watchdog_peer_pubkey | length > 0
+  tags: [watchdog, probe]
+
+- name: watchdog_peer | warn when observer key is not provided
+  ansible.builtin.debug:
+    msg: >-
+      watchdog_peer_pubkey пуст — слой 2 (опрос с наблюдателя) останется выключенным.
+      Передай ключ через -e watchdog_peer_pubkey="ssh-ed25519 ...".
+  when: watchdog_peer_pubkey | length == 0
+  tags: [watchdog, probe]
+
+- name: watchdog_peer | deploy push script
+  ansible.builtin.template:
+    src: maxtg-watchdog-push.py.j2
+    dest: "{{ watchdog_peer_push_path }}"
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+  when: watchdog_peer_push_enabled | bool
+  tags: [watchdog, push]
+
+- name: watchdog_peer | deploy push systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - maxtg-watchdog-push.service
+    - maxtg-watchdog-push.timer
+  become: true
+  when: watchdog_peer_push_enabled | bool
+  notify: Reload systemd for watchdog peer
+  tags: [watchdog, push]
+
+- name: watchdog_peer | flush systemd reload before enabling timer
+  ansible.builtin.meta: flush_handlers
+  tags: [watchdog, push]
+
+- name: watchdog_peer | enable push timer
+  ansible.builtin.systemd:
+    name: maxtg-watchdog-push.timer
+    enabled: true
+    state: started
+  become: true
+  when: watchdog_peer_push_enabled | bool
+  tags: [watchdog, push]
+
+# --- проверки (read-only) ---
+
+- name: watchdog_peer | verify probe returns valid JSON
+  ansible.builtin.command: "{{ watchdog_peer_probe_path }} --no-status"
+  become: true
+  become_user: "{{ deploy_user }}"
+  register: watchdog_peer_probe_check
+  changed_when: false
+  tags: [watchdog, verify]
+
+- name: watchdog_peer | show probe result
+  ansible.builtin.debug:
+    msg: "{{ (watchdog_peer_probe_check.stdout | from_json).container }}"
+  tags: [watchdog, verify]

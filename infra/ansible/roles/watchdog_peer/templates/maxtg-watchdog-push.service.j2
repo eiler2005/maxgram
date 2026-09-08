@@ -1,0 +1,12 @@
+[Unit]
+Description=maxtg-bridge external watchdog push (dead-man's switch)
+Documentation=https://github.com/eiler2005/maxtg_bridge/blob/master/docs/runbooks/watchdog.md
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User={{ deploy_user }}
+ExecStart=/usr/bin/python3 {{ watchdog_peer_push_path }}
+# Пуш не должен ронять хост: отказ доставки — это сигнал наблюдателю, а не авария здесь.
+SuccessExitStatus=0 1
+TimeoutStartSec=60

@@ -44,6 +44,14 @@ health:
     cycle_jitter_seconds: 30
     per_chat_delay_seconds: 0.5
 
+# Read-only status API для внешнего watchdog (docs/runbooks/watchdog.md).
+# Слушает только loopback; наружу отдаётся через SSH-канал, публичного порта нет.
+# Требует BRIDGE_STATUS_TOKEN в .env.secrets — без токена API не поднимается.
+status_api:
+  enabled: false
+  host: "127.0.0.1"
+  port: 18140
+
 bridge:
   # forward_all: true — автоматически форвардить все чаты из MAX
   # (создаёт топик при первом сообщении из нового чата)

@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+# bridge-status-probe.py — read-only снимок состояния bridge для внешнего watchdog.
+# Managed by maxtg_bridge/infra/ansible (роль watchdog_peer). Правки руками затрутся.
+#
+# Скрипт привязан к ключу наблюдателя через command="...",restrict в authorized_keys:
+# по этому ключу нельзя получить shell и нельзя ничего изменить на хосте.
+#
+# Ничего приватного не отдаёт: только состояние контейнера, возраст heartbeat,
+# свободное место и ответ status API (сам по себе очищенный от текстов и raw_cause).
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+CONTAINER = "{{ watchdog_peer_container }}"
+DATA_DIR = "{{ watchdog_peer_data_dir }}"
+ENV_FILE = "{{ watchdog_peer_env_file }}"
+STATUS_URL = "{{ watchdog_peer_status_url }}"
+STATUS_TIMEOUT = {{ watchdog_peer_status_timeout_seconds }}
+
+SCHEMA_VERSION = 1
+
+
+def docker_inspect():
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", CONTAINER],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception as e:
+        return {"found": False, "error": e.__class__.__name__}
+
+    if result.returncode != 0:
+        return {"found": False, "error": "container not found"}
+
+    try:
+        info = json.loads(result.stdout.decode("utf-8", "replace"))[0]
+    except Exception:
+        return {"found": False, "error": "unparsable docker output"}
+
+    state = info.get("State") or {}
+    health = (state.get("Health") or {}).get("Status")
+    return {
+        "found": True,
+        "state": state.get("Status"),
+        "health": health or "none",
+        "exit_code": state.get("ExitCode"),
+        "started_at": state.get("StartedAt"),
+        "restart_count": info.get("RestartCount", 0),
+    }
+
+
+def docker_ok():
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{ '{{' }}.ServerVersion{{ '}}' }}"],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def heartbeat():
+    path = os.path.join(DATA_DIR, "health_heartbeat.json")
+    if not os.path.exists(path):
+        return {"present": False, "ts": None, "age_seconds": None}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            ts = int(json.load(f).get("ts", 0))
+    except Exception:
+        return {"present": False, "ts": None, "age_seconds": None}
+    if ts <= 0:
+        return {"present": False, "ts": None, "age_seconds": None}
+    return {"present": True, "ts": ts, "age_seconds": max(0, int(time.time()) - ts)}
+
+
+def disk():
+    try:
+        usage = shutil.disk_usage(DATA_DIR)
+        return {
+            "path": DATA_DIR,
+            "free_percent": int(usage.free * 100 / usage.total) if usage.total else None,
+        }
+    except Exception:
+        return {"path": DATA_DIR, "free_percent": None}
+
+
+def status_token():
+    try:
+        with open(ENV_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                key, _, value = line.strip().partition("=")
+                if key == "BRIDGE_STATUS_TOKEN":
+                    return value.strip().strip('"').strip("'")
+    except Exception:
+        return ""
+    return ""
+
+
+def status_api():
+    token = status_token()
+    if not token:
+        return None, "BRIDGE_STATUS_TOKEN not set on host"
+    request = urllib.request.Request(STATUS_URL, headers={"Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(request, timeout=STATUS_TIMEOUT) as response:
+            return json.loads(response.read().decode("utf-8")), ""
+    except urllib.error.HTTPError as e:
+        return None, "HTTP %s" % e.code
+    except Exception as e:
+        return None, e.__class__.__name__
+
+
+def main():
+    # Forced command игнорирует аргументы клиента, но SSH кладёт их сюда.
+    requested = os.environ.get("SSH_ORIGINAL_COMMAND", "") or " ".join(sys.argv[1:])
+    with_status = "--no-status" not in requested
+
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "collected_at": int(time.time()),
+        "docker_ok": docker_ok(),
+        "container": docker_inspect(),
+        "heartbeat": heartbeat(),
+        "disk": disk(),
+    }
+
+    if with_status:
+        status, error = status_api()
+        if status is not None:
+            payload["status_api"] = status
+        else:
+            payload["status_api_error"] = error
+
+    json.dump(payload, sys.stdout)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

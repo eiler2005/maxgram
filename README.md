@@ -191,10 +191,31 @@ Bridge is running in production on **Hetzner Cloud**.
 - Runtime: Docker Compose (non-root container, `cap_drop: ALL`, `restart: always`)
 - State: SQLite + MAX session in a bind-mounted `data/` directory
 - Health: Docker `HEALTHCHECK` uses supervisor heartbeat freshness instead of checking external integrations
-- Recovery boundary: the supervisor and MAX watchdog run inside the bridge container; Docker restart policy runs in Docker Engine on the same Hetzner VPS. There is no separate host-level systemd watchdog. `HEALTHCHECK` reports a stale heartbeat but does not restart a container itself; an explicit `docker compose stop`/`down` must be followed by `docker compose ... up -d bridge`.
+- Recovery boundary: the supervisor and MAX watchdog run inside the bridge container; Docker restart policy runs in Docker Engine on the same Hetzner VPS. `HEALTHCHECK` reports a stale heartbeat but does not restart a container itself; an explicit `docker compose stop`/`down` must be followed by `docker compose ... up -d bridge`.
 - Access: SSH key only, restricted by IP via UFW
 - Security: `fail2ban`, `unattended-upgrades`, no public HTTP ports
 - Boot signal: startup notification in Telegram owner DM includes runtime/host info plus startup `pytest` summary
+
+### Watchdog: what breaks, and who notices
+
+Every in-container recovery layer shares a failure domain with the thing it
+protects, so an observer on a **second VPS** covers what the bridge structurally
+cannot report about itself. It only reports — the pinned SSH key runs a
+read-only probe, so recovery stays a human action.
+
+| What breaks | Who notices | Recovery |
+|---|---|---|
+| Worker crashes | `BridgeSupervisor`, inside the container | automatic, with backoff |
+| MAX link hangs while egress is healthy | MAX watchdog → self-exit → Docker `restart: always` | automatic, rate-limited |
+| Worker hangs (container up, heartbeat stale) | external watchdog | manual |
+| **Container stopped** (`docker compose stop/down`) | **external watchdog only** — `restart: always` does not apply to an explicit stop | manual |
+| **Host / VM / Docker daemon down** | **external watchdog only** | manual |
+| **The bridge's own Telegram alerting is broken** | **external watchdog only** — it has an independent network path | depends on cause |
+| The external watchdog itself dies | host monitoring on its VPS + mutual host probes + a daily summary | manual |
+
+Full failure model, alert catalogue, thresholds and quarterly drills:
+[docs/runbooks/watchdog.md](docs/runbooks/watchdog.md) ·
+decision record: [ADR-012](docs/decisions/ADR-012-external-watchdog.md).
 
 ---
 

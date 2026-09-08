@@ -36,4 +36,8 @@ services:
       - ../data:/app/data
       - ../config.yaml:/app/config.yaml:ro
       - ../config.local.yaml:/app/config.local.yaml:ro
-    # Bridge не принимает входящие подключения; порты наружу не публикуем.
+    ports:
+      # Read-only status API для внешнего watchdog. Только loopback хоста:
+      # наружу он уходит исключительно через SSH-канал (docs/runbooks/watchdog.md).
+      # Публичного bind-а у bridge по-прежнему нет.
+      - "127.0.0.1:18140:18140"

@@ -276,6 +276,8 @@ async def run_bridge_worker(
             )
             if cfg.health.metrics_textfile_path is not None:
                 tg.create_task(bridge.run_metrics_textfile(), name="metrics_textfile")
+            if cfg.status_api.enabled:
+                tg.create_task(bridge.run_status_api(), name="status_api")
     except Exception as e:
         if stage == "storage_connect":
             await health_store.report_issue(

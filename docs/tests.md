@@ -543,9 +543,41 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
+## Status API и внешний watchdog
+
+`tests/test_status_api.py`
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_status_payload_exposes_health_and_queue_state` | `/status` отдаёт `overall_status`, подсистемы с кодами issue, глубину очередей, `alert_outbox_size` и активный egress — всё, на чём стоят правила внешнего watchdog. |
+| `test_status_payload_never_carries_raw_cause` | Privacy-инвариант: наружу уходят коды и статусы, но не `raw_cause` исключений и не токен. |
+| `test_healthz_reports_heartbeat_freshness` | `/healthz` без аутентификации отвечает `503` при протухшем heartbeat и `200` при свежем. |
+| `test_status_endpoint_requires_bearer_token` | `/status` закрыт bearer-токеном: без заголовка, с неверным токеном и без схемы `Bearer` — `401`. |
+
+`tests/test_watchdog_external.py`
+
+| Тест | Что проверяет |
+|------|--------------|
+| `test_alert_needs_consecutive_failures_then_recovers` | Гистерезис: единичный сбой не будит владельца, алерт уходит со второй подряд неудачи, recovery отправляется ровно один раз. |
+| `test_stopped_container_alerts_immediately_and_suppresses_dependents` | Класс F8 алертит без задержки, а зависимые правила (heartbeat, status) помечаются «нет данных» вместо каскада алертов. |
+| `test_unreachable_host_suppresses_every_dependent_rule` | Мёртвый хост даёт один алерт, а не пачку: про контейнер и диск мы в этот момент ничего не знаем. |
+| `test_broken_ssh_with_live_push_is_reported_as_observer_path_failure` | Класс F13: при живом push сломанный SSH описывается как «сломан канал наблюдения, приложение живо». |
+| `test_missing_push_triggers_dead_man_switch` / `test_push_rules_are_skipped_when_layer_disabled` | Dead-man's switch срабатывает при пропаже push и полностью выключается без общего секрета. |
+| `test_requires_reauth_is_escalated_to_critical` | `requires_reauth` поднимает severity до critical и подсказывает ручной reauth-флоу. |
+| `test_outbox_backlog_surfaces_broken_alert_channel` | Класс F6: растущий `alert_outbox` виден снаружи, когда сам bridge докричаться не может. |
+| `test_unexpected_egress_mode_is_detected` | Класс F15: тихий откат `max.egress.active` на аварийный профиль замечается. |
+| `test_restart_storm_uses_baseline_within_window` | Restart storm считается как дельта `RestartCount` внутри окна, а не по абсолютному счётчику. |
+| `test_status_rules_are_skipped_when_status_not_polled` | В циклах без опроса status API счётчики status-правил не обнуляются. |
+| `test_alert_text_carries_class_and_action_without_private_data` | Текст алерта содержит класс отказа, правило и команду восстановления. |
+| `test_push_signature_round_trip` | HMAC-подпись приёмника принимает только валидную подпись и отвергает пустой секрет. |
+| `test_watchdog_depends_only_on_stdlib_and_itself` | Архитектурная граница: внешний watchdog не импортирует ни модули bridge, ни сторонние библиотеки. |
+
+---
+
 ## Что не покрыто тестами
 
 - `run_periodic_status` — бесконечный цикл; проверяется вручную в production
+- SSH-транспорт внешнего watchdog и реальная отправка в Telegram Bot API: правила и рендеринг покрыты юнит-тестами на фикстурах, а сквозной путь проверяется учениями из `docs/runbooks/watchdog.md`
 - `run_max_watchdog` покрыт базовым reconnect-сценарием, но full production-поведение также проверяется вручную
 - `run_weekly_recovery_snapshot` как бесконечный scheduler-loop проверяется через командный scan/repo tests и вручную в production
 - Реальные сетевые вызовы (MAX WebSocket, Telegram Bot API)

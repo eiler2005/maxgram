@@ -1,0 +1,42 @@
+# Внешний watchdog для maxtg-bridge, разворачивается на втором VPS (хост-наблюдатель).
+# Хост shared: соблюдаем принятые там правила — явные лимиты, no-new-privileges,
+# ограниченные логи и никаких публичных bind-ов сверх необходимого.
+services:
+  watchdog:
+    # Контекст сборки — эта же директория: deploy.sh кладёт рядом src/watchdog_external/,
+    # поэтому один и тот же compose работает и локально, и на сервере.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: maxtg-watchdog:prod
+    container_name: maxtg-watchdog
+    env_file:
+      - .env.secrets
+    restart: always
+    stop_grace_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 128m
+    volumes:
+      - watchdog_state:/app/state
+      # Ключ привязан на стороне production-хоста к read-only forced command,
+      # поэтому даже при компрометации контейнера он не даёт shell.
+      - ./secrets/watchdog_key:/app/ssh/watchdog_key:ro
+    ports:
+      # Слой 3: приёмник push dead-man's switch. Доступ ограничивается UFW и
+      # firewall-ом провайдера ровно одним /32 production-хоста.
+      - "${WATCHDOG_PUSH_BIND_ADDRESS:-0.0.0.0}:18151:18151"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  watchdog_state:

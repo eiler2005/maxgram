@@ -34,7 +34,11 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 | `src/bridge/contracts.py` | Транспортно-нейтральные dataclass-модели и Protocol-порты между core и adapters |
 | `src/bridge/core.py` + `src/bridge/{forwarding,replies,topics,status,media_retry,...}.py` | Core — runtime coordinator; forwarding/replies/topics/status/media-retry/commands/recovery живут в leaf modules |
 | `src/runtime/health/` | Health snapshot, health events, alert outbox, heartbeat; package-level imports сохранены |
+| `src/runtime/status_api.py` | Read-only status API на loopback для внешнего watchdog (`/healthz`, `/status`) |
 | `src/runtime/supervisor.py` | Worker restart loop, heartbeat, crash alerts |
+| `src/watchdog_external/` | Внешний watchdog для второго VPS: stdlib-only, не импортирует модули bridge |
+| `deploy/external-watchdog/` | Docker-стек внешнего watchdog + `deploy.sh` |
+| `infra/ansible/roles/watchdog_peer/` | Агент production-хоста: read-only проба и push-таймер |
 | `src/config/loader.py` | YAML конфиг + env переменные |
 | `src/db/models.py` | SQLite схема: routing, delivery, retry, users, recovery registry |
 | `src/db/repository.py` + `src/db/repos/*.py` | Repository facade + subdomain repos over one `aiosqlite.Connection` |
@@ -124,13 +128,25 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 
 ## Границы watchdog в production
 
-Все уровни ниже работают на Hetzner production VPS, не на домашнем роутере:
+Внутренние уровни работают на Hetzner production VPS, не на домашнем роутере, и **восстанавливают**:
 
 - `BridgeSupervisor` — PID1 внутри `bridge` Docker-контейнера. Он перезапускает аварийно завершившийся worker, пока сам контейнер жив.
 - MAX watchdog — background task того же worker. При исправном `home_ru_proxy` и зависшем MAX он делает rate-limited self-exit; Docker `restart: always` поднимает свежий контейнер.
 - Docker Engine того же VPS применяет `restart: always` после аварийного завершения процесса или рестарта Docker/VM.
 - Docker `HEALTHCHECK` только сообщает `unhealthy` по stale heartbeat; он не рестартует контейнер.
-- Отдельного host-level `systemd` service/timer, следящего за отсутствующим bridge-контейнером, сейчас нет. Явный `docker compose stop` или `docker compose down` останавливает все внутренние watchdog-и; восстановление — только явным `docker compose ... up -d bridge` или обычным Ansible deploy. Не запускать второй экземпляр bridge параллельно.
+- Явный `docker compose stop`/`down` останавливает все внутренние watchdog-и и не отменяется `restart: always`; восстановление — только явным `docker compose ... up -d bridge` или обычным Ansible deploy. Не запускать второй экземпляр bridge параллельно.
+
+Внешний наблюдатель живёт на **втором VPS** (хост-наблюдатель) и только **сообщает**, ничего не чинит:
+
+- Модель отказов, каталог правил, пороги и учения — `docs/runbooks/watchdog.md`; решение — `docs/decisions/ADR-012-external-watchdog.md`.
+- Три класса отказов ненаблюдаемы изнутри и существуют ради внешнего слоя: сломанный собственный канал алертов bridge (`alert_outbox` растёт), остановленный контейнер (`restart: always` на явный stop не действует) и мёртвый хост.
+- L1 — `status_api` bridge на `127.0.0.1:18140` (`src/runtime/status_api.py`). Только loopback: постулат «bridge не принимает входящие подключения» сохраняется, наружу API уходит через SSH-канал. Без `BRIDGE_STATUS_TOKEN` сервер не поднимается. В payload нет текстов, названий чатов и `raw_cause` — закреплено тестом.
+- L2 — контейнер `maxtg-watchdog` на хосте-наблюдателе: TCP-проба + SSH forced command `command="/usr/local/bin/bridge-status-probe.py",restrict`. Ключ наблюдателя физически не даёт shell и права записи на production.
+- L3 — push dead-man's switch: таймер `maxtg-watchdog-push.timer` на production → приёмник `:18151` у наблюдателя, HMAC-SHA256 + окно времени. Нужен, чтобы отличать «bridge умер» от «сломан канал наблюдения».
+- L4 — мета-мониторинг: host-мониторинг на хосте-наблюдателе видит пропажу контейнера, встречная проба между хостами видит смерть наблюдателя, плюс ежедневная сводка «watchdog жив».
+- Алерты идут ботом bridge в owner DM + ops topic с префиксом `[EXT]`; запрос уходит с хоста-наблюдателя напрямую в Telegram API, поэтому не зависит от живости процесса bridge.
+- Код внешнего watchdog — `src/watchdog_external/` (**только stdlib**, не импортирует модули bridge), деплой — `deploy/external-watchdog/`, агент production-хоста — `infra/ansible/roles/watchdog_peer/`.
+- Правила firewall (allow 22 с /32 наблюдателя на production, allow 18151 с /32 production у наблюдателя) заводятся вручную и в UFW, и в панели провайдера — автоматизации нет.
 
 ## Принципы (не нарушать)
 
@@ -142,6 +158,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 6. **Git push только по явной просьбе** — после изменений не делать push автоматически, спросить сначала
 7. **Деплой на Hetzner только по явной просьбе** — после изменений не обновлять сервер автоматически, спросить сначала
 8. **Аварийный deploy** — если недоступен control channel Ansible, следовать public runbook: backup-first, только exact уже отправленный commit, private state/env остаются на сервере. Временный admin access — только точный `/32` в Cloud Firewall и UFW; не открывать SSH всему интернету.
+9. **Инфраструктурные детали не попадают в публичный git** — репозиторий публичный, поэтому в трекаемых файлах (код, docs, README, CLAUDE.md, ansible, compose, примеры конфигов, имена директорий, тексты коммитов) не должно быть: реальных IP и hostname, имён и алиасов конкретных VPS, SSH-пользователей и портов, провайдеров конкретных хостов, токенов, ключей, телефонов, chat/topic id. Писать роль, а не идентичность: «production-хост», «хост-наблюдатель», `<vps_ip>`, `<observer_ip>`, `deploy@<host>`. Реальные значения живут только в `.env.secrets`, `config.local.yaml`, `infra/ansible/inventory/production.ini` и vault — всё это в `.gitignore`. Исключение — уже существующие имена конфигурационных профилей (`hetzner_direct`, `home_ru_proxy`): это значения конфига, а не адреса. Перед коммитом проверять новые файлы на такие утечки.
 
 ## Документация
 

@@ -188,11 +188,28 @@ after an unexpected process exit or Docker/VM restart. The heartbeat
 `HEALTHCHECK` is observational: it changes the container health state but does
 not restart an unhealthy container.
 
-There is currently no host-level systemd service or timer that watches for an
-absent bridge container. An explicit `docker compose stop` or `docker compose
-down` intentionally stops all in-container watchdogs; recovery then requires
-the normal Ansible deploy or an explicit `docker compose ... up -d bridge`.
-The operational rule remains one bridge instance at a time.
+An explicit `docker compose stop` or `docker compose down` intentionally stops
+all in-container watchdogs and is not undone by `restart: always`; recovery then
+requires the normal Ansible deploy or an explicit `docker compose ... up -d
+bridge`. The operational rule remains one bridge instance at a time.
+
+Because every layer above lives inside the same container on the same host, a
+stopped container, a dead host and a broken Telegram alert path are all
+unobservable from within. Those classes are covered by an external observer on a
+second VPS:
+
+| Layer | Where it runs | Covers | Cannot cover |
+|-------|---------------|--------|--------------|
+| L0 supervisor + MAX watchdog + `HEALTHCHECK` | inside `deploy-bridge-1` | worker crash, hung MAX link | anything that kills the container or its outbound path |
+| L1 status API (`src/runtime/status_api.py`) | `127.0.0.1:18140` in the container, host loopback only | MAX egress/auth issues, alert outbox backlog, egress drift, queue backlog | anything that stops the process |
+| L2 SSH pull with a forced read-only command | container on the observer VPS, every 60 s | stopped container, dead host, stale heartbeat, restart storm, low disk | a broken observer→production path |
+| L3 HMAC push dead-man's switch | `maxtg-watchdog-push.timer` on production → observer `:18151` | distinguishes "bridge is dead" from "the observation path is dead" | observer host death |
+| L4 meta-monitoring | `vps-monitor` on the observer host, mutual host probes, daily summary | a dead observer | simultaneous death of both hosts |
+
+The observer only reads and reports: the pinned key runs a read-only probe, so
+recovery stays a human action. The full failure model, thresholds and drills are
+in [docs/runbooks/watchdog.md](runbooks/watchdog.md); the decision record is
+[ADR-012](decisions/ADR-012-external-watchdog.md).
 
 ## Потоки данных
 

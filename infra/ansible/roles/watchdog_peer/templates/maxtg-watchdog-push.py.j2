@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+# maxtg-watchdog-push.py — слой 3, dead-man's switch со стороны production-хоста.
+# Managed by maxtg_bridge/infra/ansible (роль watchdog_peer). Правки руками затрутся.
+#
+# Смысл направления: когда ломается путь наблюдатель → этот хост (firewall, fail2ban,
+# sshd), push продолжает идти, и watchdog отличает «bridge умер» от «сломан канал
+# наблюдения». Payload подписан HMAC-SHA256 и ограничен окном времени.
+
+import hashlib
+import hmac
+import json
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+PROBE = "{{ watchdog_peer_probe_path }}"
+ENV_FILE = "{{ watchdog_peer_env_file }}"
+SIGNATURE_HEADER = "X-Watchdog-Signature"
+
+
+def env_value(key):
+    try:
+        with open(ENV_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                name, _, value = line.strip().partition("=")
+                if name == key:
+                    return value.strip().strip('"').strip("'")
+    except Exception:
+        return ""
+    return ""
+
+
+def collect():
+    try:
+        result = subprocess.run([PROBE], capture_output=True, timeout=30, check=False)
+        if result.returncode == 0:
+            return json.loads(result.stdout.decode("utf-8", "replace"))
+    except Exception:
+        pass
+    return {"probe_failed": True}
+
+
+def main():
+    url = env_value("WATCHDOG_PUSH_URL")
+    secret = env_value("WATCHDOG_PUSH_SECRET")
+    if not url or not secret:
+        print("WATCHDOG_PUSH_URL / WATCHDOG_PUSH_SECRET not configured", file=sys.stderr)
+        return 0  # слой 3 просто выключен, это не повод падать
+
+    body = json.dumps({"ts": int(time.time()), "probe": collect()}).encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", SIGNATURE_HEADER: signature},
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            response.read()
+        return 0
+    except urllib.error.HTTPError as e:
+        print("push rejected: HTTP %s" % e.code, file=sys.stderr)
+        return 1
+    except Exception as e:
+        print("push failed: %s" % e.__class__.__name__, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

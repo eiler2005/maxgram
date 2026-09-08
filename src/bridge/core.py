@@ -38,6 +38,7 @@ from ..config.loader import AppConfig
 from ..db.repository import Repository
 from ..runtime.health import RuntimeHealthStore, build_operator_alert
 from ..runtime.health.metrics import run_runtime_metrics_textfile
+from ..runtime.status_api import run_status_api
 
 logger = logging.getLogger(__name__)
 
@@ -405,6 +406,19 @@ class BridgeCore:
             health=self._health,
             repo=self._repo,
             interval_seconds=getattr(health_cfg, "metrics_interval_seconds", 30),
+        )
+
+    async def run_status_api(self):
+        health_cfg = getattr(self._cfg, "health", None)
+        status_cfg = getattr(self._cfg, "status_api", None)
+        if status_cfg is None:
+            return
+        await run_status_api(
+            config=status_cfg,
+            health=self._health,
+            repo=self._repo,
+            heartbeat_interval_seconds=getattr(health_cfg, "heartbeat_interval_seconds", 30),
+            egress_active=getattr(getattr(self._cfg.max, "egress", None), "active", ""),
         )
 
     async def fix_fallback_titles(self):

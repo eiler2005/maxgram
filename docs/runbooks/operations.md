@@ -175,6 +175,20 @@ LOG_FORMAT=json
 Инвариант приватности тот же: не логировать текст сообщений, media, invite links,
 телефоны, токены или raw MAX payloads.
 
+Второй машиночитаемый источник — status API самого bridge (`status_api` в
+конфиге). Он слушает только loopback и нужен внешнему watchdog, но им же удобно
+пользоваться руками на сервере:
+
+```bash
+curl -s localhost:18140/healthz                                            # 200 / 503
+curl -s -H "Authorization: Bearer $BRIDGE_STATUS_TOKEN" localhost:18140/status | jq .
+```
+
+`/status` отдаёт `overall_status`, подсистемы с кодами issue, глубину очередей,
+`alert_outbox_size` и активный egress. Тексты сообщений, названия чатов и
+`raw_cause` исключений туда не попадают. Без `BRIDGE_STATUS_TOKEN` сервер не
+поднимается вовсе.
+
 ### MAX service events и реакции
 
 MAX `CONTROL` события (`add`, `remove`, `leave`, `joinbylink`) отображаются в
@@ -246,19 +260,26 @@ METRICS_TEXTFILE_PATH=/var/lib/node_exporter/textfile_collector/maxtg_bridge.pro
 
 ### Границы watchdog
 
-Все описанные здесь watchdog-и находятся на Hetzner production VPS:
+Внутренние watchdog-и находятся на Hetzner production VPS и **восстанавливают**;
+внешний наблюдатель находится на втором VPS и только **сообщает**.
 
-| Уровень | Где работает | Что восстанавливает | Ограничение |
-|---------|--------------|---------------------|-------------|
-| `BridgeSupervisor` | PID1 внутри `bridge` Docker-контейнера | Аварийно завершившийся bridge worker с backoff | Не работает, если контейнер остановлен |
+| Уровень | Где работает | Что делает | Ограничение |
+|---------|--------------|------------|-------------|
+| `BridgeSupervisor` | PID1 внутри `bridge` Docker-контейнера | Перезапускает аварийно завершившийся worker с backoff | Не работает, если контейнер остановлен |
 | MAX watchdog | Background task внутри того же worker | Зависший MAX при успешном egress probe: rate-limited self-exit, затем Docker restart | Не работает при остановленном worker/container; не делает SMS reauth и не меняет egress profile |
 | Docker `restart: always` | Docker Engine того же VPS | Unexpected process exit, restart Docker или VM | Не отменяет явный `docker compose stop`/`down` |
 | Docker `HEALTHCHECK` | Docker Engine того же VPS | Ничего: только помечает stale heartbeat как `unhealthy` | Не перезапускает unhealthy контейнер |
+| Внешний watchdog (L2/L3) | Контейнер `maxtg-watchdog` на **втором VPS** | Замечает остановленный контейнер, мёртвый хост, протухший heartbeat, сломанную доставку алертов — и пишет в Telegram с префиксом `[EXT]` | Ничего не чинит: ключ привязан к read-only пробе |
+| Мета-мониторинг (L4) | `vps-monitor` на хосте наблюдателя + встречная проба | Замечает смерть самого наблюдателя | Не переживёт смерть обоих хостов |
 
-Отдельного host-level `systemd` service/timer, который проверяет отсутствие
-контейнера и запускает его после ручной остановки, сейчас нет. Не запускай
-второй bridge instance: для восстановления используй только команду выше или
-штатный Ansible deploy.
+Host-level `systemd` service/timer, который сам поднимал бы контейнер после
+ручной остановки, по-прежнему нет — это сознательно: внешний слой превращает
+такую остановку в громкий алерт `container_down`, а поднимает контейнер человек.
+Не запускай второй bridge instance: для восстановления используй только команду
+выше или штатный Ansible deploy.
+
+Полная модель отказов, пороги, каталог алертов и учения —
+[docs/runbooks/watchdog.md](watchdog.md).
 
 ### MAX egress / Channel M
 

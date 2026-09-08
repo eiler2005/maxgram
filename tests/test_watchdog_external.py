@@ -1,0 +1,287 @@
+import ast
+import json
+import pathlib
+import sys
+import time
+
+import pytest
+
+from src.watchdog_external.config import TelegramTarget, WatchdogConfig
+from src.watchdog_external.notify import render_alert, render_recovery
+from src.watchdog_external.receiver import sign, verify
+from src.watchdog_external.rules import decide, evaluate
+from src.watchdog_external.state import WatchdogState
+
+NOW = int(time.time())
+
+
+def _cfg(**overrides) -> WatchdogConfig:
+    base = dict(
+        target_name="maxtg-prod",
+        target_host="198.51.100.10",
+        push_secret="",
+        dedup_ttl_seconds=900,
+        poll_interval_seconds=60,
+        status_interval_seconds=300,
+    )
+    base.update(overrides)
+    return WatchdogConfig(**base)
+
+
+def _state(tmp_path) -> WatchdogState:
+    return WatchdogState(tmp_path / "state.json")
+
+
+def _healthy_probe(**overrides) -> dict:
+    probe = {
+        "schema_version": 1,
+        "container": {"found": True, "state": "running", "health": "healthy", "restart_count": 1},
+        "heartbeat": {"present": True, "ts": NOW - 5, "age_seconds": 5},
+        "disk": {"path": "/opt", "free_percent": 55},
+        "status_api": {
+            "overall_status": "healthy",
+            "worker_restart_count": 1,
+            "subsystems": [{"name": "max_link", "status": "healthy", "issue": None}],
+            "queues": {"inbound": {"pending_count": 0, "oldest_created_at": None}},
+            "alert_outbox_size": 0,
+            "max_egress_active": "home_ru_proxy",
+        },
+    }
+    probe.update(overrides)
+    return probe
+
+
+def _observation(probe=None, **overrides) -> dict:
+    obs = {
+        "reachable": True,
+        "ssh_ok": True,
+        "ssh_error": "",
+        "status_requested": True,
+        "push": {},
+        "probe": probe if probe is not None else _healthy_probe(),
+    }
+    obs.update(overrides)
+    return obs
+
+
+def test_healthy_host_produces_no_findings(tmp_path):
+    evaluation = evaluate(_observation(), _state(tmp_path), _cfg(), NOW)
+    assert evaluation.findings == {}
+
+
+def test_alert_needs_consecutive_failures_then_recovers(tmp_path):
+    """Гистерезис: один сбой heartbeat — ещё не повод будить владельца."""
+    cfg = _cfg()
+    state = _state(tmp_path)
+    probe = _healthy_probe(heartbeat={"present": True, "ts": NOW - 900, "age_seconds": 900})
+
+    first = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg)
+    assert first.alerts == []
+
+    second = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg)
+    assert [f.rule for f in second.alerts] == ["heartbeat_stale"]
+    assert second.alerts[0].failure_class == "F2"
+
+    healed = decide(evaluate(_observation(), state, cfg, NOW), state, cfg)
+    assert healed.recoveries == ["heartbeat_stale"]
+    assert healed.alerts == []
+
+    # recovery отправляется ровно один раз
+    again = decide(evaluate(_observation(), state, cfg, NOW), state, cfg)
+    assert again.recoveries == []
+
+
+def test_stopped_container_alerts_immediately_and_suppresses_dependents(tmp_path):
+    """F8 — единственный класс, где ждать подтверждения незачем."""
+    cfg = _cfg()
+    state = _state(tmp_path)
+    probe = _healthy_probe(
+        container={"found": True, "state": "exited", "health": "none", "exit_code": 0},
+    )
+
+    evaluation = evaluate(_observation(probe), state, cfg, NOW)
+    assert set(evaluation.findings) == {"container_down"}
+    assert "heartbeat_stale" in evaluation.skipped
+    assert "subsystem_issue" in evaluation.skipped
+
+    decision = decide(evaluation, state, cfg)
+    assert [f.rule for f in decision.alerts] == ["container_down"]
+    assert decision.alerts[0].severity == "crit"
+
+
+def test_unreachable_host_suppresses_every_dependent_rule(tmp_path):
+    cfg = _cfg()
+    state = _state(tmp_path)
+    evaluation = evaluate(_observation(reachable=False), state, cfg, NOW)
+
+    assert set(evaluation.findings) == {"host_unreachable"}
+    assert {"container_down", "heartbeat_stale", "disk_low"} <= evaluation.skipped
+
+
+def test_broken_ssh_with_live_push_is_reported_as_observer_path_failure(tmp_path):
+    """F13: наблюдатель обязан отличать смерть объекта от смерти пути наблюдения."""
+    cfg = _cfg(push_secret="s3cret")
+    state = _state(tmp_path)
+    obs = _observation(ssh_ok=False, ssh_error="Connection timed out", push={"received_at": NOW - 30})
+
+    evaluation = evaluate(obs, state, cfg, NOW)
+
+    assert "ssh_probe_failed" in evaluation.findings
+    assert "push_stale" not in evaluation.findings
+    finding = evaluation.findings["ssh_probe_failed"]
+    assert "приложение живо" in finding.title
+    assert "push продолжает приходить" in finding.detail
+
+
+def test_missing_push_triggers_dead_man_switch(tmp_path):
+    cfg = _cfg(push_secret="s3cret")
+    state = _state(tmp_path)
+
+    evaluation = evaluate(_observation(), state, cfg, NOW)
+    assert "push_stale" in evaluation.findings
+    assert evaluation.findings["push_stale"].severity == "crit"
+
+
+def test_push_rules_are_skipped_when_layer_disabled(tmp_path):
+    evaluation = evaluate(_observation(), _state(tmp_path), _cfg(push_secret=""), NOW)
+    assert "push_stale" in evaluation.skipped
+
+
+def test_requires_reauth_is_escalated_to_critical(tmp_path):
+    cfg = _cfg()
+    status = _healthy_probe()["status_api"]
+    status["overall_status"] = "degraded"
+    status["subsystems"] = [
+        {
+            "name": "max_link",
+            "status": "degraded",
+            "issue": {
+                "code": "max_auth_invalid",
+                "summary": "MAX token инвалидирован",
+                "severity": "critical",
+                "requires_reauth": True,
+            },
+        }
+    ]
+    evaluation = evaluate(_observation(_healthy_probe(status_api=status)), _state(tmp_path), cfg, NOW)
+
+    finding = evaluation.findings["subsystem_issue"]
+    assert finding.severity == "crit"
+    assert finding.failure_class == "F5"
+    assert "max_reauth.py" in finding.hint
+
+
+def test_outbox_backlog_surfaces_broken_alert_channel(tmp_path):
+    status = _healthy_probe()["status_api"]
+    status["alert_outbox_size"] = 4
+    evaluation = evaluate(
+        _observation(_healthy_probe(status_api=status)), _state(tmp_path), _cfg(), NOW
+    )
+
+    finding = evaluation.findings["alert_outbox_backlog"]
+    assert finding.failure_class == "F6"
+
+
+def test_unexpected_egress_mode_is_detected(tmp_path):
+    status = _healthy_probe()["status_api"]
+    status["max_egress_active"] = "hetzner_direct"
+    evaluation = evaluate(
+        _observation(_healthy_probe(status_api=status)), _state(tmp_path), _cfg(), NOW
+    )
+
+    assert evaluation.findings["egress_mode_unexpected"].failure_class == "F15"
+
+
+def test_restart_storm_uses_baseline_within_window(tmp_path):
+    cfg = _cfg(restart_storm_delta=3, restart_storm_window_seconds=1800)
+    state = _state(tmp_path)
+
+    evaluate(_observation(), state, cfg, NOW)  # ставит baseline restart_count=1
+    stormy = _healthy_probe(
+        container={"found": True, "state": "running", "health": "healthy", "restart_count": 5}
+    )
+    evaluation = evaluate(_observation(stormy), state, cfg, NOW + 60)
+
+    assert evaluation.findings["restart_storm"].failure_class == "F11"
+
+
+def test_status_rules_are_skipped_when_status_not_polled(tmp_path):
+    """В циклах без опроса API счётчики status-правил не должны обнуляться."""
+    probe = _healthy_probe()
+    probe.pop("status_api")
+    evaluation = evaluate(
+        _observation(probe, status_requested=False), _state(tmp_path), _cfg(), NOW
+    )
+
+    assert "status_api_unreachable" in evaluation.skipped
+    assert "overall_degraded" in evaluation.skipped
+    assert evaluation.findings == {}
+
+
+def test_alert_text_carries_class_and_action_without_private_data(tmp_path):
+    cfg = _cfg()
+    state = _state(tmp_path)
+    probe = _healthy_probe(
+        container={"found": True, "state": "exited", "health": "none", "exit_code": 0}
+    )
+    finding = decide(evaluate(_observation(probe), state, cfg, NOW), state, cfg).alerts[0]
+
+    text = render_alert(finding, cfg)
+    assert "[EXT]" in text
+    assert "F8" in text
+    assert "container_down" in text
+    assert "up -d bridge" in text
+    assert "[EXT]" in render_recovery("container_down", cfg)
+
+
+def test_push_signature_round_trip():
+    body = json.dumps({"ts": NOW, "payload": {"overall_status": "healthy"}}).encode()
+
+    assert verify("secret", body, sign("secret", body)) is True
+    assert verify("secret", body, sign("other", body)) is False
+    assert verify("secret", body, None) is False
+    assert verify("", body, sign("secret", body)) is False
+
+
+@pytest.mark.architecture
+def test_watchdog_depends_only_on_stdlib_and_itself():
+    """Наблюдатель обязан переживать любую поломку наблюдаемого.
+
+    Поэтому он не импортирует ни модули bridge, ни сторонние библиотеки:
+    контейнер собирается вообще без pip install.
+    """
+    package = pathlib.Path(__file__).resolve().parents[1] / "src" / "watchdog_external"
+    allowed_local = {"config", "notify", "probe", "receiver", "rules", "state"}
+    offenders: list[str] = []
+
+    for module in sorted(package.glob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:  # относительный импорт внутри пакета
+                    if node.module not in allowed_local | {None}:
+                        offenders.append(f"{module.name}: relative {node.module}")
+                    continue
+                names = [(node.module or "").split(".")[0]]
+            else:
+                continue
+
+            for name in names:
+                if name and name not in sys.stdlib_module_names:
+                    offenders.append(f"{module.name}: {name}")
+
+    assert offenders == [], f"внешний watchdog тянет лишние зависимости: {offenders}"
+
+
+def test_telegram_targets_include_owner_and_ops_topic():
+    cfg = _cfg()
+    cfg.bot_token = "token"
+    cfg.targets = [
+        TelegramTarget(label="owner_dm", chat_id="1"),
+        TelegramTarget(label="ops_topic", chat_id="-100", topic_id="7"),
+    ]
+
+    assert cfg.telegram_configured is True
+    assert [t.label for t in cfg.targets] == ["owner_dm", "ops_topic"]

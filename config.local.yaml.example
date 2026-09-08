@@ -24,6 +24,13 @@ health:
     cycle_jitter_seconds: 30
     per_chat_delay_seconds: 0.5
 
+# Включается на production: внешний watchdog на втором VPS опрашивает этот API
+# через SSH-канал. Токен берётся из BRIDGE_STATUS_TOKEN в .env.secrets.
+status_api:
+  enabled: true
+  host: "127.0.0.1"
+  port: 18140
+
 max:
   # Основной production-режим: MAX API/CDN идёт через reverse Channel M.
   # Роутер держит outbound SSH remote-forward на VPS, а bridge использует

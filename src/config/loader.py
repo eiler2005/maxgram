@@ -86,6 +86,16 @@ class HealthConfig:
 
 
 @dataclass
+class StatusApiConfig:
+    """Read-only loopback status API for the external watchdog (see docs/runbooks/watchdog.md)."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 18140
+    token: Optional[str] = None
+
+
+@dataclass
 class ContentConfig:
     forward_photos: bool = True
     forward_documents: bool = True
@@ -121,6 +131,7 @@ class AppConfig:
     health: HealthConfig
     bridge: BridgeConfig
     content: ContentConfig
+    status_api: StatusApiConfig = field(default_factory=StatusApiConfig)
     chats: list[ChatConfig] = field(default_factory=list)
 
     def get_chat_mode(self, max_chat_id: str) -> str:
@@ -193,6 +204,28 @@ def _resolve_optional_path(value, *, default: Path | None = None) -> Path | None
     if rendered.lower() in {"", "0", "false", "off", "none", "disabled"}:
         return None
     return Path(rendered)
+
+
+def _resolve_optional_env(value) -> Optional[str]:
+    """Как _resolve_env, но отсутствующая переменная = None, а не ошибка старта."""
+    if value is None:
+        return None
+    try:
+        rendered = _resolve_env(str(value)).strip()
+    except ValueError:
+        return None
+    return rendered or None
+
+
+def _load_status_api(raw: dict) -> StatusApiConfig:
+    defaults = StatusApiConfig()
+    api_raw = raw.get("status_api") or {}
+    return StatusApiConfig(
+        enabled=_resolve_bool(api_raw.get("enabled"), defaults.enabled),
+        host=_resolve_env(api_raw.get("host") or defaults.host),
+        port=_resolve_int(api_raw.get("port"), defaults.port),
+        token=os.environ.get("BRIDGE_STATUS_TOKEN") or _resolve_optional_env(api_raw.get("token")),
+    )
 
 
 def _load_dm_history_sweep(raw: dict) -> DmHistorySweepConfig:
@@ -368,5 +401,6 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         health=health,
         bridge=br,
         content=ct,
+        status_api=_load_status_api(raw),
         chats=chats,
     )

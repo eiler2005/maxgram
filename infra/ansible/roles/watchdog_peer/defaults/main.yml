@@ -1,0 +1,21 @@
+---
+# Агент production-хоста для внешнего watchdog.
+# Роль ничего не меняет в самом bridge: она ставит read-only пробу и push-таймер.
+
+watchdog_peer_container: "deploy-bridge-1"
+watchdog_peer_data_dir: "{{ project_root }}/{{ data_dir }}"
+watchdog_peer_env_file: "{{ project_root }}/{{ env_secrets_file }}"
+
+watchdog_peer_probe_path: /usr/local/bin/bridge-status-probe.py
+watchdog_peer_push_path: /usr/local/bin/maxtg-watchdog-push.py
+
+watchdog_peer_status_url: "http://127.0.0.1:18140/status"
+watchdog_peer_status_timeout_seconds: 5
+
+# Публичный ключ выделенной пары наблюдателя (хост-наблюдатель → этот хост).
+# Пустое значение = ключ не раскладываем: слой 2 остаётся выключенным.
+watchdog_peer_pubkey: ""
+
+# Слой 3: как часто production-хост сам сигналит наблюдателю.
+watchdog_peer_push_enabled: true
+watchdog_peer_push_interval_seconds: 60

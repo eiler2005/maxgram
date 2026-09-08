@@ -162,11 +162,32 @@ Bridge работает в production на **Hetzner Cloud**.
 - Runtime: Docker Compose (non-root контейнер, `cap_drop: ALL`, `restart: always`)
 - State: SQLite + MAX сессия в bind-mounted `data/`
 - Health: Docker `HEALTHCHECK` смотрит на heartbeat supervisor-а, а не на внешние MAX/TG интеграции
-- Граница автовосстановления: supervisor и MAX watchdog работают внутри bridge-контейнера; Docker restart policy работает в Docker Engine того же Hetzner VPS. Отдельного host-level systemd watchdog сейчас нет. `HEALTHCHECK` только помечает stale heartbeat как `unhealthy`, но сам контейнер не перезапускает; после явного `docker compose stop`/`down` нужен `docker compose ... up -d bridge`.
+- Граница автовосстановления: supervisor и MAX watchdog работают внутри bridge-контейнера; Docker restart policy работает в Docker Engine того же Hetzner VPS. `HEALTHCHECK` только помечает stale heartbeat как `unhealthy`, но сам контейнер не перезапускает; после явного `docker compose stop`/`down` нужен `docker compose ... up -d bridge`.
 - Доступ: только SSH-ключ, ограничен по IP через UFW
 - Security: `fail2ban`, `unattended-upgrades`, публичных HTTP-портов нет
 - Бот после старта присылает startup-уведомление в owner DM с runtime/host и итогом встроенного `pytest`
 - Регулярный деплой, бэкап, recovery, bootstrap новой VM и hardening кодифицированы как Ansible playbooks в `infra/ansible/`; аварийный fallback документирован как backup-first rollout точного отправленного commit, а секреты и state остаются только на сервере
+
+### Watchdog: что ломается и кто это замечает
+
+Все внутренние уровни восстановления делят зону отказа с тем, что защищают,
+поэтому наблюдатель на **втором VPS** закрывает то, о чём bridge структурно не
+может сообщить сам. Он только сообщает: привязанный SSH-ключ выполняет
+read-only пробу, поднимает контейнер человек.
+
+| Что ломается | Кто замечает | Восстановление |
+|---|---|---|
+| Падение worker | `BridgeSupervisor` внутри контейнера | автоматически, с backoff |
+| Завис MAX при живом egress | MAX watchdog → self-exit → Docker `restart: always` | автоматически, с cooldown |
+| Завис worker (контейнер жив, heartbeat протух) | внешний watchdog | вручную |
+| **Контейнер остановлен** (`docker compose stop/down`) | **только внешний watchdog** — `restart: always` на явный stop не действует | вручную |
+| **Лёг хост / VM / Docker daemon** | **только внешний watchdog** | вручную |
+| **Сломана собственная доставка алертов bridge в Telegram** | **только внешний watchdog** — у него независимый сетевой путь | по причине |
+| Умер сам внешний watchdog | мониторинг его хоста + встречная проба + ежедневная сводка | вручную |
+
+Полная модель отказов, каталог алертов, пороги и квартальные учения:
+[docs/runbooks/watchdog.md](docs/runbooks/watchdog.md) ·
+решение: [ADR-012](docs/decisions/ADR-012-external-watchdog.md).
 
 ---
 
@@ -359,6 +380,7 @@ docker compose --env-file .env.host -f deploy/docker-compose.prod.yml up -d
 | [docs/roadmap.md](docs/roadmap.md) | Статус фаз и планы |
 | [docs/decisions/](docs/decisions/) | ADR-001…006: ключевые решения |
 | [docs/runbooks/operations.md](docs/runbooks/operations.md) | Операционные процедуры |
+| [docs/runbooks/watchdog.md](docs/runbooks/watchdog.md) | Модель отказов, внутренний и внешний watchdog, учения |
 | [docs/runbooks/deployment.md](docs/runbooks/deployment.md) | Деплой: локально, Docker, Hetzner, Fly.io |
 | [docs/runbooks/hetzner-production.md](docs/runbooks/hetzner-production.md) | Безопасный production-деплой |
 | [docs/tests.md](docs/tests.md) | Описание regression-набора |

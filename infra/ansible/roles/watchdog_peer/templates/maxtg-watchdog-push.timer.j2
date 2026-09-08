@@ -1,0 +1,11 @@
+[Unit]
+Description=maxtg-bridge external watchdog push timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ watchdog_peer_push_interval_seconds }}s
+AccuracySec=10s
+Unit=maxtg-watchdog-push.service
+
+[Install]
+WantedBy=timers.target

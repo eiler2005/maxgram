@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from ...db.repository import Repository
 from .state import HealthSnapshot, SUBSYSTEM_ORDER
@@ -130,6 +130,21 @@ def write_prometheus_textfile(path: str | Path | None, content: str) -> bool:
     return True
 
 
+async def collect_runtime_counters(
+    *,
+    health: RuntimeHealthStore,
+    repo: Repository,
+) -> dict[str, Any]:
+    """Единый сбор durable-счётчиков: используется и textfile-метриками, и status API."""
+    return {
+        "pending_inbound": await repo.count_pending_inbound(),
+        "pending_outbound": await repo.count_pending_outbound(),
+        "pending_media": await repo.count_pending_media(),
+        "delivery_counts": await repo.count_deliveries_since(0),
+        "alert_outbox_size": await health.outbox.size(),
+    }
+
+
 async def write_runtime_metrics_textfile(
     *,
     path: str | Path | None,
@@ -140,14 +155,8 @@ async def write_runtime_metrics_textfile(
         return False
 
     snapshot = await health.get_snapshot()
-    content = render_prometheus_textfile(
-        snapshot,
-        pending_inbound=await repo.count_pending_inbound(),
-        pending_outbound=await repo.count_pending_outbound(),
-        pending_media=await repo.count_pending_media(),
-        delivery_counts=await repo.count_deliveries_since(0),
-        alert_outbox_size=await health.outbox.size(),
-    )
+    counters = await collect_runtime_counters(health=health, repo=repo)
+    content = render_prometheus_textfile(snapshot, **counters)
     return write_prometheus_textfile(path, content)
 
 
