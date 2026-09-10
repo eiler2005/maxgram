@@ -735,3 +735,43 @@ def test_watchdog_command_links_full_clickable_url():
     assert cmd.DOCS_URL.startswith("https://")
     assert cmd.DOCS_URL.endswith("docs/runbooks/watchdog.md")
     assert cmd.DOCS_URL in text
+
+
+def test_run_once_logs_findings_that_have_not_reached_the_threshold(tmp_path, monkeypatch, caplog):
+    """«all checks passed» не должно означать «проблема замечена, но молчим»."""
+    import logging
+    from src.watchdog_external import __main__ as cli
+
+    cfg = _cfg(state_path=str(tmp_path / "state.json"))
+    state = _state(tmp_path)
+    # heartbeat протух: правило сработает, но fail_after=2 не даст алерта
+    stale = _healthy_probe(heartbeat={"present": True, "ts": NOW - 900, "age_seconds": 900})
+    monkeypatch.setattr(cli, "collect", lambda *a, **k: _observation(stale))
+    monkeypatch.setattr(cli.receiver, "read_push", lambda c: {})
+    monkeypatch.setattr(cli, "dispatch", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "_touch_heartbeat", lambda c: None)
+
+    with caplog.at_level(logging.INFO, logger="watchdog"):
+        cli.run_once(cfg, state, with_status=True)
+
+    text = caplog.text
+    assert "замечено, ниже порога: heartbeat_stale (1/2 подряд)" in text
+    assert "all checks passed" not in text
+
+
+def test_run_once_still_reports_a_clean_cycle(tmp_path, monkeypatch, caplog):
+    import logging
+    from src.watchdog_external import __main__ as cli
+
+    cfg = _cfg(state_path=str(tmp_path / "state.json"))
+    state = _state(tmp_path)
+    monkeypatch.setattr(cli, "collect", lambda *a, **k: _observation())
+    monkeypatch.setattr(cli.receiver, "read_push", lambda c: {})
+    monkeypatch.setattr(cli, "dispatch", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "_touch_heartbeat", lambda c: None)
+
+    with caplog.at_level(logging.INFO, logger="watchdog"):
+        cli.run_once(cfg, state, with_status=True)
+
+    assert "all checks passed" in caplog.text
+    assert "ниже порога" not in caplog.text

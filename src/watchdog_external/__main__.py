@@ -15,7 +15,7 @@ from . import receiver
 from .config import WatchdogConfig, load_config
 from .notify import SOURCE_HEADER, dispatch, render_daily_summary, send_telegram
 from .probe import collect
-from .rules import LayerReport, decide, evaluate
+from .rules import LayerReport, decide, evaluate, fail_after
 from .state import WatchdogState
 
 logger = logging.getLogger("watchdog")
@@ -172,7 +172,20 @@ def run_once(cfg: WatchdogConfig, state: WatchdogState, *, with_status: bool) ->
         logger.warning("[%s] %s — %s", finding.severity, finding.rule, finding.detail)
     for recovery in decision.recoveries:
         logger.info("recovered: %s (длилось %ss)", recovery.rule, recovery.duration_seconds)
-    if not decision.alerts and not decision.recoveries:
+
+    # Сработавшее, но ещё не добравшее порог, тоже пишем в лог. Иначе «all checks
+    # passed» означает одновременно «всё хорошо» и «проблема замечена, но молчим»,
+    # и при разборе постфактум нельзя отличить одно от другого.
+    alerted = {f.rule for f in decision.alerts}
+    pending = [
+        (rule, state.fail_count(rule), fail_after(rule, cfg))
+        for rule in sorted(evaluation.findings)
+        if rule not in alerted and rule not in evaluation.skipped
+    ]
+    for rule, seen, threshold in pending:
+        logger.info("замечено, ниже порога: %s (%s/%s подряд)", rule, seen, threshold)
+
+    if not decision.alerts and not decision.recoveries and not pending:
         logger.info("all checks passed (status polled: %s)", with_status)
 
     dispatch(cfg, state, alerts=decision.alerts, recoveries=decision.recoveries, now=now)
