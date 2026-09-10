@@ -46,6 +46,14 @@ Telegram» отправить некому. То же самое с остано
 
 ### 1.3. Каталог классов отказов
 
+> **Как читать колонку латентности.** Для классов, где bridge жив и рассказывает
+> о себе сам (F4, F5, частично F7), указаны два числа. Первое — когда напишет сам
+> bridge. Второе — когда подтвердит внешний слой: он опрашивает status API раз в
+> 300 с и требует двух подряд обнаружений, поэтому его подтверждение приходит
+> примерно через 10 минут непрерывной проблемы. Сбой короче этого порога внешний
+> слой намеренно не дублирует — см. раздел «Внешний watchdog промолчал».
+
+
 Три строки в колонке «кто ловил раньше» до этой работы были заполнены словом
 **никто** — ради них всё и делалось.
 
@@ -54,10 +62,10 @@ Telegram» отправить некому. То же самое с остано
 | **F1** | Падение worker | исключение убивает задачу, код `worker_crashed` | Supervisor | Supervisor + `restart_storm` снаружи | секунды | авто, backoff до 300 с |
 | **F2** | Зависание worker | процесс жив, heartbeat не обновляется | `HEALTHCHECK` ставит `unhealthy` — и всё | `heartbeat_stale`, `container_unhealthy` | ~3 мин | **вручную** |
 | **F3** | MAX link мёртв, egress жив | `is_ready()` false, `link_offline` | MAX watchdog → `os._exit(75)` | он же + `restart_storm` при зацикливании | 180 с + cooldown | авто с cooldown 1800 с |
-| **F4** | MAX egress лёг (Channel M) | `max_egress_unavailable` | bridge алертит своим каналом | `subsystem_issue` (crit) | ~1 мин | **вручную** — рестарт не помогает |
-| **F5** | MAX token инвалидирован | `requires_reauth=true` | bridge алертит | `subsystem_issue` с отдельной формулировкой | ~1 мин | **только вручную**, `scripts/max_reauth.py` |
+| **F4** | MAX egress лёг (Channel M) | `max_egress_unavailable` | bridge алертит своим каналом | он же + внешнее подтверждение `subsystem_issue` (crit) | ≈1 мин bridge · ≈10 мин внешний | **вручную** — рестарт не помогает |
+| **F5** | MAX token инвалидирован | `requires_reauth=true` | bridge алертит | он же + `subsystem_issue` с отдельной формулировкой | ≈1 мин bridge · ≈10 мин внешний | **только вручную**, `scripts/max_reauth.py` |
 | **F6** | **Сломан сам канал алертов** | `system_notification_failed`, растёт `alert_outbox.jsonl` | **никто** | `alert_outbox_backlog` — через независимый путь наблюдателя | ~10 мин | по причине |
-| **F7** | Отказ SQLite | `storage_unavailable` | Supervisor, возможен цикл | + `restart_storm`, `subsystem_issue` | сек–мин | авто или вручную |
+| **F7** | Отказ SQLite | `storage_unavailable` | Supervisor, возможен цикл | + `restart_storm` (≈2 мин), `subsystem_issue` (≈10 мин) | сек–мин Supervisor | авто или вручную |
 | **F8** | **Контейнер остановлен** | `docker compose stop/down`, сорвавшийся деплой | **никто** — `restart: always` на явный stop не действует | `container_down` (crit) | ~60–120 с | **только вручную** |
 | **F9** | **Хост / VM / Docker daemon лёг** | не отвечает ничего | **никто** | `host_unreachable` + `push_stale` | ~60–120 с | авто или вручную |
 | **F10** | Кончается диск | падают записи в SQLite, логи, health-файлы | никто, проявится как F2/F7 | `disk_low` — **опережающий** сигнал | до отказа | вручную |
@@ -482,6 +490,21 @@ Push-канал не имеет TLS осознанно: в теле нет се�
 | Restart storm | 3 за 1800 с | `WATCHDOG_RESTART_STORM_DELTA` |
 | Grace для degraded | 900 с | `WATCHDOG_DEGRADED_GRACE_SECONDS` |
 | Ожидаемый egress | `home_ru_proxy` | `WATCHDOG_EXPECTED_EGRESS` |
+
+**Производная величина, которую легко посчитать неверно.** Правила, работающие
+по данным status API (`subsystem_issue`, `overall_degraded`, `queue_backlog`,
+`egress_mode_unexpected`, `alert_outbox_backlog`), срабатывают не по интервалу
+опроса 60 с, а по интервалу опроса **API** — 300 с. Реальная задержка алерта =
+`300 с × порог подряд`:
+
+| Правило | Порог | Фактическая задержка |
+|---|---|---|
+| `subsystem_issue`, `queue_backlog`, `egress_mode_unexpected` | 2 | ≈10 мин |
+| `alert_outbox_backlog` | 2 (600 с grace ÷ 300 с) | ≈10 мин |
+| `overall_degraded` | 3 (900 с grace ÷ 300 с) | ≈15 мин |
+
+Правила слоя L2 (`container_down`, `heartbeat_stale`, `host_unreachable` и
+прочие) считаются от 60-секундного цикла и потому срабатывают на порядок быстрее.
 | Сводка состояния | 4 раза в сутки, 09/13/17/21 МСК | `WATCHDOG_SUMMARY_HOURS_UTC=6,10,14,18` |
 
 Внутренние пороги bridge (`heartbeat_interval_seconds`, `max_self_heal_grace_seconds`,
