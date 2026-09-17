@@ -41,6 +41,12 @@ The reply path is symmetric: `TelegramAdapter` receives a topic reply,
 `BridgeCore` resolves the `ChatBinding` and an optional `reply_to` mapping, then
 `MaxAdapter.send_message()` sends through the current MAX backend.
 
+At the final PyMax media-gateway boundary, a plain Telegram `http(s)` URL is
+rendered as PyMax's explicit Markdown link syntax. PyMax then emits a native
+MAX link entity while the visible URL and the bridge's outbound acknowledgement
+text stay unchanged. Existing Markdown links and URLs that PyMax's limited
+formatter cannot represent safely are left untouched.
+
 ## Component Boundary
 
 ```mermaid

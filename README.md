@@ -75,6 +75,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 
 - Automatic topic creation for every new MAX chat
 - Bidirectional messaging — replies in Telegram → delivered to MAX (including reply-to-message)
+- Telegram → MAX bare HTTP(S) URLs are rendered as native clickable MAX links while preserving the visible URL text
 - MAX replies become native Telegram replies when the original mapping is available; unmapped replies and forwarded messages receive short context markers without quoted content
 - Media forwarding in both directions: photos, video, audio, voice, documents
 - MAX video downloads use PyMax 2.4.1 `get_video_by_id()` first, keep raw `VIDEO_PLAY` as a fallback, prefer real `MP4_*` streams over `EXTERNAL` player pages, and use an adaptive CDN user-agent (`CHROME` vs mobile Safari)

@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **390 тестов**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **451 тест**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -328,6 +328,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_file_url_uses_safe_typed_url_without_raw_request` | Валидный HTTP(S) URL из typed PyMax API используется сразу и не делает лишний raw request. |
 | `test_file_url_discards_unsafe_typed_url_and_uses_safe_raw_fallback` | Некорректный typed URL не обрывает file recovery: backend использует ограниченный raw fallback и принимает только HTTP(S) URL. |
 | `test_video_url_discards_non_http_typed_url_so_caller_can_use_raw_fallback` | Некорректный typed video URL не попадает в downloader, поэтому media service может выполнить существующий `VIDEO_PLAY` fallback. |
+| `test_outbound_bare_url_becomes_clickable_max_link_with_same_visible_text` | Обычный HTTP(S) URL из Telegram на PyMax boundary превращается в link entity; видимый текст URL и ack-text остаются прежними. |
+| `test_outbound_url_renderer_preserves_existing_markdown_and_unsafe_parentheses` | Уже размеченная ссылка не переписывается, а URL с круглыми скобками остаётся plain text, чтобы ограниченный formatter PyMax не создал неверную ссылку. |
 
 ---
 

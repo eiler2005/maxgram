@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+import re
 from typing import Any
 
 from pymax import File, Photo, Video
@@ -9,6 +10,50 @@ from pymax.api.messages.payloads import ChatHistoryPayload, GetVideoPayload
 from ...ports import MaxClientMessage, MaxSendResult
 from .models import model_dump
 from .raw_gateway import PymaxRawGateway
+
+
+# PyMax creates MAX link entities only from its small Markdown subset
+# (`[label](url)`).  Telegram forwards normal user-entered URLs as plain text,
+# so render just those URLs at the PyMax boundary.  Keep the visible label equal
+# to the original URL: outbound acknowledgement matching must continue to use
+# the unmodified Telegram text.
+_BARE_HTTP_URL_RE = re.compile(r"https?://[^\s<>\[\]\"']+", re.IGNORECASE)
+_MARKDOWN_LINK_SPAN_RE = re.compile(r"\[[^\]\n]+\]\([^\s)]+\)")
+_TRAILING_URL_PUNCTUATION = ".,;:!?]}»”'"
+
+
+def render_bare_urls_as_max_links(text: str) -> str:
+    """Convert safe plain HTTP(S) URLs to PyMax's explicit link Markdown.
+
+    Existing Markdown links stay untouched.  URLs containing parentheses are
+    left as plain text because PyMax's public formatter uses the first closing
+    parenthesis as the end of a link URL; a partial or wrong link is worse than
+    the original non-clickable text.
+    """
+
+    protected_spans = tuple(
+        (match.start(), match.end()) for match in _MARKDOWN_LINK_SPAN_RE.finditer(text)
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        if any(start <= match.start() < end for start, end in protected_spans):
+            return match.group(0)
+
+        candidate = match.group(0)
+        url = candidate
+        trailing = ""
+        while url and url[-1] in _TRAILING_URL_PUNCTUATION:
+            trailing = f"{url[-1]}{trailing}"
+            url = url[:-1]
+        while url.endswith(")") and url.count("(") < url.count(")"):
+            trailing = f"){trailing}"
+            url = url[:-1]
+
+        if not url or "(" in url or ")" in url:
+            return candidate
+        return f"[{url}]({url}){trailing}"
+
+    return _BARE_HTTP_URL_RE.sub(replace, text)
 
 
 class PymaxMediaGateway:
@@ -38,7 +83,7 @@ class PymaxMediaGateway:
         attachments = [attachment] if attachment is not None else None
         result = await self._client.send_message(
             chat_id=chat_id,
-            text=text,
+            text=render_bare_urls_as_max_links(text),
             reply_to=reply_to,
             attachments=attachments,
         )

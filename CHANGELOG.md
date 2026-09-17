@@ -46,6 +46,11 @@ All notable changes to Maxgram are documented here.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
 
 ### Fixed
+- **Telegram links lost clickability in MAX** — PyMax 2.4.1 only creates a
+  native MAX link entity from explicit `[label](url)` Markdown. The backend now
+  renders safe bare Telegram HTTP(S) URLs at that final boundary, preserving
+  the visible URL and the bridge's original acknowledgement text. Existing
+  Markdown links and URLs that PyMax cannot represent safely stay unchanged.
 - **`all checks passed` hid findings below the alert threshold** — a rule that fired but had not yet reached its consecutive-failure count produced the same log line as a completely clean cycle. During post-incident analysis that made "the watchdog saw it and stayed quiet" indistinguishable from "the watchdog never saw it", and proving which one required cross-referencing health events on the other host. Sub-threshold findings are now logged with their count and threshold.
 - **Inline buttons never reached the bridge** — polling requested `allowed_updates=["message"]`, so Telegram never delivered `callback_query`. Every inline button was silently inert, including the older "Вступить в MAX" invite button: the message sends, the button clicks, and nothing happens anywhere — no error, no log line, because the event never arrives. Fixed and pinned by a test.
 - **`/watchdog` reply showed raw HTML tags** — command replies are sent without a parse mode, so the markup arrived as literal text. The command is plain text now, and its documentation link is a full URL because relative paths are not clickable in Telegram.
@@ -66,6 +71,9 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added end-to-end PyMax formatter regressions for plain Telegram URLs becoming
+  native MAX links with identical visible text, plus preservation of existing
+  Markdown links and URLs unsafe for PyMax's limited formatter.
 - Added regressions for extracting a forwarded source title from the local MAX chat cache and rendering it with whitespace normalization, while retaining the neutral fallback.
 - Added a media-recovery failure matrix for safe typed/raw file URLs, cached
   direct URL → `fileId` fallback, source/wrapper double-miss retry, and

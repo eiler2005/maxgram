@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 
 import pytest
+from pymax.formatting.markdown import Formatter
 
-from src.adapters.max.backends.pymax.media import PymaxMediaGateway
+from src.adapters.max.backends.pymax.media import PymaxMediaGateway, render_bare_urls_as_max_links
 
 
 class EmptyFileClient:
@@ -36,6 +37,15 @@ class CapturingRawGateway:
     async def request(self, **kwargs):
         self.calls.append(kwargs)
         return self.response
+
+
+class SendingClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def send_message(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(id=44)
 
 
 @pytest.mark.asyncio
@@ -87,3 +97,36 @@ async def test_video_url_discards_non_http_typed_url_so_caller_can_use_raw_fallb
 
     assert url is None
     assert raw.calls == []
+
+
+@pytest.mark.asyncio
+async def test_outbound_bare_url_becomes_clickable_max_link_with_same_visible_text():
+    url = "https://max.ru/join/example_invite_token"
+    text = f"Это для меня: {url}."
+    client = SendingClient()
+    gateway = PymaxMediaGateway(client, CapturingRawGateway())
+
+    result = await gateway.send_outbound_message(chat_id=11, text=text)
+
+    assert result.message_id == "44"
+    assert client.calls == [
+        {
+            "chat_id": 11,
+            "text": f"Это для меня: [{url}]({url}).",
+            "reply_to": None,
+            "attachments": None,
+        }
+    ]
+    visible_text, entities = Formatter.format_markdown(client.calls[0]["text"])
+    assert visible_text == text
+    assert len(entities) == 1
+    assert entities[0].attributes.url == url
+
+
+def test_outbound_url_renderer_preserves_existing_markdown_and_unsafe_parentheses():
+    markdown_link = "[Сайт](https://example.invalid/already-linked)"
+    parenthesized_url = "https://example.invalid/path(with-parentheses)"
+
+    rendered = render_bare_urls_as_max_links(f"{markdown_link} {parenthesized_url}")
+
+    assert rendered == f"{markdown_link} {parenthesized_url}"
