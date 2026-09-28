@@ -178,7 +178,7 @@ class EgressTCPTransport(TCPTransport):
 
     async def connect(self) -> None:
         loop = asyncio.get_running_loop()
-        raw_sock = await loop.run_in_executor(
+        opening = loop.run_in_executor(
             None,
             lambda: self._maxtg_socket_connector.connect(
                 self._host,
@@ -186,14 +186,26 @@ class EgressTCPTransport(TCPTransport):
                 timeout=self._maxtg_timeout,
             ),
         )
+        try:
+            raw_sock = await asyncio.shield(opening)
+        except asyncio.CancelledError:
+            def dispose(future):
+                if not future.cancelled() and future.exception() is None:
+                    future.result().close()
+            opening.add_done_callback(dispose)
+            raise
         raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         raw_sock.setblocking(False)
         ssl_context = self._ssl_ctx if self._use_ssl else None
-        self._reader, self._writer = await asyncio.open_connection(
-            sock=raw_sock,
-            ssl=ssl_context,
-            server_hostname=self._host if self._use_ssl else None,
-        )
+        try:
+            self._reader, self._writer = await asyncio.open_connection(
+                sock=raw_sock,
+                ssl=ssl_context,
+                server_hostname=self._host if self._use_ssl else None,
+            )
+        except BaseException:
+            raw_sock.close()
+            raise
 
 
 class EgressClient(BridgeClient):

@@ -118,7 +118,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - PyMax 2 TCP msgpack decoder может падать на raw `CHAT_HISTORY`, если MAX отдаёт map с array-like key (`TypeError: unhashable type: 'list'`). `src/adapters/max/backends/pymax/transport.py` ставит backend-local `BridgeMsgpackPayloadCodec`, который конвертирует такие keys в hashable форму до нормализации payload.
 - PyMax 2 TCP `seq` в upstream растёт до `0xFFFFFFFF`, но TCP framer пакует его в one-byte поле; после `255` возникает `struct.error: 'B' format requires 0 <= number <= 255` и ломаются `CHAT_HISTORY`/TG→MAX sends. `src/adapters/max/backends/pymax/transport.py` ставит `BridgeConnectionManager`/sequence guard с wrap `% 0x100`; regression marker: `pymax_tcp_sequence_overflow`.
 - PyMax 2 native `on_raw()` используется вместо старого private `_handle_message_notifications` patch; raw requests изолированы в backend `raw_gateway.py` через `client._app.invoke(...)`.
-- MAX egress выбирается только внутри `src/adapters/max/`: `home_ru_proxy` использует authenticated HTTP CONNECT к VPS-local reverse Channel M listener, который держится исходящим SSH remote-forward с домашнего РФ роутера; `hetzner_direct` оставляет старый direct egress с VPS. Автоматического fallback нет: при падении proxy MAX деградирует с issue `max_egress_unavailable`, но сам не переключается на Hetzner direct.
+- MAX egress выбирается только внутри `src/adapters/max/`: `home_ru_proxy` использует authenticated HTTP CONNECT к VPS-local reverse Channel M listener, который держится исходящим SSH remote-forward с домашнего РФ роутера; `hetzner_direct` оставляет старый direct egress с VPS. По умолчанию `fallback_policy: manual`. Опциональный `auto` управляется единственным `MaxEgressController` при внутреннем MAX watchdog: 600с отказа, 300с стабильного восстановления, минимум 600с на резерве. Контроллер в `src/runtime/max_egress.py`, операции и поколения клиента — в `network/switching.py`; внешний watchdog только наблюдает. API/CDN/uploads переключаются совместно. См. `docs/runbooks/max-egress-failover.md`.
 - Reconnect реализован вручную: `while True: client = make_client(); await client.start()`
 - `MaxAdapter.is_ready()` должен учитывать реальный `client.is_connected`, а не только `_started`: после роутерного flap PyMax 2 может закрыть TCP transport, но не вернуть управление из `start()`.
 - `PymaxClientAdapter.is_connected` должен проверять `ConnectionManager.is_open()` как callable и фактический `transport.connected`; иначе stale TCP socket выглядит healthy, а TG→MAX падает `Not connected to the server` без watchdog reconnect.
@@ -205,7 +205,7 @@ max:
     active: "home_ru_proxy"
 ```
 
-`hetzner_direct` — только ручной аварийный режим через изменение конфига оператором; в `/status` он помечается warning-ом `MAX uses non-RU direct egress`.
+`hetzner_direct` — аварийный профиль: вручную при `fallback_policy: manual` либо автоматически при явно включённом `auto`. В `/status` сохраняется warning `MAX uses non-RU direct egress`; события переходов идут в ops, результаты и аварии также в owner DM.
 
 ## Ключевые ограничения
 

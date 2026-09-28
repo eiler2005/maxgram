@@ -425,6 +425,7 @@ class BridgeCore:
             repo=self._repo,
             heartbeat_interval_seconds=getattr(health_cfg, "heartbeat_interval_seconds", 30),
             egress_active=getattr(getattr(self._cfg.max, "egress", None), "active", ""),
+            egress_status_provider=self._max.get_egress_status,
         )
 
     async def fix_fallback_titles(self):
@@ -467,6 +468,7 @@ class BridgeCore:
                 1800,
             ),
             self_heal_state_path=self_heal_state_path,
+            egress_controller=getattr(self._max, "egress_controller", None),
         )
 
     async def run_cleanup(self):

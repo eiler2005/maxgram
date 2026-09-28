@@ -161,6 +161,16 @@ async def run_bridge_worker(
         )
 
         system_notifier = notifier or tg_adapter
+        if cfg.max.egress.fallback_policy == "auto":
+            from src.runtime.max_egress import MaxEgressController
+            from src.bridge.background import _default_restart_process
+            max_adapter.egress_controller = MaxEgressController(
+                adapter=max_adapter, config=cfg.max.egress,
+                path=cfg.storage.data_dir / "max_egress_controller.json",
+                notify=system_notifier.send_system_notification,
+                restart=_default_restart_process,
+            )
+            max_adapter.restore_egress(max_adapter.egress_controller.state["active"])
         bridge = BridgeCore(
             cfg,
             repo,
@@ -178,7 +188,7 @@ async def run_bridge_worker(
             change = await health_store.mark_healthy(
                 "max_link",
                 summary="MAX connected and synchronized",
-                notify=True,
+                notify=cfg.max.egress.fallback_policy != "auto",
             )
             await _emit_health_change(system_notifier, change)
 
@@ -203,7 +213,7 @@ async def run_bridge_worker(
                 operator_hint=payload["operator_hint"],
                 auto_recovery=payload["auto_recovery"],
                 requires_reauth=payload["requires_reauth"],
-                notify=True,
+                notify=cfg.max.egress.fallback_policy != "auto" or issue.requires_reauth,
             )
             await _emit_health_change(system_notifier, change)
 

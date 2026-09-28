@@ -298,6 +298,7 @@ class MaxCdnDownloader:
         self._tmp_dir = tmp_dir
         self._client_session_factory = client_session_factory
         self._egress = egress
+        self.operation_gate = None
 
     async def _download_chunks(self, response, part_path: Path, mode: str) -> int:
         written = 0
@@ -333,6 +334,16 @@ class MaxCdnDownloader:
         return await self._download_chunks(response, part_path, mode)
 
     async def download_from_url(
+        self, *args, **kwargs,
+    ) -> tuple[Optional[str], Optional[str]]:
+        if self.operation_gate is None:
+            return await self._download_from_url(*args, **kwargs)
+        try:
+            return await self.operation_gate.run(self._download_from_url, *args, **kwargs)
+        except RuntimeError:
+            return None, None
+
+    async def _download_from_url(
         self,
         url: str,
         prefix: str,

@@ -117,3 +117,7 @@ SQLite хранит routing- и delivery-метаданные, а не соде�
 - [Watchdog: внутренний и внешний](runbooks/watchdog.md)
 - [Production deploy runbook](runbooks/hetzner-production.md)
 - [Аудит архитектуры](archive/audit-2026-05-25.md)
+
+## Автоматический резерв MAX
+
+Внутренний MAX watchdog запускает `MaxEgressController`; MAX adapter сериализует поколения соединений и переключает API, upload и CDN вместе. Внешний watchdog наблюдает динамическое состояние контроллера, не меняя маршрутов. В Telegram ops идёт цепочка инцидента; владельцу — результаты и ошибки, требующие внимания. Default остаётся manual. См. [runbook](runbooks/max-egress-failover.md) и [ADR-013](decisions/ADR-013-max-egress-failover.md).

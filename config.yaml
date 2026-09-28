@@ -17,7 +17,15 @@ max:
   # РФ-канал задаётся в config.local.yaml через MAX_EGRESS_PROXY_URL.
   egress:
     active: "hetzner_direct"
-    fallback_policy: "manual"
+    fallback_policy: "manual"  # auto is opt-in; see docs/runbooks/max-egress-failover.md
+    fallback: "hetzner_direct"
+    probe_interval_seconds: 30
+    failover_after_seconds: 600
+    recovery_stable_seconds: 300
+    minimum_residence_seconds: 600
+    retry_cooldown_seconds: 600
+    connect_timeout_seconds: 60
+    drain_timeout_seconds: 30
     profiles:
       hetzner_direct:
         type: "direct"

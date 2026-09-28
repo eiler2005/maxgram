@@ -54,7 +54,7 @@ class MaxEgressProfile:
         if self.name == "home_ru_proxy":
             return "роутерный РФ Channel M"
         if self.name == "hetzner_direct":
-            return "прямой Hetzner VPS (ручной аварийный режим)"
+            return "прямой VPS (аварийный маршрут)"
         if self.type == "http_connect":
             return f"HTTP CONNECT proxy ({self.name})"
         return f"direct ({self.name})"
@@ -74,16 +74,19 @@ class MaxEgressProfile:
         host: str = "api.oneme.ru",
         port: int = 443,
         timeout: float | None = 5.0,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> dict[str, object]:
         probe = getattr(self.socket_connector, "probe", None)
         if callable(probe):
-            result = probe(host, port, timeout=timeout)
+            kwargs = {"ssl_context": ssl_context} if ssl_context is not None else {}
+            result = probe(host, port, timeout=timeout, **kwargs)
         else:
             result = _probe_tls_connect(
                 self.socket_connector.connect,
                 host=host,
                 port=port,
                 timeout=timeout,
+                ssl_context=ssl_context,
             )
         return {**self.safe_log_fields(), **result}
 
@@ -97,8 +100,10 @@ class DirectSocketConnector:
         host: str,
         port: int,
         timeout: float | None = None,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> dict[str, object]:
-        return _probe_tls_connect(self.connect, host=host, port=port, timeout=timeout)
+        return _probe_tls_connect(self.connect, host=host, port=port, timeout=timeout,
+                                  ssl_context=ssl_context)
 
 
 class HttpConnectSocketConnector:
@@ -142,38 +147,42 @@ class HttpConnectSocketConnector:
         raw_sock = socket.create_connection((self._host, self._port), timeout=timeout)
         raw_sock.settimeout(timeout)
         proxy_sock: socket.socket = raw_sock
-        if self._scheme == "https":
+        try:
+            if self._scheme == "https":
+                if stage:
+                    stage("proxy_tls")
+                context = ssl.create_default_context()
+                proxy_sock = context.wrap_socket(raw_sock, server_hostname=self._host)
+
             if stage:
-                stage("proxy_tls")
-            context = ssl.create_default_context()
-            proxy_sock = context.wrap_socket(raw_sock, server_hostname=self._host)
+                stage("http_connect")
+            request_lines = [
+                f"CONNECT {host}:{port} HTTP/1.1",
+                f"Host: {host}:{port}",
+            ]
+            auth_header = self._proxy_authorization_header()
+            if auth_header:
+                request_lines.append(f"Proxy-Authorization: {auth_header}")
+            request_lines.extend(["Proxy-Connection: keep-alive", "", ""])
+            proxy_sock.sendall("\r\n".join(request_lines).encode("ascii"))
 
-        if stage:
-            stage("http_connect")
-        request_lines = [
-            f"CONNECT {host}:{port} HTTP/1.1",
-            f"Host: {host}:{port}",
-        ]
-        auth_header = self._proxy_authorization_header()
-        if auth_header:
-            request_lines.append(f"Proxy-Authorization: {auth_header}")
-        request_lines.extend(["Proxy-Connection: keep-alive", "", ""])
-        proxy_sock.sendall("\r\n".join(request_lines).encode("ascii"))
+            response = bytearray()
+            while b"\r\n\r\n" not in response:
+                chunk = proxy_sock.recv(4096)
+                if not chunk:
+                    break
+                response.extend(chunk)
+                if len(response) > 65536:
+                    raise MaxEgressUnavailable("MAX egress proxy response headers are too large")
 
-        response = bytearray()
-        while b"\r\n\r\n" not in response:
-            chunk = proxy_sock.recv(4096)
-            if not chunk:
-                break
-            response.extend(chunk)
-            if len(response) > 65536:
-                raise MaxEgressUnavailable("MAX egress proxy response headers are too large")
-
-        header = bytes(response).split(b"\r\n", 1)[0].decode("iso-8859-1", errors="replace")
-        parts = header.split()
-        if len(parts) < 2 or not parts[1].isdigit() or int(parts[1]) != 200:
-            raise MaxEgressUnavailable("MAX egress proxy CONNECT failed")
-        return proxy_sock
+            header = bytes(response).split(b"\r\n", 1)[0].decode("iso-8859-1", errors="replace")
+            parts = header.split()
+            if len(parts) < 2 or not parts[1].isdigit() or int(parts[1]) != 200:
+                raise MaxEgressUnavailable("MAX egress proxy CONNECT failed")
+            return proxy_sock
+        except BaseException:
+            proxy_sock.close()
+            raise
 
     def connect(self, host: str, port: int, timeout: float | None = None) -> socket.socket:
         try:
@@ -188,6 +197,7 @@ class HttpConnectSocketConnector:
         host: str,
         port: int,
         timeout: float | None = None,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> dict[str, object]:
         started = time.monotonic()
         stage_name = "proxy_tcp"
@@ -200,7 +210,7 @@ class HttpConnectSocketConnector:
         try:
             sock = self._open_tunnel(host, port, timeout=timeout, stage=set_stage)
             stage_name = "target_tls"
-            context = ssl.create_default_context()
+            context = ssl_context or ssl.create_default_context()
             sock = context.wrap_socket(sock, server_hostname=host)
             return _probe_result(
                 ok=True,
@@ -244,6 +254,7 @@ def _probe_tls_connect(
     host: str,
     port: int,
     timeout: float | None,
+    ssl_context: ssl.SSLContext | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
     stage_name = "target_tcp"
@@ -251,7 +262,7 @@ def _probe_tls_connect(
     try:
         sock = connect(host, port, timeout)
         stage_name = "target_tls"
-        context = ssl.create_default_context()
+        context = ssl_context or ssl.create_default_context()
         sock = context.wrap_socket(sock, server_hostname=host)
         return _probe_result(
             ok=True,
@@ -299,8 +310,8 @@ def _probe_result(
     return result
 
 
-def build_max_egress_profile(config) -> MaxEgressProfile:
-    active = getattr(config, "active", "hetzner_direct")
+def build_max_egress_profile(config, name: str | None = None) -> MaxEgressProfile:
+    active = name or getattr(config, "active", "hetzner_direct")
     profiles = getattr(config, "profiles", {}) or {}
     profile_config = profiles.get(active)
     if profile_config is None:

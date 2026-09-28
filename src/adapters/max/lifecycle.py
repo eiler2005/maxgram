@@ -13,6 +13,7 @@ logger = logging.getLogger("src.adapters.max_adapter")
 class MaxLifecycleService:
     def __init__(self, deps: LifecycleDeps):
         self._deps = deps
+        self.operation_gate = None
 
     @property
     def _backend(self):
@@ -165,7 +166,11 @@ class MaxLifecycleService:
         client = self._backend.create_client()
         client.prepare_startup(self._deps.runtime._capture_runtime_error)
         client = self._deps.events._install_raw_message_interceptor(client)
-        return self._install_failfast_interactive_ping(client)
+        client = self._install_failfast_interactive_ping(client)
+        if self.operation_gate is not None:
+            from .network.switching import GuardedClientPort
+            client = GuardedClientPort(client, self.operation_gate)
+        return client
 
     async def start(self):
         """Запустить клиент с собственным reconnect-циклом.
@@ -177,6 +182,8 @@ class MaxLifecycleService:
         first_connect = True
 
         while True:
+            if self.operation_gate is not None:
+                await self.operation_gate.open.wait()
             failure_logged = False
             try:
                 self._deps.recovery._recover_session_if_needed(first_connect=first_connect)
@@ -330,6 +337,15 @@ class MaxLifecycleService:
                 failure_logged = True
 
             # Клиент завершился — ждём перед перезапуском
+            if self.operation_gate is not None and self._client is not None:
+                # A fresh client may only be created after its predecessor closed.
+                close_task = asyncio.create_task(self._client.close())
+                _, pending = await asyncio.wait({close_task}, timeout=5)
+                if pending:
+                    close_task.cancel()
+                    raise TimeoutError("MAX previous client close timed out")
+                close_task.result()
+                self._client = None
             if not failure_logged and not self._started and self._last_start_error:
                 issue = self._last_issue
                 log_event(

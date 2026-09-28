@@ -537,9 +537,11 @@ class TelegramAdapter:
             media_type="voice",
         )
 
-    async def send_system_notification(self, text: str, *, category: str = "system") -> bool:
+    async def send_system_notification(self, text: str, *, category: str = "system",
+                                       audience: str = "both", event_id: str | None = None) -> bool:
         """Отправить системное уведомление во все ops-каналы и сохранить failover в outbox."""
-        return await self._notifier.send_system_notification(text, category=category)
+        return await self._notifier.send_system_notification(
+            text, category=category, audience=audience, event_id=event_id)
 
     async def send_notification(self, text: str) -> bool:
         """Backwards-compatible alias for ops/system notifications."""

@@ -300,7 +300,7 @@ max:
 
 `home_ru_proxy` отправляет только MAX API/CDN трафик через authenticated HTTP CONNECT к VPS-local reverse Channel M listener. Этот listener держится исходящим SSH remote-forward с домашнего роутера; дальше роутер выпускает трафик через домашний РФ WAN. Telegram polling/send остаётся прямым Hetzner-трафиком. Домашняя LAN/Wi-Fi и GhostRoute Channel A/B/C routing этим не меняются.
 
-`hetzner_direct` — ручной аварийный режим. Он включается только изменением `max.egress.active: "hetzner_direct"` оператором и должен быть виден в `/status` как warning `MAX uses non-RU direct egress`. Автоматического fallback нет: если `home_ru_proxy` недоступен, MAX показывает issue `max_egress_unavailable`/degraded, но bridge не переключает MAX на direct сам.
+`hetzner_direct` — аварийный маршрут с warning `MAX uses non-RU direct egress`. По умолчанию `fallback_policy: manual`: переключение через `max.egress.active` и перезапуск. Опциональный `auto` управляется внутренним MAX watchdog; его пороги, трассировка, тестирование и откат описаны в [runbook резерва](max-egress-failover.md). Ниже описан прежний manual/self-heal режим; в auto ожидание перед резервом равно 600с также после старта.
 
 Когда MAX offline и активен `home_ru_proxy`, watchdog делает безопасный egress
 probe: TCP до proxy, HTTP CONNECT к `api.oneme.ru:443`, затем TLS handshake с

@@ -862,3 +862,7 @@ ssh deploy@<observer_ip> \
 - [Архитектура](../architecture.md) — где живут supervisor и health store
 - [ADR-012](../decisions/ADR-012-external-watchdog.md) — почему именно так
 - [Операционный runbook](operations.md) — повседневные проверки
+
+## Управляемый резерв MAX
+
+При `fallback_policy: auto` внутренний watchdog владеет переключениями через `MaxEgressController`. Внешний наблюдатель распознаёт ожидаемое ожидание/переход и рабочий резерв по динамическому status API, не дублирует их общим degradation/config-drift alert. Прочие подсистемы, reauth, outbox, offline сверх ожидания и просроченный deadline продолжают алертить. Подробнее: [runbook резерва](max-egress-failover.md).

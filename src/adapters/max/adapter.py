@@ -51,6 +51,7 @@ from .media.ua import (
     MAX_CDN_USER_AGENT,
 )
 from .network import build_max_egress_profile
+from .network.switching import EgressSelection, OperationGate
 from .raw_payload import MaxRawPayloadService
 from .recovery import MaxRecoveryService
 from .resolve import MaxResolveService
@@ -209,6 +210,19 @@ class MaxAdapter:
         self._recovery = recovery
         self._lifecycle = lifecycle
         self._egress = egress
+        self._egress_config = egress_config
+        self._selection = EgressSelection(egress)
+        self._operation_gate = OperationGate()
+        self._lifecycle_task = None
+        self._resume = asyncio.Event()
+        self._resume.set()
+        self._switch_lock = asyncio.Lock()
+        self.egress_controller = None
+        self._auto_egress = getattr(egress_config, "fallback_policy", "manual") == "auto"
+        if self._auto_egress:
+            self._lifecycle.operation_gate = self._operation_gate
+            self._media._downloader._egress = self._selection
+            self._media._downloader.operation_gate = self._operation_gate
         self._voice_recovery._load_pending_empty_recoveries()
 
     @staticmethod
@@ -231,14 +245,66 @@ class MaxAdapter:
         self._state.reaction_update_handlers.append(handler)
 
     async def start(self):
-        return await self._lifecycle.start()
+        if not self._auto_egress:
+            return await self._lifecycle.start()
+        while True:
+            await self._resume.wait()
+            self._lifecycle_task = asyncio.create_task(self._lifecycle.start())
+            try:
+                await asyncio.shield(self._lifecycle_task)
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    self._lifecycle_task.cancel()
+                    raise
+                # Cancellation requested by switch_egress, not worker shutdown.
+                continue
+
+    async def switch_egress(self, profile_name: str, *, drain_timeout: float = 30):
+        async with self._switch_lock:
+            profile = build_max_egress_profile(self._egress_config, profile_name)
+            self._resume.clear()
+            await self._operation_gate.drain(drain_timeout)
+            task = self._lifecycle_task
+            if task is not None and not task.done():
+                task.cancel()
+                _, pending = await asyncio.wait({task}, timeout=5)
+                if pending:
+                    raise TimeoutError("MAX lifecycle did not stop")
+            client = self._state.connection.client
+            self._state.connection.started = False
+            if client is not None:
+                close_task = asyncio.create_task(client.close())
+                _, pending = await asyncio.wait({close_task}, timeout=5)
+                if pending:
+                    close_task.cancel()
+                    raise TimeoutError("MAX client did not close")
+                close_task.result()
+            self._state.connection.client = None
+            self._state.backend.set_egress(profile)
+            self._egress = profile
+            self._selection.profile = profile
+            self._operation_gate.generation += 1
+            self._operation_gate.open.set()
+            self._resume.set()
+
+    def restore_egress(self, profile_name: str):
+        """Restore a durable route before the first client is created."""
+        if self._lifecycle_task is not None or self._state.connection.client is not None:
+            raise RuntimeError("Cannot restore egress after client creation")
+        profile = build_max_egress_profile(self._egress_config, profile_name)
+        self._state.backend.set_egress(profile)
+        self._egress = profile
+        self._selection.profile = profile
 
     async def close(self):
+        if self._lifecycle_task is not None:
+            self._lifecycle_task.cancel()
+            await asyncio.wait({self._lifecycle_task}, timeout=5)
         await self._voice_recovery.close()
         await self._lifecycle.close()
 
     def is_ready(self) -> bool:
-        return self._lifecycle.is_ready()
+        return self._operation_gate.open.is_set() and self._lifecycle.is_ready()
 
     async def send_message(self, *args, **kwargs):
         return await self._send.send_message(*args, **kwargs)
@@ -279,15 +345,22 @@ class MaxAdapter:
         status = self._egress.safe_log_fields()
         if self._egress.is_non_ru_warning:
             status["warning"] = "MAX uses non-RU direct egress"
+        if self.egress_controller is not None:
+            status["controller"] = self.egress_controller.snapshot()
         return status
 
     def get_last_egress_probe(self) -> dict[str, object] | None:
         return self._state.connection.last_egress_probe
 
-    async def probe_egress(self) -> dict[str, object] | None:
+    async def probe_egress(self, profile_name: str | None = None) -> dict[str, object] | None:
         if self._egress is None:
             return None
-        result = await asyncio.to_thread(self._egress.probe)
+        profile = build_max_egress_profile(self._egress_config, profile_name) if profile_name else self._egress
+        probe = getattr(self._state.backend, "probe_egress", None)
+        if callable(probe):
+            result = await asyncio.to_thread(probe, profile)
+        else:
+            result = await asyncio.to_thread(profile.probe)
         self._state.connection.last_egress_probe = result
         log_event(
             logger,

@@ -138,15 +138,49 @@ async def run_max_watchdog(
     self_heal_restart_cooldown_seconds: int = 1800,
     self_heal_state_path: Path | None = None,
     restart_process: Callable[[str], None] | None = None,
+    egress_controller=None,
 ):
     disconnected_since: Optional[float] = None
     alert_sent = False
     self_heal_pending_reported = False
     last_egress_probe_at = 0.0
     restart = restart_process or _default_restart_process
+    auto_offline_since: float | None = None
 
     while True:
         await asyncio.sleep(check_interval)
+
+        if egress_controller is not None:
+            await egress_controller.tick()
+            snapshot = egress_controller.snapshot()
+            issue = max_adapter.get_last_issue()
+            if health is not None and not (issue and issue.requires_reauth):
+                if snapshot["ready"] and snapshot["active"] == snapshot["primary"]:
+                    await health.mark_healthy("max_link", summary="MAX online через основной маршрут", notify=False)
+                else:
+                    code = "max_egress_managed" if snapshot["ready"] or snapshot["phase"] == "waiting" else "max_egress_offline"
+                    await health.report_issue(
+                        "max_link", code=code, summary=snapshot["next_action"],
+                        severity=Severity.WARNING if snapshot["ready"] else Severity.ERROR,
+                        impact="MAX online на резерве" if snapshot["ready"] else "MAX offline; возможен пропуск истории",
+                        operator_hint="Проверь /status и трассировку MAX watchdog в ops.",
+                        auto_recovery=snapshot["next_action"], notify=False,
+                    )
+            active_probe = snapshot["probes"].get(snapshot["active"], {})
+            if (not snapshot["ready"] and active_probe.get("ok")
+                    and snapshot["phase"] != "auth_blocked"):
+                if auto_offline_since is None:
+                    auto_offline_since = time.monotonic()
+                if (time.monotonic() - auto_offline_since >= self_heal_grace_seconds
+                        and _self_heal_restart_allowed(self_heal_state_path,
+                            cooldown_seconds=self_heal_restart_cooldown_seconds)):
+                    _persist_self_heal_restart(self_heal_state_path,
+                        reason="max_offline_with_healthy_active_egress", probe=active_probe)
+                    await send_ops_notification("MAX offline при доступном активном маршруте; выполняем self-heal restart.")
+                    restart("max_offline_with_healthy_active_egress")
+            else:
+                auto_offline_since = None
+            continue
 
         if max_adapter.is_ready():
             if alert_sent and health is None and disconnected_since is not None:

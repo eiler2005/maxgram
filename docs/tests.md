@@ -618,3 +618,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 ```bash
 python3 scripts/smoke_check.py --db data/bridge.db --minutes 15
 ```
+
+## Автоматический резерв MAX
+
+`tests/test_max_failover.py` проверяет управляемым временем короткий/длинный отказ, возврат и residence, сброс порога, monitoring gap, оба недоступных пути, auth guard, откат, рестарт в фазах перехода, close failure, operation gate, поколения клиента, общий профиль upload/TCP, конфиг, Telegram outbox/audiences/dedup и внешний watchdog. Дополняется существующими `test_max_egress.py`, `test_status_api.py`, `test_runtime_health.py`, `test_watchdog_external.py` и контрактными тестами. Реальные production-учения и ограничения отражаются отдельно в отчёте, не подменяются mock-тестами. См. [runbook](runbooks/max-egress-failover.md).

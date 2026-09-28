@@ -31,6 +31,14 @@ class MaxEgressConfig:
     active: str = "hetzner_direct"
     profiles: dict[str, MaxEgressProfileConfig] = field(default_factory=dict)
     fallback_policy: str = "manual"
+    fallback: str = "hetzner_direct"
+    probe_interval_seconds: int = 30
+    failover_after_seconds: int = 600
+    recovery_stable_seconds: int = 300
+    minimum_residence_seconds: int = 600
+    retry_cooldown_seconds: int = 600
+    connect_timeout_seconds: int = 60
+    drain_timeout_seconds: int = 30
 
 
 @dataclass
@@ -278,10 +286,31 @@ def _load_max_egress(raw: dict) -> MaxEgressConfig:
         raise ValueError(f"MAX egress active profile {active!r} is not defined")
 
     fallback_policy = str(egress_raw.get("fallback_policy", "manual")).strip() or "manual"
+    if fallback_policy not in {"manual", "auto"}:
+        raise ValueError("max.egress.fallback_policy must be manual or auto")
+    fallback = str(egress_raw.get("fallback", "hetzner_direct"))
+    if fallback_policy == "auto":
+        if fallback not in profiles or fallback == active:
+            raise ValueError("Automatic MAX egress requires distinct defined profiles")
+        if profiles[active].type != "http_connect" or profiles[fallback].type != "direct":
+            raise ValueError("Automatic MAX egress requires proxy primary and direct fallback")
+    defaults = MaxEgressConfig()
+    intervals = {}
+    for name in (
+        "probe_interval_seconds", "failover_after_seconds", "recovery_stable_seconds",
+        "minimum_residence_seconds", "retry_cooldown_seconds", "connect_timeout_seconds",
+        "drain_timeout_seconds",
+    ):
+        value = egress_raw.get(name, getattr(defaults, name))
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"max.egress.{name} must be a positive integer")
+        intervals[name] = value
     return MaxEgressConfig(
         active=active,
         profiles=profiles,
         fallback_policy=fallback_policy,
+        fallback=fallback,
+        **intervals,
     )
 
 

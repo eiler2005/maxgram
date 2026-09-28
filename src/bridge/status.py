@@ -78,6 +78,15 @@ class BridgeStatusReporter:
             lines.append(egress_line)
             if egress_status.get("warning"):
                 lines.append(f"  ⚠️ {egress_status['warning']}")
+            controller = egress_status.get("controller")
+            if isinstance(controller, dict):
+                lines.extend([
+                    f"  MAX watchdog: M-{controller['incident']:04d}, {controller['phase']}",
+                    f"  Отказ: {controller['outage_seconds']}с; резерв: {controller['fallback_seconds']}с",
+                    f"  Далее: {controller['next_action']}",
+                ])
+                for profile, probe in controller["probes"].items():
+                    lines.append(f"  {profile}: {'OK' if probe.get('ok') else 'FAIL'} ({probe.get('stage')})")
         if egress_probe:
             probe_icon = "✅" if egress_probe.get("ok") else "❌"
             probe_stage = str(egress_probe.get("stage") or "unknown")

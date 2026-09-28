@@ -66,8 +66,37 @@ class AlertOutboxStore:
     async def queue(self, message: OutboxMessage):
         async with self._lock:
             items = self._load_unlocked()
+            if any(item.id == message.id for item in items):
+                return
             items.append(message)
             self._rewrite_unlocked(items)
+
+    def _receipts(self):
+        try:
+            return json.loads(self._path.with_suffix(".receipts.json").read_text())
+        except (OSError, ValueError):
+            return {}
+
+    async def was_delivered(self, event_id: str) -> bool:
+        async with self._lock:
+            return event_id in self._receipts()
+
+    async def acknowledge(self, event_id: str):
+        async with self._lock:
+            if event_id.startswith("max-egress-"):
+                receipts = {k: v for k, v in self._receipts().items() if v > _now_ts() - 30 * 86400}
+                receipts[event_id] = _now_ts()
+                path = self._path.with_suffix(".receipts.json")
+                temporary = path.with_suffix(".tmp")
+                temporary.write_text(json.dumps(receipts), encoding="utf-8")
+                temporary.replace(path)
+            self._rewrite_unlocked([m for m in self._load_unlocked() if m.id != event_id])
+
+    async def update_attempt(self, message: OutboxMessage):
+        async with self._lock:
+            self._rewrite_unlocked([
+                message if item.id == message.id else item for item in self._load_unlocked()
+            ])
 
     async def rewrite(self, messages: list[OutboxMessage]):
         async with self._lock:

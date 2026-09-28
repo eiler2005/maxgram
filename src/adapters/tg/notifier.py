@@ -36,12 +36,27 @@ class TelegramNotifier:
         self._health = health_store
         self._send_system_message = send_system_message
 
-    async def send_system_notification(self, text: str, *, category: str = "system") -> bool:
+    async def send_system_notification(self, text: str, *, category: str = "system",
+                                       audience: str = "both", event_id: str | None = None) -> bool:
         """Send a system notification to all ops targets and queue failures."""
         await self.flush_notification_outbox()
 
+        if audience not in {"ops", "owner", "both"}:
+            raise ValueError("Invalid notification audience")
+        if event_id is not None and self._outbox is not None:
+            for label, chat_id, thread_id in self._iter_notification_targets(audience):
+                delivery_id = f"{event_id}-{label}"
+                if not await self._outbox.was_delivered(delivery_id):
+                    await self._outbox.queue(OutboxMessage(
+                        id=delivery_id, text=text, chat_id=chat_id,
+                        message_thread_id=thread_id, label=label, category=category,
+                        created_at=int(time.time()),
+                    ))
+            await self.flush_notification_outbox()
+            return True
+
         failures: list[tuple[str, int, Optional[int], str]] = []
-        for label, chat_id, message_thread_id in self._iter_notification_targets():
+        for label, chat_id, message_thread_id in self._iter_notification_targets(audience):
             ok, error_text = await self._send_system_message(
                 text,
                 chat_id,
@@ -78,6 +93,12 @@ class TelegramNotifier:
         return await self.send_system_notification(text)
 
     async def flush_notification_outbox(self, *, limit: int = 100) -> int:
+        if not hasattr(self, "_flush_lock"):
+            self._flush_lock = asyncio.Lock()
+        async with self._flush_lock:
+            return await self._flush_notification_outbox(limit=limit)
+
+    async def _flush_notification_outbox(self, *, limit: int = 100) -> int:
         if self._outbox is None:
             return 0
 
@@ -87,10 +108,19 @@ class TelegramNotifier:
 
         delivered = 0
         remaining: list[OutboxMessage] = []
+        blocked_targets = set()
         for index, item in enumerate(items):
             if index >= limit:
                 remaining.extend(items[index:])
                 break
+
+            target = (item.chat_id, item.message_thread_id)
+            if target in blocked_targets:
+                remaining.append(item)
+                continue
+            if await self._outbox.was_delivered(item.id):
+                await self._outbox.acknowledge(item.id)
+                continue
 
             ok, error_text = await self._send_system_message(
                 item.text,
@@ -99,14 +129,17 @@ class TelegramNotifier:
                 item.label,
             )
             if ok:
+                await self._outbox.acknowledge(item.id)
                 delivered += 1
                 continue
 
             item.attempts += 1
             item.last_error = error_text
+            await self._outbox.update_attempt(item)
             remaining.append(item)
+            blocked_targets.add(target)
 
-        await self._outbox.rewrite(remaining)
+        # Acknowledge removes only delivered ids; concurrent producers are preserved.
         if remaining:
             await self._report_alerting_issue(
                 [(item.label, item.chat_id, item.message_thread_id, item.last_error) for item in remaining]
@@ -125,9 +158,10 @@ class TelegramNotifier:
             except Exception as e:
                 logger.error("notification outbox flush failed: %s", e, exc_info=True)
 
-    def _iter_notification_targets(self):
-        yield ("owner_dm", self._owner_id, None)
-        if self._ops_topic_id is not None:
+    def _iter_notification_targets(self, audience="both"):
+        if audience in {"owner", "both"} or self._ops_topic_id is None:
+            yield ("owner_dm", self._owner_id, None)
+        if audience in {"ops", "both"} and self._ops_topic_id is not None:
             yield ("ops_topic", self._group_id, self._ops_topic_id)
 
     async def _report_alerting_issue(

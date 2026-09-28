@@ -215,6 +215,12 @@ class FakeMaxBackend:
     def create_client(self) -> FakeMaxClient:
         return self.client
 
+    def set_egress(self, profile):
+        self.egress = profile
+
+    def probe_egress(self, profile):
+        return {"ok": True, "stage": "fake", "max_egress_active": profile.name}
+
     def make_file_attachment(self, path: str) -> Any:
         return SimpleNamespace(path=path, type="FILE")
 

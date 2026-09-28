@@ -18,6 +18,7 @@ import hmac
 import json
 import logging
 from typing import Any, Optional
+from collections.abc import Callable
 
 from aiohttp import web
 
@@ -87,10 +88,13 @@ async def build_status_payload(
     health: RuntimeHealthStore,
     repo: Repository,
     egress_active: str = "",
+    egress_status_provider: Callable | None = None,
 ) -> dict[str, Any]:
     snapshot = await health.get_snapshot()
     counters = await collect_runtime_counters(health=health, repo=repo)
     now = _now_ts()
+    egress = egress_status_provider() if egress_status_provider else {}
+    egress = egress or {}
 
     return {
         "schema_version": STATUS_API_SCHEMA_VERSION,
@@ -109,7 +113,8 @@ async def build_status_payload(
         },
         "alert_outbox_size": counters["alert_outbox_size"],
         "delivery_totals": counters["delivery_counts"],
-        "max_egress_active": egress_active,
+        "max_egress_active": egress.get("max_egress_active", egress_active),
+        "max_egress_controller": egress.get("controller"),
     }
 
 
@@ -129,6 +134,7 @@ def build_status_app(
     repo: Repository,
     heartbeat_interval_seconds: int = 30,
     egress_active: str = "",
+    egress_status_provider: Callable | None = None,
 ) -> web.Application:
     max_age = max(5, int(heartbeat_interval_seconds) * HEARTBEAT_STALE_INTERVALS)
 
@@ -150,6 +156,7 @@ def build_status_app(
             health=health,
             repo=repo,
             egress_active=egress_active,
+            egress_status_provider=egress_status_provider,
         )
         return web.json_response(payload)
 
@@ -166,6 +173,7 @@ async def run_status_api(
     repo: Repository,
     heartbeat_interval_seconds: int = 30,
     egress_active: str = "",
+    egress_status_provider: Callable | None = None,
 ) -> None:
     """Держит loopback-сервер до отмены задачи.
 
@@ -192,6 +200,7 @@ async def run_status_api(
         repo=repo,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
         egress_active=egress_active,
+        egress_status_provider=egress_status_provider,
     )
     runner = web.AppRunner(app, access_log=None)
 

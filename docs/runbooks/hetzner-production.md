@@ -254,7 +254,7 @@ docker run --rm -it \
 - `docker ps`
 - `docker compose --env-file .env.host -f deploy/docker-compose.prod.yml logs --tail=100`
 - startup-лог содержит `MAX connected`, затем `Running startup tests`, затем `Startup tests passed: ...`
-- `/status` показывает `MAX egress: home_ru_proxy`; `hetzner_direct` допустим только как ручной аварийный режим и должен давать warning
+- `/status` показывает `MAX egress: home_ru_proxy`; `hetzner_direct` допустим как ручной аварийный режим или управляемый резерв при `fallback_policy: auto` (см. [runbook](max-egress-failover.md)) и должен давать warning
 - входящее MAX -> Telegram
 - reply Telegram -> MAX
 - медиа MAX -> Telegram

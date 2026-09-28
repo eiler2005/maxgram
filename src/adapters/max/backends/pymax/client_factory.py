@@ -73,6 +73,14 @@ def create_pymax_client(
         extra_config = make_extra_config(store=session_store)
     elif extra_config.store is None:
         extra_config = extra_config.model_copy(update={"store": session_store})
+    if egress is not None:
+        from yarl import URL
+        options = egress.http_client_options
+        proxy = options.proxy
+        if proxy and options.proxy_auth:
+            proxy = str(URL(proxy).with_user(options.proxy_auth.login).with_password(options.proxy_auth.password))
+        # TCP uses our connector; PyMax uploads use app.config.proxy.
+        extra_config = extra_config.model_copy(update={"proxy": proxy})
     kwargs = {
         "phone": phone,
         "work_dir": data_dir,

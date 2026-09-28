@@ -29,6 +29,19 @@ class PymaxBackend:
     def create_client(self):
         return PymaxClientAdapter(self.create_raw_client())
 
+    def set_egress(self, profile):
+        self._egress = profile
+
+    def probe_egress(self, profile):
+        from .client_factory import make_extra_config
+        from .transport import EgressTCPTransport
+        config = make_extra_config()
+        transport = EgressTCPTransport(socket_connector=profile.socket_connector,
+                                       host=config.host, port=config.port,
+                                       use_ssl=config.use_ssl)
+        return profile.probe(host=config.host, port=config.port,
+                             ssl_context=transport._ssl_ctx)
+
     def failfast_ping_config(self) -> None:
         return None
 

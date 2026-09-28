@@ -148,3 +148,7 @@ persist mapping, delivery and queue rows.
 - [Watchdog: internal and external](runbooks/watchdog.md)
 - [Production deploy runbook](runbooks/hetzner-production.md)
 - [Architecture audit](archive/audit-2026-05-25.md)
+
+## Automatic MAX egress failover
+
+The inner MAX watchdog drives `MaxEgressController`; the MAX adapter serializes connection generations and routes API, upload and CDN traffic together. The external watchdog observes dynamic controller state without switching routes. Telegram ops receives the incident timeline; the owner receives results and actionable failures. The default remains manual. See [the runbook](runbooks/max-egress-failover.md) and [ADR-013](decisions/ADR-013-max-egress-failover.md).

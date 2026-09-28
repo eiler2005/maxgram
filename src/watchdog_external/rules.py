@@ -260,8 +260,20 @@ def _evaluate_container(probe: dict[str, Any], cfg: WatchdogConfig) -> dict[str,
 
 def _evaluate_status(status: dict[str, Any], cfg: WatchdogConfig, now: int) -> dict[str, Finding]:
     findings: dict[str, Finding] = {}
+    controller = status.get("max_egress_controller") or {}
+    deadline = controller.get("deadline")
+    transition_expected = (controller.get("phase") in {"switching", "returning", "rollback"}
+                           and deadline is not None and now <= deadline)
+    fresh = now - (controller.get("last_probe_at") or 0) <= 90 or transition_expected
+    managed = bool(fresh and controller.get("policy") == "auto" and (
+        controller.get("ready")
+        or (controller.get("phase") == "waiting" and now < (controller.get("wait_until") or 0))
+        or transition_expected
+    ))
+    subsystems = status.get("subsystems") or []
+    other_issue = any(s.get("issue") and s.get("name") != "max_link" for s in subsystems)
 
-    if status.get("overall_status") not in (None, "healthy"):
+    if status.get("overall_status") not in (None, "healthy") and (not managed or other_issue):
         findings["overall_degraded"] = Finding(
             rule="overall_degraded",
             failure_class=f"{F_WORKER_CRASH}/{F_STORAGE}",
@@ -278,6 +290,8 @@ def _evaluate_status(status: dict[str, Any], cfg: WatchdogConfig, now: int) -> d
     for subsystem in status.get("subsystems") or []:
         issue = subsystem.get("issue")
         if not issue:
+            continue
+        if managed and subsystem.get("name") == "max_link" and not issue.get("requires_reauth"):
             continue
         requires_reauth = bool(issue.get("requires_reauth"))
         severity = CRIT if requires_reauth or issue.get("severity") == "critical" else WARN
@@ -304,6 +318,13 @@ def _evaluate_status(status: dict[str, Any], cfg: WatchdogConfig, now: int) -> d
             worst = candidate
     if worst is not None:
         findings["subsystem_issue"] = worst
+    if controller and (not fresh or (deadline is not None and now > deadline)):
+        findings["subsystem_issue"] = Finding(
+            rule="subsystem_issue", failure_class=F_MAX_EGRESS, severity=WARN,
+            title="MAX watchdog: проверки или переключение просрочены",
+            detail=f"phase={controller.get('phase')}; incident={controller.get('incident')}",
+            hint="Проверь /status и внутренний MAX watchdog; внешний наблюдатель маршрут не меняет.",
+        )
 
     outbox = int(status.get("alert_outbox_size") or 0)
     if outbox > 0:
@@ -335,7 +356,9 @@ def _evaluate_status(status: dict[str, Any], cfg: WatchdogConfig, now: int) -> d
         )
 
     active_egress = status.get("max_egress_active")
-    if active_egress and cfg.expected_egress and active_egress != cfg.expected_egress:
+    expected_fallback = (managed and controller.get("primary") == cfg.expected_egress
+                         and active_egress == controller.get("fallback"))
+    if active_egress and cfg.expected_egress and active_egress != cfg.expected_egress and not expected_fallback:
         findings["egress_mode_unexpected"] = Finding(
             rule="egress_mode_unexpected",
             failure_class=F_CONFIG_DRIFT,

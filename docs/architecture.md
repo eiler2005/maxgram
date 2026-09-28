@@ -218,9 +218,9 @@ in [docs/runbooks/watchdog.md](runbooks/watchdog.md); the decision record is
 MAX network traffic имеет отдельный egress-профиль внутри MAX adapter:
 
 - `home_ru_proxy` — основной production-профиль. Pymax socket к MAX API и MAX CDN downloads идут с контейнера в authenticated HTTP CONNECT proxy на VPS-local reverse Channel M listener. Этот listener держится исходящим SSH remote-forward с домашнего роутера, а роутер выпускает трафик через свой `direct-out`/home WAN РФ. Это служебный Channel M, не Channel A/B/C failover.
-- `hetzner_direct` — старое прямое подключение с Hetzner. Оно остаётся только как ручной аварийный режим через изменение `max.egress.active` в конфиге. Автоматического fallback с `home_ru_proxy` на direct нет.
+- `hetzner_direct` — старое прямое подключение с Hetzner. Ручной режим остаётся default; `fallback_policy: auto` разрешает внутреннему MAX watchdog автоматический переход после 600с подтверждённого отказа.
 
-Если Channel M/proxy недоступен, MAX часть становится `degraded` с issue `max_egress_unavailable`. Bridge не меняет egress сам, чтобы не получить незаметный переход РФ IP -> Hetzner IP. Telegram adapter продолжает работать своим обычным путём; LAN/Wi-Fi и роутерные A/B/C правила этой настройкой не затрагиваются.
+Если Channel M/proxy недоступен, MAX часть становится `degraded` с issue `max_egress_unavailable`. В режиме `manual` bridge не меняет маршрут. В `auto` единый `MaxEgressController` выполняет переход и стабильный возврат, сохраняя метаданные инцидента и публикуя Telegram-трассировку. Внешний watchdog остаётся read-only. API, upload и CDN используют единый профиль; новый клиент создаётся после закрытия предыдущего. См. [ADR-013](decisions/ADR-013-max-egress-failover.md) и [runbook](runbooks/max-egress-failover.md). Telegram adapter продолжает работать своим обычным путём; LAN/Wi-Fi и роутерные A/B/C правила этой настройкой не затрагиваются.
 
 Reverse Channel M inventory and the full environment diagram live in
 [environment-inventory.md](environment-inventory.md). Short form:
