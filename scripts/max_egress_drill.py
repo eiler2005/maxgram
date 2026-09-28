@@ -31,10 +31,12 @@ def main():
         return
     if args.action == "stop":
         if STATE.exists():
-            rule = json.loads(STATE.read_text())["rule"]
-            result = subprocess.run(["iptables", "-w", "-C", "INPUT", *rule], capture_output=True)
+            saved = json.loads(STATE.read_text())
+            rule = saved["rule"]
+            prefix = saved["prefix"]
+            result = subprocess.run([*prefix, "-C", "OUTPUT", *rule], capture_output=True)
             if result.returncode == 0:
-                run(["iptables", "-w", "-D", "INPUT", *rule])
+                run([*prefix, "-D", "OUTPUT", *rule])
             STATE.unlink()
         subprocess.run(["systemctl", "stop", UNIT + ".timer"], capture_output=True)
         print("Channel M drill restriction removed")
@@ -53,16 +55,19 @@ def main():
         raise SystemExit("Refusing to block anything except this container's host gateway")
     rule = ["-s", network["IPAddress"], "-d", resolved, "-p", "tcp", "--dport", str(proxy.port),
             "-m", "comment", "--comment", COMMENT, "-j", "REJECT", "--reject-with", "tcp-reset"]
+    # Host Channel M maintenance rewrites INPUT periodically. Inject inside
+    # this container's network namespace so that maintenance cannot undo it.
+    prefix = ["nsenter", "--target", str(container["State"]["Pid"]), "--net", "iptables", "-w"]
     # Persist exact removal arguments before scheduling; no shell interpolation.
-    STATE.write_text(json.dumps({"rule": rule}))
+    STATE.write_text(json.dumps({"rule": rule, "prefix": prefix}))
     STATE.chmod(0o600)
     try:
         run(["systemd-run", "--unit", UNIT, "--on-active", f"{args.seconds}s",
-             "--timer-property=AccuracySec=1s", "iptables", "-w", "-D", "INPUT", *rule])
+             "--timer-property=AccuracySec=1s", *prefix, "-D", "OUTPUT", *rule])
         run(["systemctl", "is-active", UNIT + ".timer"])
-        run(["iptables", "-w", "-I", "INPUT", "1", *rule])
+        run([*prefix, "-I", "OUTPUT", "1", *rule])
     except Exception:
-        subprocess.run(["iptables", "-w", "-D", "INPUT", *rule], capture_output=True)
+        subprocess.run([*prefix, "-D", "OUTPUT", *rule], capture_output=True)
         subprocess.run(["systemctl", "stop", UNIT + ".timer"], capture_output=True)
         STATE.unlink(missing_ok=True)
         raise
