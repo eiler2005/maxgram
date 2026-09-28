@@ -502,7 +502,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 
 ---
 
-## test_tg_adapter.py — входящие сообщения Telegram и system notifications (11 тестов)
+## test_tg_adapter.py — входящие сообщения Telegram и system notifications (13 тестов)
 
 | Тест | Что проверяет |
 |------|--------------|
@@ -513,6 +513,8 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_tg_retry_logs_retry_and_success` | `_tg_retry` делает повторную попытку при `TelegramRetryAfter` и логирует событие retry; после успеха возвращает корректный результат. |
 | `test_send_text_attaches_inline_url_buttons` | `send_text(..., buttons=...)` конвертирует neutral buttons в aiogram `InlineKeyboardMarkup`. |
 | `test_media_sends_preserve_reply_to_message_id` | Telegram photo/document/video/audio/voice methods все передают `reply_to_message_id` в Bot API. |
+| `test_send_text_splits_long_message_without_losing_characters` | Текст длиннее Telegram limit делится на последовательные сообщения без потери символов; reply остаётся только на первой части. |
+| `test_media_caption_continues_as_text_without_losing_characters` | Длинная подпись к медиа сохраняет первые 1024 символа в caption, а остаток отправляется следующим текстом без обрезки. |
 | `test_callback_query_owner_dispatches_handler` | Owner click по `max_join:<id>` превращается в `TelegramCallbackAction` и dispatch-ится в bridge handler. |
 | `test_callback_query_non_owner_is_rejected` | Не-владелец получает короткий callback answer, handler не вызывается. |
 | `test_send_system_notification_fans_out_to_dm_and_ops_topic` | Системное уведомление уходит и в owner DM, и в ops topic, если `ops_topic_id` задан. |

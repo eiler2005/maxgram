@@ -44,6 +44,26 @@ from ...runtime.timeouts import (
 
 logger = logging.getLogger("src.adapters.tg_adapter")
 
+TELEGRAM_TEXT_LIMIT = 4096
+TELEGRAM_CAPTION_LIMIT = 1024
+
+
+def split_telegram_text(text: str, *, limit: int) -> list[str]:
+    """Split without losing characters at Telegram's text and caption limits."""
+    if len(text) <= limit:
+        return [text]
+
+    parts: list[str] = []
+    remainder = text
+    while len(remainder) > limit:
+        window = remainder[:limit]
+        boundary = max(window.rfind("\n", 1), window.rfind(" ", 1))
+        cut = boundary + 1 if boundary > 0 else limit
+        parts.append(remainder[:cut])
+        remainder = remainder[cut:]
+    parts.append(remainder)
+    return parts
+
 
 ReplyHandler = Callable[
     [int, Optional[int], str, Optional[int], Optional[str], Optional[str], Optional[str]],
@@ -390,35 +410,52 @@ class TelegramAdapter:
         buttons: Optional[list[TelegramInlineButton]] = None,
     ) -> Optional[int]:
         """Отправить текст в топик. Возвращает message_id."""
-        kwargs: dict = dict(
-            chat_id=self._group_id,
-            text=text[:4096],
-            message_thread_id=topic_id,
-        )
-        if reply_to_msg_id:
-            kwargs["reply_to_message_id"] = reply_to_msg_id
-        markup = self._build_inline_markup(buttons)
-        if markup:
-            kwargs["reply_markup"] = markup
-        return await self._tg_retry(
-            lambda: self._bot.send_message(**kwargs),
-            f"send_text topic={topic_id}",
-            flow_id=flow_id,
-            direction="inbound",
-            tg_topic_id=topic_id,
-            tg_msg_id=reply_to_msg_id,
-            media_type="text",
-        )
+        first_id = None
+        for index, part in enumerate(split_telegram_text(text, limit=TELEGRAM_TEXT_LIMIT)):
+            kwargs: dict = dict(
+                chat_id=self._group_id,
+                text=part,
+                message_thread_id=topic_id,
+            )
+            if reply_to_msg_id and index == 0:
+                kwargs["reply_to_message_id"] = reply_to_msg_id
+            if index == 0:
+                markup = self._build_inline_markup(buttons)
+                if markup:
+                    kwargs["reply_markup"] = markup
+            sent_id = await self._tg_retry(
+                lambda: self._bot.send_message(**kwargs),
+                f"send_text topic={topic_id} part={index + 1}",
+                flow_id=flow_id,
+                direction="inbound",
+                tg_topic_id=topic_id,
+                tg_msg_id=reply_to_msg_id if index == 0 else None,
+                media_type="text",
+            )
+            if sent_id is None:
+                return None
+            if first_id is None:
+                first_id = sent_id
+        return first_id
+
+    async def _send_caption_continuation(
+        self, topic_id: int, caption: str, *, flow_id: Optional[str]
+    ) -> Optional[int]:
+        parts = split_telegram_text(caption, limit=TELEGRAM_CAPTION_LIMIT)
+        if len(parts) == 1:
+            return 0
+        return await self.send_text(topic_id, "".join(parts[1:]), flow_id=flow_id)
 
     async def send_photo(self, topic_id: int, path: str, caption: str = "",
                          *, reply_to_msg_id: Optional[int] = None,
                          flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить фото в топик."""
-        return await self._tg_retry(
+        first_caption = split_telegram_text(caption, limit=TELEGRAM_CAPTION_LIMIT)[0]
+        sent_id = await self._tg_retry(
             lambda: self._bot.send_photo(
                 chat_id=self._group_id,
                 photo=FSInputFile(path),
-                caption=caption[:1024] if caption else None,
+                caption=first_caption or None,
                 message_thread_id=topic_id,
                 reply_to_message_id=reply_to_msg_id,
             ),
@@ -429,17 +466,21 @@ class TelegramAdapter:
             tg_msg_id=reply_to_msg_id,
             media_type="photo",
         )
+        if sent_id is not None and await self._send_caption_continuation(topic_id, caption, flow_id=flow_id) is None:
+            return None
+        return sent_id
 
     async def send_document(self, topic_id: int, path: str,
                              caption: str = "", filename: str = "",
                              *, reply_to_msg_id: Optional[int] = None,
                              flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить документ в топик."""
-        return await self._tg_retry(
+        first_caption = split_telegram_text(caption, limit=TELEGRAM_CAPTION_LIMIT)[0]
+        sent_id = await self._tg_retry(
             lambda: self._bot.send_document(
                 chat_id=self._group_id,
                 document=FSInputFile(path, filename=filename or Path(path).name),
-                caption=caption[:1024] if caption else None,
+                caption=first_caption or None,
                 message_thread_id=topic_id,
                 reply_to_message_id=reply_to_msg_id,
             ),
@@ -450,20 +491,35 @@ class TelegramAdapter:
             tg_msg_id=reply_to_msg_id,
             media_type="document",
         )
+        if sent_id is not None and await self._send_caption_continuation(topic_id, caption, flow_id=flow_id) is None:
+            return None
+        return sent_id
 
     async def send_owner_document(self, path: str, caption: str = "", filename: str = "") -> bool:
         """Отправить приватный документ владельцу."""
+        first_caption = split_telegram_text(caption, limit=TELEGRAM_CAPTION_LIMIT)[0]
         msg_id = await self._tg_retry(
             lambda: self._bot.send_document(
                 chat_id=self._owner_id,
                 document=FSInputFile(path, filename=filename or Path(path).name),
-                caption=caption[:1024] if caption else None,
+                caption=first_caption or None,
             ),
             f"send_owner_document {Path(path).name}",
             direction="system",
             media_type="document",
         )
-        return msg_id is not None
+        if msg_id is None:
+            return False
+        parts = split_telegram_text(caption, limit=TELEGRAM_CAPTION_LIMIT)
+        if len(parts) == 1:
+            return True
+        sent, _ = await self._send_system_message(
+            text="".join(parts[1:]),
+            chat_id=self._owner_id,
+            message_thread_id=None,
+            label="owner_document_caption",
+        )
+        return sent
 
     async def send_video(self, topic_id: int, path: str, caption: str = "",
                          filename: str = "", duration: Optional[int] = None,
@@ -472,11 +528,12 @@ class TelegramAdapter:
                          *, reply_to_msg_id: Optional[int] = None,
                          flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить видео в топик."""
-        return await self._tg_retry(
+        first_caption = split_telegram_text(caption, limit=TELEGRAM_CAPTION_LIMIT)[0]
+        sent_id = await self._tg_retry(
             lambda: self._bot.send_video(
                 chat_id=self._group_id,
                 video=FSInputFile(path, filename=filename or Path(path).name),
-                caption=caption[:1024] if caption else None,
+                caption=first_caption or None,
                 message_thread_id=topic_id,
                 duration=duration,
                 width=width,
@@ -491,17 +548,21 @@ class TelegramAdapter:
             tg_msg_id=reply_to_msg_id,
             media_type="video",
         )
+        if sent_id is not None and await self._send_caption_continuation(topic_id, caption, flow_id=flow_id) is None:
+            return None
+        return sent_id
 
     async def send_audio(self, topic_id: int, path: str, caption: str = "",
                          filename: str = "", duration: Optional[int] = None,
                          *, reply_to_msg_id: Optional[int] = None,
                          flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить аудио в топик."""
-        return await self._tg_retry(
+        first_caption = split_telegram_text(caption, limit=TELEGRAM_CAPTION_LIMIT)[0]
+        sent_id = await self._tg_retry(
             lambda: self._bot.send_audio(
                 chat_id=self._group_id,
                 audio=FSInputFile(path, filename=filename or Path(path).name),
-                caption=caption[:1024] if caption else None,
+                caption=first_caption or None,
                 message_thread_id=topic_id,
                 duration=duration,
                 title=Path(filename or path).stem,
@@ -514,17 +575,21 @@ class TelegramAdapter:
             tg_msg_id=reply_to_msg_id,
             media_type="audio",
         )
+        if sent_id is not None and await self._send_caption_continuation(topic_id, caption, flow_id=flow_id) is None:
+            return None
+        return sent_id
 
     async def send_voice(self, topic_id: int, path: str,
                          caption: str = "", duration: Optional[int] = None,
                          *, reply_to_msg_id: Optional[int] = None,
                          flow_id: Optional[str] = None) -> Optional[int]:
         """Отправить voice note в топик (нативный voice bubble)."""
-        return await self._tg_retry(
+        first_caption = split_telegram_text(caption, limit=TELEGRAM_CAPTION_LIMIT)[0]
+        sent_id = await self._tg_retry(
             lambda: self._bot.send_voice(
                 chat_id=self._group_id,
                 voice=FSInputFile(path),
-                caption=caption[:1024] if caption else None,
+                caption=first_caption or None,
                 message_thread_id=topic_id,
                 duration=duration,
                 reply_to_message_id=reply_to_msg_id,
@@ -536,6 +601,9 @@ class TelegramAdapter:
             tg_msg_id=reply_to_msg_id,
             media_type="voice",
         )
+        if sent_id is not None and await self._send_caption_continuation(topic_id, caption, flow_id=flow_id) is None:
+            return None
+        return sent_id
 
     async def send_system_notification(self, text: str, *, category: str = "system",
                                        audience: str = "both", event_id: str | None = None) -> bool:
@@ -560,11 +628,14 @@ class TelegramAdapter:
 
     async def edit_message_text(self, msg_id: int, text: str) -> bool:
         """Обновить текст уже отправленного сообщения в Telegram (для реакций)."""
+        if len(text) > TELEGRAM_TEXT_LIMIT:
+            logger.warning("Refusing to truncate Telegram message edit")
+            return False
         try:
             await self._bot.edit_message_text(
                 chat_id=self._group_id,
                 message_id=msg_id,
-                text=text[:4096],
+                text=text,
             )
             return True
         except Exception:
@@ -580,23 +651,20 @@ class TelegramAdapter:
 
     async def _send_system_message(self, *, text: str, chat_id: int,
                                    message_thread_id: Optional[int], label: str) -> tuple[bool, str]:
-        kwargs = {
-            "chat_id": chat_id,
-            "text": text[:4096],
-        }
-        if message_thread_id is not None:
-            kwargs["message_thread_id"] = message_thread_id
-
-        msg_id = await self._tg_retry(
-            lambda: self._bot.send_message(**kwargs),
-            f"send_system_notification {label}",
-            direction="system",
-            tg_topic_id=message_thread_id,
-            media_type="system",
-        )
-        if msg_id is not None:
-            return True, ""
-        return False, f"send_system_notification failed for {label}"
+        for index, part in enumerate(split_telegram_text(text, limit=TELEGRAM_TEXT_LIMIT)):
+            kwargs = {"chat_id": chat_id, "text": part}
+            if message_thread_id is not None:
+                kwargs["message_thread_id"] = message_thread_id
+            msg_id = await self._tg_retry(
+                lambda: self._bot.send_message(**kwargs),
+                f"send_system_notification {label} part={index + 1}",
+                direction="system",
+                tg_topic_id=message_thread_id,
+                media_type="system",
+            )
+            if msg_id is None:
+                return False, f"send_system_notification failed for {label}"
+        return True, ""
 
     # ── Скачивание медиа из Telegram ─────────────────────────────────────
 

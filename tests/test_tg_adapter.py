@@ -163,6 +163,9 @@ class FakeMediaBot:
         self.calls.append((kind, kwargs))
         return SimpleNamespace(message_id=len(self.calls))
 
+    async def send_message(self, **kwargs):
+        return await self._send("text", kwargs)
+
     async def send_photo(self, **kwargs):
         return await self._send("photo", kwargs)
 
@@ -248,6 +251,40 @@ async def test_media_sends_preserve_reply_to_message_id(tmp_path):
         "voice",
     ]
     assert all(kwargs["reply_to_message_id"] == 777 for _kind, kwargs in adapter._bot.calls)
+
+
+@pytest.mark.asyncio
+async def test_send_text_splits_long_message_without_losing_characters():
+    adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
+    adapter._bot = FakeSystemBot([10, 11])
+    text = "a" * 4096 + " конец"
+
+    msg_id = await adapter.send_text(555, text, reply_to_msg_id=777)
+
+    assert msg_id == 10
+    assert "".join(call["text"] for call in adapter._bot.calls) == text
+    assert all(len(call["text"]) <= 4096 for call in adapter._bot.calls)
+    assert adapter._bot.calls[0]["reply_to_message_id"] == 777
+    assert "reply_to_message_id" not in adapter._bot.calls[1]
+
+
+@pytest.mark.asyncio
+async def test_media_caption_continues_as_text_without_losing_characters(tmp_path):
+    adapter = TelegramAdapter("token", owner_id=1, forum_group_id=-100)
+    adapter._bot = FakeMediaBot()
+    media_path = tmp_path / "media.bin"
+    media_path.write_bytes(b"media")
+    caption = "Заголовок\n" + "текст " * 400
+
+    msg_id = await adapter.send_photo(555, str(media_path), caption, reply_to_msg_id=777)
+
+    assert msg_id == 1
+    media_call, continuation = adapter._bot.calls
+    assert media_call[0] == "photo"
+    assert len(media_call[1]["caption"]) <= 1024
+    assert continuation[0] == "text"
+    assert media_call[1]["caption"] + continuation[1]["text"] == caption
+    assert continuation[1]["message_thread_id"] == 555
 
 
 @pytest.mark.asyncio
