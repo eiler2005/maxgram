@@ -161,6 +161,7 @@ async def run_max_watchdog(
                     code = "max_egress_managed" if snapshot["ready"] or snapshot["phase"] == "waiting" else "max_egress_offline"
                     await health.report_issue(
                         "max_link", code=code, summary=snapshot["next_action"],
+                        raw_cause="MAX egress controller: " + snapshot["phase"],
                         severity=Severity.WARNING if snapshot["ready"] else Severity.ERROR,
                         impact="MAX online на резерве" if snapshot["ready"] else "MAX offline; возможен пропуск истории",
                         operator_hint="Проверь /status и трассировку MAX watchdog в ops.",

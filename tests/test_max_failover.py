@@ -456,9 +456,11 @@ async def test_switch_close_timeout_does_not_create_another_client(tmp_path, mon
     await asyncio.sleep(0)
 
 
-async def test_watchdog_does_not_run_old_self_heal_during_managed_wait(rig, monkeypatch):
+async def test_watchdog_does_not_run_old_self_heal_during_managed_wait(rig, monkeypatch, tmp_path):
     from src.bridge.background import run_max_watchdog
+    from src.runtime.health import RuntimeHealthStore
     c, a, clock, *_ = rig
+    health = RuntimeHealthStore(tmp_path / "health")
     loops = 0
     async def sleep(_):
         nonlocal loops
@@ -469,8 +471,10 @@ async def test_watchdog_does_not_run_old_self_heal_during_managed_wait(rig, monk
     monkeypatch.setattr(asyncio, "sleep", sleep)
     restart = Mock()
     with pytest.raises(asyncio.CancelledError):
-        await run_max_watchdog(max_adapter=a, health=None, send_ops_notification=AsyncMock(),
+        await run_max_watchdog(max_adapter=a, health=health, send_ops_notification=AsyncMock(),
             emit_health_alert=AsyncMock(), egress_controller=c, restart_process=restart,
             self_heal_grace_seconds=0)
     assert not a.switches
     restart.assert_not_called()
+    snapshot = await health.get_snapshot()
+    assert snapshot.subsystems["max_link"].issue.code == "max_egress_managed"

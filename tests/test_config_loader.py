@@ -238,6 +238,7 @@ chats: []
 
 
 def test_load_config_reads_max_egress_profiles(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     base_path = tmp_path / "config.yaml"
     base_path.write_text(
         """
