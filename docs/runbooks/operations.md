@@ -106,8 +106,10 @@ fingerprint path PyMax.
 устарел: пересобери образ из уже отправленного commit, где DESKTOP profile
 берёт совместимые `app_version` и `build_number` из bundled PyMax
 `VersionCatalog`: bridge выбирает наиболее новую числовую версию из bundled
-catalog, а не potentially stale `recommended()`. Не повторяй SMS-flow на
-старом образе.
+catalog и передаёт её и в DESKTOP user-agent, и в runtime PyMax. Иначе
+internal default PyMax расходится с user-agent и MAX отклоняет `AUTH_REQUEST`
+до SMS. Remote catalog не требуется для запуска bridge и не добавляет новый
+сетевой dependency. Не повторяй SMS-flow на старом образе.
 
 Перед изменением session DB скрипт сохраняет `data/session.db.before-reauth-*`
 с правами `0600`. Это файл с token, его не копировать в логи/чат и не

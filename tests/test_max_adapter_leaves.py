@@ -159,6 +159,8 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_
     assert calls["extra_config"].user_agent.build_number == VersionCatalog().resolve(
         app_version
     ).build_number
+    assert calls["app_version"] == app_version
+    assert calls["catalog"].remote is False
     assert calls["extra_config"].sync.chats_sync == 0
     assert calls["extra_config"].sync.contacts_sync == 0
     assert calls["work_dir"] == str(tmp_path)

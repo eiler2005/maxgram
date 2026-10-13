@@ -26,9 +26,11 @@ def latest_catalog_app_version(catalog: VersionCatalog | None = None) -> str:
     )
 
 
-def legacy_desktop_user_agent() -> MobileUserAgentPayload:
+def legacy_desktop_user_agent(
+    catalog: VersionCatalog | None = None,
+) -> MobileUserAgentPayload:
     """Keep the legacy desktop shape on a version MAX still accepts."""
-    catalog = VersionCatalog()
+    catalog = catalog or VersionCatalog()
     app_version = latest_catalog_app_version(catalog)
     build_number = catalog.resolve(app_version).build_number
     return MobileUserAgentPayload(
@@ -57,13 +59,13 @@ def legacy_sync_overrides() -> SyncOverrides:
     )
 
 
-def make_extra_config(*, store=None) -> ExtraConfig:
+def make_extra_config(*, store=None, catalog: VersionCatalog | None = None) -> ExtraConfig:
     return ExtraConfig(
         reconnect=False,
         relogin=False,
         telemetry=False,
         store=store,
-        user_agent=legacy_desktop_user_agent(),
+        user_agent=legacy_desktop_user_agent(catalog),
         sync=legacy_sync_overrides(),
     )
 
@@ -78,6 +80,7 @@ def create_pymax_client(
     auth_flow: AuthFlow | None = None,
     import_legacy_session: bool = True,
 ):
+    version_catalog = VersionCatalog()
     session_store = BridgeSessionStore(
         data_dir,
         session_name,
@@ -85,7 +88,7 @@ def create_pymax_client(
         import_legacy=import_legacy_session,
     )
     if extra_config is None:
-        extra_config = make_extra_config(store=session_store)
+        extra_config = make_extra_config(store=session_store, catalog=version_catalog)
     elif extra_config.store is None:
         extra_config = extra_config.model_copy(update={"store": session_store})
     if egress is not None:
@@ -96,11 +99,21 @@ def create_pymax_client(
             proxy = str(URL(proxy).with_user(options.proxy_auth.login).with_password(options.proxy_auth.password))
         # TCP uses our connector; PyMax uploads use app.config.proxy.
         extra_config = extra_config.model_copy(update={"proxy": proxy})
+    app_version = (
+        extra_config.user_agent.app_version
+        if extra_config.user_agent is not None
+        else latest_catalog_app_version(version_catalog)
+    )
     kwargs = {
         "phone": phone,
         "work_dir": data_dir,
         "session_name": session_name,
         "extra_config": extra_config,
+        # ClientConfig.version and the handshake user-agent must describe the
+        # same profile.  Passing only ExtraConfig.user_agent leaves PyMax on
+        # its stale default version internally and MAX rejects AUTH_REQUEST.
+        "app_version": app_version,
+        "catalog": version_catalog,
     }
     if auth_flow is not None:
         kwargs["auth_flow"] = auth_flow
