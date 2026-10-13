@@ -1,7 +1,7 @@
 import asyncio
 import os
-import ssl
 import sqlite3
+import ssl
 import stat
 import struct
 from types import SimpleNamespace
@@ -16,7 +16,6 @@ from src.adapters.max.adapter import MaxAdapter
 from src.adapters.max.client_factory import create_socket_client
 from src.adapters.max.media import downloader as max_downloader
 from src.adapters.max.media import ua as max_ua
-
 
 pytestmark = pytest.mark.architecture
 
@@ -134,8 +133,6 @@ def test_users_and_downloader_helpers_are_plain_object_based():
 
 
 def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_path):
-    from pymax.versions.catalog import VersionCatalog
-
     from src.adapters.max.backends.pymax import client_factory as pymax_factory
     from src.adapters.max.backends.pymax.session_store import BridgeSessionStore
 
@@ -154,9 +151,9 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_
     assert calls["extra_config"].telemetry is False
     assert isinstance(calls["extra_config"].store, BridgeSessionStore)
     assert calls["extra_config"].user_agent.device_type.value == "DESKTOP"
-    app_version = pymax_factory.latest_catalog_app_version(VersionCatalog())
+    app_version = pymax_factory.latest_catalog_app_version(calls["catalog"])
     assert calls["extra_config"].user_agent.app_version == app_version
-    assert calls["extra_config"].user_agent.build_number == VersionCatalog().resolve(
+    assert calls["extra_config"].user_agent.build_number == calls["catalog"].resolve(
         app_version
     ).build_number
     assert calls["app_version"] == app_version
@@ -166,7 +163,7 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_
     assert calls["work_dir"] == str(tmp_path)
 
 
-def test_client_factory_uses_newest_numeric_catalog_entry(monkeypatch):
+def test_client_factory_uses_newest_numeric_catalog_entry():
     from src.adapters.max.backends.pymax import client_factory as pymax_factory
 
     class FakeCatalog:
@@ -175,12 +172,34 @@ def test_client_factory_uses_newest_numeric_catalog_entry(monkeypatch):
         def resolve(self, version):
             return SimpleNamespace(build_number={"26.9.0": 9, "26.10.1": 10, "26.28.0": 28}[version])
 
-    monkeypatch.setattr(pymax_factory, "VersionCatalog", FakeCatalog)
-
-    user_agent = pymax_factory.legacy_desktop_user_agent()
+    user_agent = pymax_factory.legacy_desktop_user_agent(FakeCatalog())
 
     assert user_agent.app_version == "26.28.0"
     assert user_agent.build_number == 28
+
+
+def test_bridge_version_catalog_adds_current_max_fingerprint():
+    from src.adapters.max.backends.pymax import client_factory as pymax_factory
+
+    catalog = pymax_factory.bridge_version_catalog()
+
+    assert catalog.resolve(pymax_factory.PINNED_MAX_APP_VERSION) == (
+        pymax_factory.PINNED_MAX_APP_FINGERPRINT
+    )
+
+
+def test_manual_sms_reauth_uses_current_android_profile():
+    from pymax.api.session.enums import DeviceType
+
+    from src.adapters.max.backends.pymax import client_factory as pymax_factory
+
+    options = pymax_factory.make_sms_reauth_extra_config()
+
+    assert options.device_type is DeviceType.ANDROID
+    assert options.user_agent is None
+    assert options.reconnect is False
+    assert options.relogin is False
+    assert options.telemetry is False
 
 
 def test_client_factory_passes_custom_auth_flow(monkeypatch, tmp_path):
@@ -469,6 +488,7 @@ async def test_bridge_auth_reauth_omits_fingerprint_when_calls_seed_is_missing()
 
 def test_max_reauth_refuses_fresh_bridge_heartbeat(tmp_path):
     import time
+
     from scripts import max_reauth
 
     heartbeat = tmp_path / "health_heartbeat.json"
@@ -938,7 +958,10 @@ async def test_pymax2_egress_transport_uses_configured_socket_connector(monkeypa
 
 @pytest.mark.asyncio
 async def test_pymax2_egress_client_uses_bridge_connection_manager(tmp_path):
-    from src.adapters.max.backends.pymax.transport import BridgeConnectionManager, EgressClient
+    from src.adapters.max.backends.pymax.transport import (
+        BridgeConnectionManager,
+        EgressClient,
+    )
 
     client = EgressClient(
         phone="+79991234567",

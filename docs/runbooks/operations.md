@@ -103,13 +103,13 @@ SMS-запроса он опускает optional desktop fingerprint. Это с
 fingerprint path PyMax.
 
 Ошибка `client.unsupported-version` до SMS означает, что production image
-устарел: пересобери образ из уже отправленного commit, где DESKTOP profile
-берёт совместимые `app_version` и `build_number` из bundled PyMax
-`VersionCatalog`: bridge выбирает наиболее новую числовую версию из bundled
-catalog и передаёт её и в DESKTOP user-agent, и в runtime PyMax. Иначе
-internal default PyMax расходится с user-agent и MAX отклоняет `AUTH_REQUEST`
-до SMS. Remote catalog не требуется для запуска bridge и не добавляет новый
-сетевой dependency. Не повторяй SMS-flow на старом образе.
+устарел либо MAX больше не принимает legacy DESKTOP форму для нового входа.
+Пересобери образ из уже отправленного commit: regular runtime передаёт
+совместимые `app_version` и `build_number` из bridge catalog и в DESKTOP
+user-agent, и в PyMax runtime. Если MAX всё равно отклоняет этот запрос,
+`max_reauth.py` запускает current Android profile только для явного SMS
+reauth; обычный runtime profile не меняется. Не повторяй SMS-flow на старом
+образе.
 
 Перед изменением session DB скрипт сохраняет `data/session.db.before-reauth-*`
 с правами `0600`. Это файл с token, его не копировать в логи/чат и не

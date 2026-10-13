@@ -7,7 +7,7 @@ import ssl
 from pymax.auth import ConsoleSmsCodeProvider, SmsAuthFlow
 
 from ...network import MaxEgressProfile
-from .client_factory import create_pymax_client
+from .client_factory import create_pymax_client, make_sms_reauth_extra_config
 from .session_store import BridgeSessionStore
 
 
@@ -42,6 +42,7 @@ async def reauthorize_with_console(
         data_dir=data_dir,
         session_name=session_name,
         egress=egress,
+        extra_config=make_sms_reauth_extra_config(),
         auth_flow=auth_flow,
         import_legacy_session=False,
     )
