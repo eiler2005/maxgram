@@ -11,10 +11,25 @@ from .session_store import BridgeSessionStore
 from .transport import BridgeClient, EgressClient
 
 
+def latest_catalog_app_version(catalog: VersionCatalog | None = None) -> str:
+    """Return the newest numeric app version bundled with PyMax.
+
+    ``VersionCatalog.recommended()`` can lag behind profiles that are already
+    bundled with the installed library.  MAX rejects that stale value before it
+    sends an SMS challenge, so the legacy desktop profile must use the newest
+    compatible catalog entry instead.
+    """
+    catalog = catalog or VersionCatalog()
+    return max(
+        catalog.versions,
+        key=lambda version: tuple(int(component) for component in version.split(".")),
+    )
+
+
 def legacy_desktop_user_agent() -> MobileUserAgentPayload:
     """Keep the legacy desktop shape on a version MAX still accepts."""
     catalog = VersionCatalog()
-    app_version = catalog.recommended()
+    app_version = latest_catalog_app_version(catalog)
     build_number = catalog.resolve(app_version).build_number
     return MobileUserAgentPayload(
         device_type=DeviceType.DESKTOP,

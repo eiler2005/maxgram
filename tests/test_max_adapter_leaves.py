@@ -154,7 +154,7 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_
     assert calls["extra_config"].telemetry is False
     assert isinstance(calls["extra_config"].store, BridgeSessionStore)
     assert calls["extra_config"].user_agent.device_type.value == "DESKTOP"
-    app_version = VersionCatalog.recommended()
+    app_version = pymax_factory.latest_catalog_app_version(VersionCatalog())
     assert calls["extra_config"].user_agent.app_version == app_version
     assert calls["extra_config"].user_agent.build_number == VersionCatalog().resolve(
         app_version
@@ -162,6 +162,23 @@ def test_client_factory_disables_pymax_reconnect_and_telemetry(monkeypatch, tmp_
     assert calls["extra_config"].sync.chats_sync == 0
     assert calls["extra_config"].sync.contacts_sync == 0
     assert calls["work_dir"] == str(tmp_path)
+
+
+def test_client_factory_uses_newest_numeric_catalog_entry(monkeypatch):
+    from src.adapters.max.backends.pymax import client_factory as pymax_factory
+
+    class FakeCatalog:
+        versions = ("26.9.0", "26.28.0", "26.10.1")
+
+        def resolve(self, version):
+            return SimpleNamespace(build_number={"26.9.0": 9, "26.10.1": 10, "26.28.0": 28}[version])
+
+    monkeypatch.setattr(pymax_factory, "VersionCatalog", FakeCatalog)
+
+    user_agent = pymax_factory.legacy_desktop_user_agent()
+
+    assert user_agent.app_version == "26.28.0"
+    assert user_agent.build_number == 28
 
 
 def test_client_factory_passes_custom_auth_flow(monkeypatch, tmp_path):

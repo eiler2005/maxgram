@@ -105,7 +105,9 @@ fingerprint path PyMax.
 Ошибка `client.unsupported-version` до SMS означает, что production image
 устарел: пересобери образ из уже отправленного commit, где DESKTOP profile
 берёт совместимые `app_version` и `build_number` из bundled PyMax
-`VersionCatalog`. Не повторяй SMS-flow на старом образе.
+`VersionCatalog`: bridge выбирает наиболее новую числовую версию из bundled
+catalog, а не potentially stale `recommended()`. Не повторяй SMS-flow на
+старом образе.
 
 Перед изменением session DB скрипт сохраняет `data/session.db.before-reauth-*`
 с правами `0600`. Это файл с token, его не копировать в логи/чат и не
