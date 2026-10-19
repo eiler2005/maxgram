@@ -72,6 +72,7 @@ class MaxMediaService:
             tmp_dir=deps.tmp_dir,
             client_session_factory=deps.client_session_factory,
             egress=deps.egress,
+            ssl_context_factory=deps.ssl_context_factory,
         )
 
     @property

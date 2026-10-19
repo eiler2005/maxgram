@@ -696,7 +696,7 @@ rg 'event=bridge\.inbound\.late_media_recovery|event=max\.inbound\.degraded_medi
 rg 'event=bridge\.inbound\.forward_finished .*outcome=partial' data/bridge.log
 ```
 
-Для CDN download-ошибок смотри поля `src_ag`, `ua_family`, `http_status` и `download_source`. Signed query-параметры URL в логах не должны появляться.
+Для CDN download-ошибок смотри поля `src_ag`, `ua_family`, `http_status` и `download_source`. `CERTIFICATE_VERIFY_FAILED` означает проблему trust chain, а не повод отключать TLS validation: downloader должен использовать MAX-CA-aware context PyMax. Signed query-параметры URL в логах не должны появляться.
 Для degraded/late recovery логи содержат только meta (`chat_id/msg_id`, типы вложений, counts, outcome/reason), без raw payload и текста сообщения.
 
 Очередь durable media retry:

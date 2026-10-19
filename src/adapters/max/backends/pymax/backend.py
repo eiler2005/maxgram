@@ -7,8 +7,9 @@ from pymax import File, Message, Photo, Video
 from pymax.protocol import Opcode
 
 from .client_adapter import PymaxClientAdapter
-from .client_factory import create_pymax_client
+from .client_factory import create_pymax_client, make_extra_config
 from .media import fetch_history_payload, get_video_payload
+from .transport import EgressTCPTransport
 
 
 class PymaxBackend:
@@ -17,6 +18,7 @@ class PymaxBackend:
         self._data_dir = data_dir
         self._session_name = session_name
         self._egress = egress
+        self._media_ssl_context = None
 
     def create_raw_client(self):
         return create_pymax_client(
@@ -33,14 +35,25 @@ class PymaxBackend:
         self._egress = profile
 
     def probe_egress(self, profile):
-        from .client_factory import make_extra_config
-        from .transport import EgressTCPTransport
         config = make_extra_config()
         transport = EgressTCPTransport(socket_connector=profile.socket_connector,
                                        host=config.host, port=config.port,
                                        use_ssl=config.use_ssl)
         return profile.probe(host=config.host, port=config.port,
                              ssl_context=transport._ssl_ctx)
+
+    def media_ssl_context(self):
+        """Return PyMax's MAX-CA-aware TLS context for CDN transfers."""
+        if self._media_ssl_context is None:
+            config = make_extra_config()
+            transport = EgressTCPTransport(
+                socket_connector=self._egress.socket_connector if self._egress else None,
+                host=config.host,
+                port=config.port,
+                use_ssl=config.use_ssl,
+            )
+            self._media_ssl_context = transport._ssl_ctx
+        return self._media_ssl_context
 
     def failfast_ping_config(self) -> None:
         return None

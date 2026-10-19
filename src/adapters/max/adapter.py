@@ -132,6 +132,7 @@ class MaxAdapter:
             backend=backend,
         )
         raw_payload = MaxRawPayloadService(raw_payload_deps)
+        media_ssl_context_factory = getattr(backend, "media_ssl_context", None)
         media = MaxMediaService(
             MediaDeps(
                 connection=state.connection,
@@ -140,6 +141,11 @@ class MaxAdapter:
                 client_session_factory=state.client_session_factory,
                 egress=egress,
                 raw_payload=raw_payload,
+                ssl_context_factory=(
+                    media_ssl_context_factory
+                    if callable(media_ssl_context_factory)
+                    else None
+                ),
             )
         )
         raw_payload_deps.media = media

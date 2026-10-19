@@ -294,10 +294,12 @@ class MaxCdnDownloader:
         tmp_dir: Path,
         client_session_factory: Callable[..., Any],
         egress: Any | None = None,
+        ssl_context_factory: Callable[[], Any] | None = None,
     ):
         self._tmp_dir = tmp_dir
         self._client_session_factory = client_session_factory
         self._egress = egress
+        self._ssl_context_factory = ssl_context_factory
         self.operation_gate = None
 
     async def _download_chunks(self, response, part_path: Path, mode: str) -> int:
@@ -373,7 +375,12 @@ class MaxCdnDownloader:
                         self._egress.http_client_options.as_client_session_kwargs()
                     )
                 async with self._client_session_factory(**session_kwargs) as session:
-                    response_context = session.get(url)
+                    request_kwargs: dict[str, Any] = {}
+                    if urlparse(url).scheme == "https" and self._ssl_context_factory is not None:
+                        ssl_context = self._ssl_context_factory()
+                        if ssl_context is not None:
+                            request_kwargs["ssl"] = ssl_context
+                    response_context = session.get(url, **request_kwargs)
                     response = await with_timeout(
                         response_context.__aenter__(),
                         timeout_seconds=MEDIA_TRANSFER_TIMEOUT_SECONDS,

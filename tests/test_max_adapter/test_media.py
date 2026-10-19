@@ -1252,7 +1252,7 @@ async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeyp
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def get(self, url):
+        def get(self, url, **_kwargs):
             captured["url"] = url
             return FakeResponse()
 
@@ -1270,6 +1270,56 @@ async def test_download_from_url_uses_mobile_safari_user_agent(tmp_path, monkeyp
     assert captured == {
         "headers": {"User-Agent": MAX_CDN_USER_AGENT},
         "url": "https://cdn.example.com/video.mp4",
+    }
+
+
+@pytest.mark.asyncio
+async def test_download_from_url_uses_backend_tls_context_for_https(tmp_path, monkeypatch):
+    adapter = AdapterHarness(phone="+7", data_dir=str(tmp_path), session_name="session", tmp_dir=str(tmp_path / "tmp"))
+    expected_ssl_context = object()
+    adapter._adapter._media._downloader._ssl_context_factory = lambda: expected_ssl_context
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/octet-stream"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def read(self):
+            return b"document-bytes"
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, **kwargs):
+            captured["url"] = url
+            captured["ssl"] = kwargs.get("ssl")
+            return FakeResponse()
+
+    monkeypatch.setattr("src.adapters.max_adapter.ClientSession", lambda **_kwargs: FakeSession())
+
+    local_path, filename = await adapter._download_from_url(
+        "https://cdn.example.com/document.bin",
+        "document_test",
+        "document.bin",
+    )
+
+    assert local_path is not None
+    assert filename == "document.bin"
+    assert captured == {
+        "url": "https://cdn.example.com/document.bin",
+        "ssl": expected_ssl_context,
     }
 
 
@@ -1304,7 +1354,7 @@ async def test_download_from_url_logs_src_ag_and_sanitized_http_error(tmp_path, 
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def get(self, _url):
+        def get(self, _url, **_kwargs):
             return FakeResponse()
 
     async def no_sleep(_seconds):
@@ -1380,7 +1430,7 @@ async def test_download_from_url_resumes_partial_file_after_connection_break(tmp
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def get(self, _url):
+        def get(self, _url, **_kwargs):
             FakeSession.calls += 1
             if FakeSession.calls == 1:
                 return FakeResponse(200, BrokenStream())
@@ -1436,7 +1486,7 @@ async def test_download_from_url_rejects_html_for_expected_video(tmp_path, monke
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def get(self, url):
+        def get(self, url, **_kwargs):
             return FakeResponse()
 
     monkeypatch.setattr("src.adapters.max_adapter.ClientSession", FakeSession)
@@ -1483,7 +1533,7 @@ async def test_download_from_url_allows_text_for_expected_document(tmp_path, mon
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def get(self, url):
+        def get(self, url, **_kwargs):
             return FakeResponse()
 
     monkeypatch.setattr("src.adapters.max_adapter.ClientSession", FakeSession)

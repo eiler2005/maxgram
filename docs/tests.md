@@ -272,6 +272,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_download_video_by_id_uses_raw_video_play_payload` | Если typed PyMax API не дал URL, `_download_video_by_id()` сохраняет raw `VIDEO_PLAY` fallback и извлекает media URL из legacy payload. |
 | `test_handle_raw_message_marks_failed_video_retryable_by_video_id` | Если MAX `VIDEO` не скачался, но есть `video_id`, failure становится retryable и хранит только стабильную meta-ссылку без URL/token. |
 | `test_download_from_url_uses_mobile_safari_user_agent` | Базовый downloader создаёт `tmp_dir`, делает HTTP GET с ожидаемым `User-Agent` и сохраняет файл с корректным именем. |
+| `test_download_from_url_uses_backend_tls_context_for_https` | HTTPS CDN-запрос получает MAX-CA-aware TLS context из PyMax backend и сохраняет проверку сертификата включённой. |
 | `test_download_from_url_logs_src_ag_and_sanitized_http_error` | При CDN HTTP-ошибке downloader пишет `src_ag`, `ua_family`, `http_status`, `download_source`, но не раскрывает signed query URL в `error`. |
 | `test_download_from_url_resumes_partial_file_after_connection_break` | Generic `media/downloader.py` сохраняет `.part`, повторяет запрос с `Range` и собирает файл без утечки signed URL. |
 | `test_download_from_url_rejects_html_for_expected_video` | Post-validation блокирует `text/html`/HTML-body для ожидаемого `video`, чтобы player fallback не уходил в Telegram как файл/медиа. |

@@ -46,6 +46,7 @@ class MediaDeps:
     client_session_factory: Callable[..., Any]
     raw_payload: Any
     egress: Any | None = None
+    ssl_context_factory: Callable[[], Any] | None = None
 
 
 @dataclass
