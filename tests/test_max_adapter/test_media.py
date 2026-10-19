@@ -499,6 +499,32 @@ async def test_download_audio_reference_uses_audio_get_sources_payload(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_fetch_raw_message_payload_uses_canonical_message_ids_shape(tmp_path):
+    adapter = CapturingAttachmentDownloadAdapter(
+        phone="+7",
+        data_dir=str(tmp_path),
+        session_name="session",
+        tmp_dir=str(tmp_path / "tmp"),
+    )
+    calls = []
+
+    class MessageGetClient:
+        async def raw_request(self, *, opcode_name, payload, timeout):
+            calls.append((opcode_name, dict(payload), timeout))
+            return {"payload": {"messages": []}}
+
+    adapter._client = MessageGetClient()
+
+    result = await adapter._adapter._media._fetch_raw_message_payload_by_id(
+        chat_id="-100",
+        msg_id="200",
+    )
+
+    assert result is None
+    assert calls[0] == ("MSG_GET", {"chatId": -100, "messageIds": [200]}, 5)
+
+
+@pytest.mark.asyncio
 async def test_download_audio_reference_falls_back_to_file_download_after_audio_get_miss(tmp_path):
     adapter = CapturingAttachmentDownloadAdapter(
         phone="+7",

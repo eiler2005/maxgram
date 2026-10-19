@@ -507,7 +507,7 @@ class MaxMediaService:
 
         payloads = []
         for msg_value in dict.fromkeys(msg_values):
-            payloads.append({"chatId": chat_id_value, "messageId": msg_value})
+            payloads.append({"chatId": chat_id_value, "messageIds": [msg_value]})
 
         for index, payload in enumerate(payloads, start=1):
             try:

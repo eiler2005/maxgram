@@ -270,6 +270,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_download_headers_for_url_uses_mobile_safari_for_non_chrome_signed_url` | Для signed MAX CDN URL без `CHROME` downloader использует mobile Safari `User-Agent`. |
 | `test_download_video_by_id_prefers_typed_pymax_video_url` | `_download_video_by_id()` сначала использует public PyMax 2.4.1 `get_video_by_id().url` и не вызывает raw request при успехе. |
 | `test_download_video_by_id_uses_raw_video_play_payload` | Если typed PyMax API не дал URL, `_download_video_by_id()` сохраняет raw `VIDEO_PLAY` fallback и извлекает media URL из legacy payload. |
+| `test_fetch_raw_message_payload_uses_canonical_message_ids_shape` | Exact MAX replay запрашивает `MSG_GET` с canonical `messageIds` array и не посылает устаревший singular `messageId`, который MAX отклоняет как `proto.payload`. |
 | `test_handle_raw_message_marks_failed_video_retryable_by_video_id` | Если MAX `VIDEO` не скачался, но есть `video_id`, failure становится retryable и хранит только стабильную meta-ссылку без URL/token. |
 | `test_download_from_url_uses_mobile_safari_user_agent` | Базовый downloader создаёт `tmp_dir`, делает HTTP GET с ожидаемым `User-Agent` и сохраняет файл с корректным именем. |
 | `test_download_from_url_uses_backend_tls_context_for_https` | HTTPS CDN-запрос получает MAX-CA-aware TLS context из PyMax backend и сохраняет проверку сертификата включённой. |
