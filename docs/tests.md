@@ -151,7 +151,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_handle_raw_message_decodes_bytes_text_before_preview` | PyMax 2 `message.text` в bytes декодируется до UTF-8 string до logging preview и dispatch. |
 | `test_handle_raw_message_extracts_text_from_msgpack_bytes` | SHARE/msgpack-like `message.text` bytes распаковываются до настоящего text без `�` и raw field names. |
 | `test_handle_raw_message_normalizes_pymax_enum_edit_status` | PyMax enum/string status вроде `MessageStatus.EDITED` нормализуется в `EDITED`, чтобы edit-события не создавали разные `max_msg_id` variants. |
-| `test_handle_raw_message_preserves_reply_target` | `link.type=REPLY` сохраняет linked MAX message id в `MaxMessage.reply_to_msg_id` и не помечает reply как forward. |
+| `test_handle_raw_message_preserves_reply_target` | Реальный PyMax `LinkType.REPLY` нормализуется к wire-типу `REPLY`, сохраняет linked MAX message id в `MaxMessage.reply_to_msg_id`, не разворачивается как forward и сохраняет текст самого ответа. |
 | `test_handle_raw_message_extracts_max_join_action_from_share` | `SHARE` с `https://max.ru/join/...` становится `max_join` action и больше не деградирует в один `[Вложение MAX: share]`. |
 | `test_handle_raw_message_extracts_url_from_pymax_240_share_attachment` | Реальный PyMax 2.4.0 `ShareAttachment.url` становится Telegram `open_url` action, без generic `share` fallback. |
 | `test_handle_raw_message_extracts_external_action_from_inline_keyboard` | `inline_keyboard` / nested `web_app.url` превращается в `open_url` action с безопасной label. |

@@ -244,7 +244,7 @@ Telegram adapter
 MAX WebSocket event
   └─► MAX Adapter._handle_raw_message()
         ├─ парсит поля (msg_id, chat_id, sender_id, text, attaches)
-        ├─ сохраняет reply_to_msg_id и forward marker в MaxMessage; для forward берёт title источника из payload, затем из локального MAX cache
+        ├─ нормализует строковый wire-тип и PyMax enum `LinkType`; сохраняет reply_to_msg_id и forward marker в MaxMessage. `REPLY` не разворачивается как forward, для forward берёт title источника из payload, затем из локального MAX cache
         ├─ определяет is_dm (chat_id > 0) и is_own (sender == own_id)
         ├─ скачивает медиа в data/tmp/ (если есть)
         └─► Bridge Core._on_max_message()

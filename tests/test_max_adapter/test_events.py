@@ -1,5 +1,6 @@
 from .conftest import *  # noqa: F403
 from pymax.types.domain.attachments import ShareAttachment
+from pymax.types.domain.enums import LinkType
 from src.adapters.max import constants as max_constants
 
 
@@ -431,14 +432,17 @@ async def test_handle_raw_message_preserves_reply_target(tmp_path):
         status=None,
         attaches=[],
         link=SimpleNamespace(
-            type="REPLY",
-            message=SimpleNamespace(id=77),
+            # PyMax exposes this as LinkType.REPLY; str(value) is
+            # "LinkType.REPLY", not the wire value "REPLY".
+            type=LinkType.REPLY,
+            message=SimpleNamespace(id=77, text="Исходное сообщение"),
         ),
     )
 
     await adapter._handle_raw_message(message)
 
     assert len(received) == 1
+    assert received[0].text == "Ответ"
     assert received[0].reply_to_msg_id == "77"
     assert received[0].is_forwarded is False
 

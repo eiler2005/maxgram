@@ -13,12 +13,21 @@ class RawPayloadParser:
     def __init__(self, *, attachments: AttachmentInspector):
         self._attachments = attachments
 
+    @staticmethod
+    def _normalize_link_type(value) -> Optional[str]:
+        """Return a stable MAX link type for strings and PyMax enum values."""
+        raw = getattr(value, "value", None)
+        text = str(raw if raw not in (None, "") else value).strip().upper()
+        if "." in text:
+            text = text.rsplit(".", 1)[-1]
+        return text or None
+
     def _extract_reply_to_msg_id(self, message) -> Optional[str]:
         link = getattr(message, "link", None)
         if not link:
             return None
 
-        link_type = str(getattr(link, "type", "") or "").upper()
+        link_type = self._normalize_link_type(getattr(link, "type", None))
         if link_type and link_type != "REPLY":
             return None
 
@@ -31,7 +40,7 @@ class RawPayloadParser:
     def _extract_forwarded_payload(self, message) -> Optional[ForwardedPayload]:
         link = getattr(message, "link", None)
         if link:
-            link_type = str(getattr(link, "type", "") or "").upper() or None
+            link_type = self._normalize_link_type(getattr(link, "type", None))
             linked_message = getattr(link, "message", None)
             if linked_message is not None and link_type != "REPLY":
                 linked_id = getattr(linked_message, "id", None)
@@ -496,7 +505,7 @@ class RawPayloadParser:
             if not isinstance(value, dict):
                 continue
             if key == "link":
-                link_type = str(self._payload_value(value, "type") or "").upper()
+                link_type = self._normalize_link_type(self._payload_value(value, "type"))
                 if link_type == "REPLY":
                     continue
             source_chat_id = self._payload_value(value, "chatId", "chat_id")
