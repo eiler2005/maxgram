@@ -244,7 +244,8 @@ Telegram adapter
 MAX WebSocket event
   └─► MAX Adapter._handle_raw_message()
         ├─ парсит поля (msg_id, chat_id, sender_id, text, attaches)
-        ├─ нормализует строковый wire-тип и PyMax enum `LinkType`; сохраняет reply_to_msg_id и forward marker в MaxMessage. `REPLY` не разворачивается как forward, для forward берёт title источника из payload, затем из локального MAX cache
+        ├─ нормализует строковый wire-тип и PyMax enum LinkType через .value
+        ├─ REPLY: сохраняет собственный text/attaches и reply_to_msg_id; FORWARD: разворачивает источник
         ├─ определяет is_dm (chat_id > 0) и is_own (sender == own_id)
         ├─ скачивает медиа в data/tmp/ (если есть)
         └─► Bridge Core._on_max_message()
@@ -267,6 +268,13 @@ MAX WebSocket event
                     ├─ текст → tg.send_text() с prefix "[Имя]" для групп
                     └─ удаляет tmp-файл
 ```
+
+`link.message` у reply — цитируемый оригинал, а текст и вложения ответа находятся
+на внешнем сообщении. `str(LinkType.REPLY)` возвращает `LinkType.REPLY`, поэтому
+единая нормализация типа применяется до классификации typed events и raw wrappers.
+Сквозной тест с реальными PyMax `Message`/`ReplyLink`, production event router и
+временной SQLite проверяет доставку текста ответа и native reply для личного и
+группового чата; без mapping сохраняется текст с коротким marker.
 
 ### Telegram → MAX (исходящее)
 

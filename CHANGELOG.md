@@ -72,6 +72,7 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added end-to-end reply regressions using real PyMax `Message`/`ReplyLink`, the production event router, temporary SQLite and a fake Telegram port for mapped/unmapped replies in DMs and groups. Added wire-string/enum forward parity and legacy id-only reply coverage.
 - Added end-to-end PyMax formatter regressions for plain Telegram URLs becoming
   native MAX links with identical visible text, plus preservation of existing
   Markdown links and URLs unsafe for PyMax's limited formatter.

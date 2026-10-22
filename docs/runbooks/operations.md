@@ -661,6 +661,25 @@ text-retry payload и удаляется по обычному delivery/TTL пр
 - `download_failed`
 - `ack_timeout`
 
+## Ответ из MAX дублирует цитируемое сообщение
+
+Симптом: в Telegram вместо нового ответа появляется `Переслано из MAX` с текстом
+исходного сообщения. Причина известной регрессии — сравнение PyMax enum
+`LinkType.REPLY` со строкой `REPLY` через `str()`. Parser должен брать `.value`,
+сохранять текст/вложения внешнего сообщения и использовать `link.message.id`
+только как reply target. Проверки описаны в [тестовом runbook](../tests.md).
+
+После rollout проверить новый reply в MAX на уже доставленное сообщение: в
+Telegram ожидается текст ответа и native reply в том же topic. Если mapping
+оригинала отсутствует, ожидается текст ответа с коротким marker без цитаты.
+Контейнерный healthcheck проверяет heartbeat, а не правильность reply routing;
+состояние MAX/TG проверяется отдельно через `/status` и startup self-tests.
+
+Исправление применяется к новым событиям. Старые ошибочно доставленные ответы
+не исправляются автоматически: их id уже есть в `message_map`, поэтому обычный
+history replay может пропустить их как duplicate. Восстановление требует
+отдельного точечного operator replay; не удалять `message_map` массово.
+
 ## Видео и большие вложения MAX
 
 MAX-видео приходят через signed CDN URL. Bridge выбирает `User-Agent` по `srcAg` в URL (`CHROME`, `CHROME_ANDROID`, `CHROME_IPHONE`, Safari/iPhone fallback), потому что OK CDN может отвечать `400 Bad Request` на неподходящий клиент.

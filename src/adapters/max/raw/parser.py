@@ -16,6 +16,8 @@ class RawPayloadParser:
     @staticmethod
     def _normalize_link_type(value) -> Optional[str]:
         """Return a stable MAX link type for strings and PyMax enum values."""
+        if value is None:
+            return None
         raw = getattr(value, "value", None)
         text = str(raw if raw not in (None, "") else value).strip().upper()
         if "." in text:

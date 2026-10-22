@@ -337,6 +337,7 @@ async def test_handle_raw_message_ignores_unsafe_share_url(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("link_type", ["FORWARD", LinkType.FORWARD])
 @pytest.mark.parametrize(
     ("payload_source_title", "expected_source_title"),
     [
@@ -345,7 +346,7 @@ async def test_handle_raw_message_ignores_unsafe_share_url(tmp_path):
     ],
 )
 async def test_handle_raw_message_unwraps_forward_link_content(
-    tmp_path, payload_source_title, expected_source_title
+    tmp_path, link_type, payload_source_title, expected_source_title
 ):
     adapter = CapturingDownloadAdapter(
         phone="+7",
@@ -388,7 +389,7 @@ async def test_handle_raw_message_unwraps_forward_link_content(
         status=None,
         attaches=[],
         link=SimpleNamespace(
-            type="FORWARD",
+            type=link_type,
             chat_id=-80000000000001,
             message=forwarded_message,
             chat_name=payload_source_title,
@@ -410,7 +411,8 @@ async def test_handle_raw_message_unwraps_forward_link_content(
 
 
 @pytest.mark.asyncio
-async def test_handle_raw_message_preserves_reply_target(tmp_path):
+@pytest.mark.parametrize("link_type", ["REPLY", LinkType.REPLY, "LinkType.REPLY", None])
+async def test_handle_raw_message_preserves_reply_target(tmp_path, link_type):
     adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
@@ -434,8 +436,12 @@ async def test_handle_raw_message_preserves_reply_target(tmp_path):
         link=SimpleNamespace(
             # PyMax exposes this as LinkType.REPLY; str(value) is
             # "LinkType.REPLY", not the wire value "REPLY".
-            type=LinkType.REPLY,
-            message=SimpleNamespace(id=77, text="Исходное сообщение"),
+            type=link_type,
+            message=(
+                SimpleNamespace(id=77, text="Исходное сообщение")
+                if link_type is not None else None
+            ),
+            message_id=77,
         ),
     )
 

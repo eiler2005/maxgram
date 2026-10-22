@@ -3,8 +3,11 @@ from contextlib import suppress
 from types import SimpleNamespace
 
 import pytest
+from pymax.types.domain.enums import LinkType
+from pymax.types.domain.message import Message
 
 from src.adapters.max.adapter import MaxAdapter
+from src.adapters.max.backends.pymax.events import PymaxEventRouter
 from src.bridge.core import BridgeCore
 from src.db.repository import Repository
 from tests.fakes.fake_max_backend import FakeMaxBackend
@@ -168,6 +171,82 @@ async def test_fake_max_backend_round_trips_message_and_reply(tmp_path):
 
         assert backend.client.sent_messages[0]["chat_id"] == "-70000000000003"
         assert backend.client.sent_messages[0]["text"] == "[Fake Operator]\nreply sample"
+    finally:
+        await max_adapter.close()
+        start_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await start_task
+        await repo.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_id", [101, -70000000000003], ids=["dm", "group"])
+@pytest.mark.parametrize("original_delivered", [True, False], ids=["mapped", "unmapped"])
+async def test_pymax_reply_preserves_own_text_through_telegram_delivery(
+    tmp_path, chat_id, original_delivered
+):
+    repo = Repository(str(tmp_path / "bridge.db"))
+    await repo.connect()
+    backend = FakeMaxBackend()
+    max_adapter = MaxAdapter(
+        phone="+70000000000",
+        data_dir=str(tmp_path),
+        session_name="session.db",
+        tmp_dir=str(tmp_path / "tmp"),
+        backend=backend,
+    )
+    tg = FakeTelegramBridge()
+    cfg = IntegrationConfig(
+        bridge=SimpleNamespace(max_file_size_mb=50),
+        content=SimpleNamespace(
+            placeholder_unsupported="[unsupported: {type}]",
+            placeholder_file_too_large="[too large: {filename}]",
+            forward_voice=True,
+            forward_documents=True,
+            forward_photos=True,
+        ),
+        health=SimpleNamespace(reminder_interval_hours=4),
+    )
+    BridgeCore(cfg, repo, max_adapter, tg)
+    start_task = asyncio.create_task(max_adapter.start())
+    try:
+        await _wait_until(max_adapter.is_ready)
+        # Use the production PyMax event conversion, not a hand-built link DTO.
+        deliver = PymaxEventRouter(backend.client)._wrap_message_handler(
+            backend.client._message_handlers[0]
+        )
+        original = Message(
+            id=71, chat_id=chat_id, sender=9000,
+            text="original question", time=1, type="USER",
+        )
+        if original_delivered:
+            await deliver(original, backend.client)
+            assert len(tg.sent_texts) == 1
+            assert tg.sent_texts[0]["text"] == "[Вы] original question"
+
+        reply = Message.model_validate({
+            "id": 72, "chatId": chat_id, "sender": 101,
+            "text": "actual answer", "time": 2, "type": "USER",
+            "link": {
+                "type": "REPLY", "chatId": chat_id,
+                "message": original.model_dump(by_alias=True),
+            },
+        })
+        assert reply.link.type is LinkType.REPLY
+        await deliver(reply, backend.client)
+
+        assert len(tg.sent_texts) == (2 if original_delivered else 1)
+        delivered = tg.sent_texts[-1]
+        assert "actual answer" in delivered["text"]
+        assert "original question" not in delivered["text"]
+        assert "Переслано" not in delivered["text"]
+        assert delivered["reply_to_msg_id"] == (
+            tg.sent_texts[0]["message_id"] if original_delivered else None
+        )
+        assert await repo.get_tg_msg_by_max(str(chat_id), "72") == delivered["message_id"]
+        mapping = await repo.get_tg_reply_mapping(delivered["message_id"])
+        assert mapping.max_msg_id == "72"
+        assert mapping.max_chat_id == str(chat_id)
     finally:
         await max_adapter.close()
         start_task.cancel()

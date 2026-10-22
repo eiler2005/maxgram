@@ -15,7 +15,7 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **451 тест**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **512 тестовых сценариев**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -113,6 +113,25 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 
 ---
 
+## tests/integration/test_bridge_end_to_end.py — сквозная доставка
+
+| Тест | Что проверяет |
+|---|---|
+| `test_fake_max_backend_round_trips_message_and_reply` | MAX adapter → bridge → временная SQLite → Telegram fake, затем обратная доставка Telegram → MAX fake. |
+| `test_pymax_reply_preserves_own_text_through_telegram_delivery` | Реальные PyMax `Message`/`ReplyLink` проходят production `PymaxEventRouter`, MAX adapter, bridge и SQLite. В личном и групповом чате доставляется собственный текст ответа без повторения оригинала; при mapping ставится native reply на верное Telegram message, без mapping текст сохраняется. Проверяются оба направления message mapping. |
+
+Целевая проверка регрессии ответа из MAX:
+
+```bash
+PYTHONPATH=. .venv/bin/pytest -q tests/integration/test_bridge_end_to_end.py tests/test_max_adapter/test_events.py -k 'pymax_reply_preserves or preserves_reply_target or unwraps_forward_link_content'
+```
+
+Старое сравнение через `str(link.type).upper()` воспроизводит дефект: сквозной
+тест получает `Переслано из MAX` и исходный вопрос вместо ответа. Исправленная
+нормализация проходит те же сценарии; Telegram API в этом тесте заменён fake.
+
+---
+
 ## test_runtime_timeouts.py — typed timeout boundary (2 теста)
 
 | Тест | Что проверяет |
@@ -151,7 +170,7 @@ GitHub Actions выполняет тот же gate: `compileall`, repo-level `ru
 | `test_handle_raw_message_decodes_bytes_text_before_preview` | PyMax 2 `message.text` в bytes декодируется до UTF-8 string до logging preview и dispatch. |
 | `test_handle_raw_message_extracts_text_from_msgpack_bytes` | SHARE/msgpack-like `message.text` bytes распаковываются до настоящего text без `�` и raw field names. |
 | `test_handle_raw_message_normalizes_pymax_enum_edit_status` | PyMax enum/string status вроде `MessageStatus.EDITED` нормализуется в `EDITED`, чтобы edit-события не создавали разные `max_msg_id` variants. |
-| `test_handle_raw_message_preserves_reply_target` | Реальный PyMax `LinkType.REPLY` нормализуется к wire-типу `REPLY`, сохраняет linked MAX message id в `MaxMessage.reply_to_msg_id`, не разворачивается как forward и сохраняет текст самого ответа. |
+| `test_handle_raw_message_preserves_reply_target` | Строка `REPLY`, реальный PyMax `LinkType.REPLY`, строка `LinkType.REPLY` и legacy id-only link без типа сохраняют linked MAX message id и текст ответа без forward unwrap. |
 | `test_handle_raw_message_extracts_max_join_action_from_share` | `SHARE` с `https://max.ru/join/...` становится `max_join` action и больше не деградирует в один `[Вложение MAX: share]`. |
 | `test_handle_raw_message_extracts_url_from_pymax_240_share_attachment` | Реальный PyMax 2.4.0 `ShareAttachment.url` становится Telegram `open_url` action, без generic `share` fallback. |
 | `test_handle_raw_message_extracts_external_action_from_inline_keyboard` | `inline_keyboard` / nested `web_app.url` превращается в `open_url` action с безопасной label. |
