@@ -30,6 +30,7 @@ All notable changes to Maxgram are documented here.
 - **Precise message recovery via `get_message()`** — empty-event voice/forward recovery now attempts the new PyMax 2.2.0 `get_message(chat_id, message_id)` API first, bypassing the time-window history sweep when a precise fetch succeeds. The full fallback chain (cache → raw history payload → `history_messages`) is preserved.
 
 ### Changed
+- **PyMax 2.5.0 upgrade** — `maxapi-python` is pinned to 2.5.0, with `aiohttp>=3.13.5,<3.14`. The bundled app catalog supplies version 26.37.1/build 6900. Real-dispatcher regressions verify reply/edit/raw routing, nested integer-id reactions and high-factor LZ4 decoding while keeping bridge-owned reconnect, TLS trust and explicit reauth.
 - **MAX reply classification after PyMax upgrade** — `LinkType.REPLY` is normalized by its wire value before routing. A MAX reply therefore preserves its own text and reply target instead of being unwrapped and forwarded as the quoted original message.
 - **Watchdog scope documentation** — public READMEs, architecture, operator runbook, and project context now distinguish the in-container supervisor/MAX watchdog, Docker restart policy on the Hetzner VPS, and observational healthcheck. They also document that no host-level systemd watcher exists yet, so an explicit Compose stop/down requires an explicit recovery start.
 - **Forward source labels** — Telegram now shows `↪️ Переслано из «…»` from PyMax `ForwardLink.chat_name`, with the local MAX cache as a fallback. Missing or inaccessible sources retain the neutral `↪️ Переслано из MAX` label. No live lookup, separate title record, or log is written; the existing short-lived plaintext text-retry queue retains the rendered marker only when Telegram delivery itself is retried.
@@ -47,6 +48,7 @@ All notable changes to Maxgram are documented here.
 - Download failure logs now include `src_ag`, `ua_family`, `http_status`, and `download_source`, while keeping signed CDN query parameters out of logged error strings.
 
 ### Fixed
+- **PyMax 2.5 inline app buttons and literal code** — typed `OPEN_APP.web_app` URLs retain their button label, and the outbound URL renderer leaves inline/fenced code untouched before upstream Markdown parsing, preventing visible link markup inside code.
 - **Telegram links lost clickability in MAX** — PyMax 2.4.1 only creates a
   native MAX link entity from explicit `[label](url)` Markdown. The backend now
   renders safe bare Telegram HTTP(S) URLs at that final boundary, preserving
@@ -72,6 +74,7 @@ All notable changes to Maxgram are documented here.
 - **Forwarded media source fallback** — MAX forwarded payloads with source `chatId=0` now fall back to the receiving chat id while keeping the nested media message id; pending video retry also tries the wrapper message id if MAX returns `not.found`.
 
 ### Tests
+- Added PyMax 2.5 compatibility cases for actual dispatcher/gateway routing and raw fallback after typed parsing/handler errors, nested reactions, LZ4 flags above 127, catalog consistency, typed keyboards and literal-code URL preservation.
 - Added end-to-end reply regressions using real PyMax `Message`/`ReplyLink`, the production event router, temporary SQLite and a fake Telegram port for mapped/unmapped replies in DMs and groups. Added wire-string/enum forward parity and legacy id-only reply coverage.
 - Added end-to-end PyMax formatter regressions for plain Telegram URLs becoming
   native MAX links with identical visible text, plus preservation of existing

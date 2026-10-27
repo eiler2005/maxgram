@@ -130,3 +130,17 @@ def test_outbound_url_renderer_preserves_existing_markdown_and_unsafe_parenthese
     rendered = render_bare_urls_as_max_links(f"{markdown_link} {parenthesized_url}")
 
     assert rendered == f"{markdown_link} {parenthesized_url}"
+
+
+@pytest.mark.parametrize("marker", ["`", "```"])
+def test_outbound_url_renderer_preserves_pymax_250_literal_code(marker):
+    code = "foo_bar = https://example.test/code_path"
+    url = "https://example.test/normal_link"
+    text = f"file_name {marker}{code}{marker} {url}"
+
+    rendered = render_bare_urls_as_max_links(text)
+    visible_text, entities = Formatter.format_markdown(rendered)
+
+    assert visible_text == f"file_name {code} {url}"
+    links = [entity for entity in entities if entity.type == "LINK"]
+    assert [entity.attributes.url for entity in links] == [url]

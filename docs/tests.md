@@ -15,11 +15,11 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **512 тестовых сценариев**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **524 тестовых сценария**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
-Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.4.1"`, lazy-runtime hooks, новые message/account methods и `Voice`/`VideoNote`/poll exports. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
+Тесты с marker `architecture` — это service-boundary/refactoring guards (`test_bridge_contracts.py`, `test_max_adapter_leaves.py`, `test_pymax_surface_pin.py`). `test_pymax_surface_pin.py` также фиксирует runtime version `pymax.__version__ == "2.5.0"`, lazy-runtime hooks, новые message/account methods и `Voice`/`VideoNote`/poll exports. Их можно отделить от бизнес-регресса командой `pytest -m "not architecture"`; пока они остаются частью полного gate и не отключены.
 
 ```text
                          pytest -q
@@ -129,6 +129,30 @@ PYTHONPATH=. .venv/bin/pytest -q tests/integration/test_bridge_end_to_end.py tes
 Старое сравнение через `str(link.type).upper()` воспроизводит дефект: сквозной
 тест получает `Переслано из MAX` и исходный вопрос вместо ответа. Исправленная
 нормализация проходит те же сценарии; Telegram API в этом тесте заменён fake.
+
+---
+
+## test_pymax_250_compat.py — реальные dispatcher/protocol regressions (8 сценариев)
+
+Клиенты создают runtime в `tmp_path`, но никогда не подключаются к MAX.
+
+| Тест | Что проверяет |
+|---|---|
+| `test_pymax_250_dispatches_reply_and_edit_once_with_raw_fallback` | Реальные PyMax dispatcher и bridge event/raw gateways доставляют reply/edit по одному разу, сохраняют текст ответа и linked id. |
+| `test_pymax_250_raw_handler_survives_typed_failure` | Raw callback вызывается при ошибке typed model validation и при исключении typed handler. |
+| `test_pymax_250_nested_reactions_reach_bridge_with_string_message_id` | `reactionInfo.counters`/`totalCount` проходят в bridge; integer message id становится строкой контракта. |
+| `test_pymax_250_high_lz4_flags_keep_bridge_msgpack_guard` | LZ4 flags `0x80`/`0xFE` декодируются реальным upstream decoder с bridge msgpack guard. |
+| `test_pymax_250_catalog_keeps_desktop_version_and_build_in_sync` | Bundled app version `26.37.1` и build `6900` согласованы с catalog. |
+
+В `test_max_adapter/test_events.py` legacy/typed `LINK`/typed `OPEN_APP` сохраняют
+URL и подпись кнопки. В `test_pymax_media_gateway.py` inline/fenced code с URL
+остаётся literal после bridge URL renderer и реального PyMax formatter.
+
+```bash
+PYTHONPATH=. .venv/bin/pytest -q tests/test_pymax_250_compat.py tests/test_pymax_media_gateway.py tests/test_max_adapter/test_events.py
+```
+
+Разбор совместимости: [PyMax 2.5.0](pymax-2.5.0-upgrade.md).
 
 ---
 

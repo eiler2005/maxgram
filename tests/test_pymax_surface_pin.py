@@ -10,7 +10,7 @@ pytestmark = pytest.mark.architecture
 
 
 def test_pymax_runtime_version_is_pinned():
-    assert pymax.__version__ == "2.4.1"
+    assert pymax.__version__ == "2.5.0"
 
 
 PINS = {

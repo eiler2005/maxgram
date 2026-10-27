@@ -19,20 +19,23 @@ from .raw_gateway import PymaxRawGateway
 # the unmodified Telegram text.
 _BARE_HTTP_URL_RE = re.compile(r"https?://[^\s<>\[\]\"']+", re.IGNORECASE)
 _MARKDOWN_LINK_SPAN_RE = re.compile(r"\[[^\]\n]+\]\([^\s)]+\)")
+_MARKDOWN_CODE_SPAN_RE = re.compile(r"```[\s\S]*?```|`[^`\n]*`")
 _TRAILING_URL_PUNCTUATION = ".,;:!?]}»”'"
 
 
 def render_bare_urls_as_max_links(text: str) -> str:
     """Convert safe plain HTTP(S) URLs to PyMax's explicit link Markdown.
 
-    Existing Markdown links stay untouched.  URLs containing parentheses are
+    Existing Markdown links and literal code spans stay untouched. URLs containing parentheses are
     left as plain text because PyMax's public formatter uses the first closing
     parenthesis as the end of a link URL; a partial or wrong link is worse than
     the original non-clickable text.
     """
 
     protected_spans = tuple(
-        (match.start(), match.end()) for match in _MARKDOWN_LINK_SPAN_RE.finditer(text)
+        (match.start(), match.end())
+        for pattern in (_MARKDOWN_LINK_SPAN_RE, _MARKDOWN_CODE_SPAN_RE)
+        for match in pattern.finditer(text)
     )
 
     def replace(match: re.Match[str]) -> str:

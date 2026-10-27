@@ -144,6 +144,8 @@ _ACTION_URL_KEYS = {
     "target",
     "web_app_url",
     "webAppUrl",
+    "web_app",
+    "webApp",
 }
 
 

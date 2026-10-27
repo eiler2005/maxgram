@@ -29,6 +29,16 @@ ansible-playbook recover.yml -e backup_archive=../../backups/maxtg-backup-prod-<
 - В check mode playbook делает только preflight: preconditions, healthcheck, logs, smoke-check.
 - Реальный rollout выполняется только обычным `ansible-playbook deploy.yml`.
 
+## Обновление PyMax до 2.5.0
+
+Текущий pin — `maxapi-python==2.5.0`, `aiohttp>=3.13.5,<3.14`.
+Разбор релиза, breaking changes и тестов: [PyMax 2.5.0](../pymax-2.5.0-upgrade.md).
+Перед rollout выполнить полный gate и production backup; deploy только из уже
+отправленного commit. После rollout проверить установленную версию в контейнере,
+startup tests и `MAX link`/`Telegram link` через `/status`: один heartbeat не
+подтверждает работоспособность интеграций. Существующая device session сохраняется;
+профилактический reauth и второй MAX-клиент не требуются.
+
 ## Production: Hetzner quick checklist
 
 Текущий production-сценарий:
@@ -701,7 +711,7 @@ MAX-видео приходят через signed CDN URL. Bridge выбирае
 - повторный sweep той же voice/media-reference не отправляет второй queued-placeholder: существующий pending job переиспользуется по `media_chat_id/media_msg_id/attachment_index/kind/reference_*`;
 - для degraded `CHANNEL/FORWARD` wrappers bridge принимает recovery только если payload содержит usable media refs; low-quality `PHOTO`/`VIDEO` без refs не занимает dedup partial сразу, а ждёт raw/history cache до короткого timeout;
 - если первый проход всё же дал `partial attachment_download_failed:*`, а поздний duplicate уже содержит скачанные фото/видео, bridge best-effort досылает только ещё не записанные media parts в тот же Telegram topic, пишет `delivery_log.error=late_media_recovered`, `delivered_media_parts` и `tg_reply_map` для reply routing;
-- retry worker для фото со stable `fileId`/`photoId` заново получает signed URL через safe `FILE_DOWNLOAD` и скачивает файл без сохранения URL; для cache-only `FILE` сначала использует encrypted signed URL hint, затем при наличии `fileId` применяет typed `get_file_by_id()` и, только если тот вернул пустой URL, подтверждённый raw `FILE_DOWNLOAD` payload (`chatId`, `messageId`, `fileId`). Если source coordinates cache-only media не дали файл, worker повторяет cache recovery по receiving wrapper coordinates. Для video сначала вызывает public PyMax 2.4.1 `get_video_by_id()` и берёт typed `.url`, затем пробует isolated raw `VIDEO_PLAY` fallback; для forwarded video пробует source chat/message pair, затем receiving wrapper pair. Для голосовых заново читает raw `CHAT_HISTORY`, пробует exact `MSG_GET` только в одиночной форме `messageId`, dialog cache, MAX Web `audioGetSources` (`opcode=301) и только затем известный pymax/userbot-safe `FILE_DOWNLOAD` payload (`fileId`) + legacy pymax `get_file_by_id`; если stable ref/history не сработали, worker пробует encrypted `media_recovery_cache` payload без логирования URL/payload. `audioId`/token payload для `FILE_DOWNLOAD`, а также `MSG_GET` shapes `messageIds`/`ids`, в prod возвращали `proto.payload` и закрывали socket, поэтому они отключены.
+- retry worker для фото со stable `fileId`/`photoId` заново получает signed URL через safe `FILE_DOWNLOAD` и скачивает файл без сохранения URL; для cache-only `FILE` сначала использует encrypted signed URL hint, затем при наличии `fileId` применяет typed `get_file_by_id()` и, только если тот вернул пустой URL, подтверждённый raw `FILE_DOWNLOAD` payload (`chatId`, `messageId`, `fileId`). Если source coordinates cache-only media не дали файл, worker повторяет cache recovery по receiving wrapper coordinates. Для video сначала вызывает public `get_video_by_id()` и берёт typed `.url`, затем пробует isolated raw `VIDEO_PLAY` fallback; для forwarded video пробует source chat/message pair, затем receiving wrapper pair. Для голосовых заново читает raw `CHAT_HISTORY`, пробует exact `MSG_GET` с canonical payload `{"chatId": ..., "messageIds": [message_id]}`, dialog cache, MAX Web `audioGetSources` (`opcode=301`) и только затем известный pymax/userbot-safe `FILE_DOWNLOAD` payload (`fileId`) + legacy pymax `get_file_by_id`; если stable ref/history не сработали, worker пробует encrypted `media_recovery_cache` payload без логирования URL/payload. Не использовать singular `messageId` или произвольные `ids` для `MSG_GET`; не добавлять неподтверждённые `audioId`/token shapes в `FILE_DOWNLOAD`.
 
 Что смотреть в логах:
 

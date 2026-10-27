@@ -41,7 +41,7 @@ MAX (личный аккаунт)        Telegram Forum Supergroup
 
 ## Основные возможности
 
-- **Совместимость с lifecycle PyMax 2.4.1** — bridge ставит локальные auth/user/TCP guards после ленивого создания runtime PyMax, использует одноразовый `connect()` со своим fresh-client reconnect loop, сохраняет MAX CA доверие в custom egress, берёт версию/build DESKTOP profile из bundled PyMax catalog и отключает автоматический upstream relogin
+- **Совместимость с PyMax 2.5.0** — проверена на реальном upstream dispatcher, типизированных inline-кнопках и новых reaction payloads; сохранены one-shot `connect()`, fresh-client reconnect loop, MAX CA доверие и только явный reauth. См. [разбор обновления](docs/pymax-2.5.0-upgrade.md).
 - **Автоматическое зеркалирование** — все чаты MAX появляются как топики без ручной настройки
 - **Двусторонняя связь** — reply из Telegram уходит в MAX, включая reply на конкретное сообщение
 - **Кликабельные ссылки TG→MAX** — обычные `http(s)`-ссылки из Telegram передаются в MAX нативной ссылкой с тем же видимым текстом

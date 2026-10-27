@@ -1,5 +1,6 @@
 from .conftest import *  # noqa: F403
 from pymax.types.domain.attachments import ShareAttachment
+from pymax.types.domain.attachments.keyboards.inline import InlineKeyboardAttachment
 from pymax.types.domain.enums import LinkType
 from src.adapters.max import constants as max_constants
 
@@ -219,7 +220,8 @@ async def test_handle_raw_message_extracts_url_from_pymax_240_share_attachment(t
 
 
 @pytest.mark.asyncio
-async def test_handle_raw_message_extracts_external_action_from_inline_keyboard(tmp_path):
+@pytest.mark.parametrize("shape", ["legacy", "typed_link", "typed_open_app"])
+async def test_handle_raw_message_extracts_external_action_from_inline_keyboard(tmp_path, shape):
     adapter = AdapterHarness(
         phone="+7",
         data_dir=str(tmp_path),
@@ -233,6 +235,26 @@ async def test_handle_raw_message_extracts_external_action_from_inline_keyboard(
 
     adapter.on_message(handler)
 
+    if shape == "legacy":
+        attachment = SimpleNamespace(
+            type="INLINE_KEYBOARD",
+            buttons=[{
+                "text": "Открыть квитанцию",
+                "web_app": {"url": "https://pay.example.test/invoice/1"},
+            }],
+        )
+    else:
+        button = {"text": "Открыть квитанцию"}
+        if shape == "typed_link":
+            button.update(type="LINK", url="https://pay.example.test/invoice/1")
+        else:
+            button.update(type="OPEN_APP", webApp="https://pay.example.test/invoice/1")
+        attachment = InlineKeyboardAttachment.model_validate({
+            "_type": "INLINE_KEYBOARD",
+            "callbackId": "test-keyboard",
+            "keyboard": {"buttons": [[button]]},
+        })
+
     message = SimpleNamespace(
         id=1,
         chat_id=123,
@@ -240,17 +262,7 @@ async def test_handle_raw_message_extracts_external_action_from_inline_keyboard(
         text="Оплата",
         type="USER",
         status=None,
-        attaches=[
-            SimpleNamespace(
-                type="INLINE_KEYBOARD",
-                buttons=[
-                    {
-                        "text": "Открыть квитанцию",
-                        "web_app": {"url": "https://pay.example.test/invoice/1"},
-                    }
-                ],
-            )
-        ],
+        attaches=[attachment],
         link=None,
     )
 
