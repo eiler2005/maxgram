@@ -889,7 +889,11 @@ async def test_pymax2_adapter_imports_contacts_and_resolves_dm_chat_id():
 
 
 @pytest.mark.asyncio
-async def test_pymax2_adapter_joins_by_group_link_then_channel_fallback():
+@pytest.mark.parametrize("link, expected_method", [
+    ("https://max.ru/join/abc123", "group"),
+    ("https://max.ru/example_channel", "channel"),
+])
+async def test_pymax2_adapter_routes_invites_and_public_channel_links(link, expected_method):
     from src.adapters.max.backends.pymax.client_adapter import PymaxClientAdapter
 
     class FakeClient:
@@ -900,7 +904,7 @@ async def test_pymax2_adapter_joins_by_group_link_then_channel_fallback():
 
         async def join_group(self, link: str):
             self.calls.append(("group", link))
-            raise ValueError("not a group invite")
+            return SimpleNamespace(id=-90000000000001, title="Joined", type="CHANNEL")
 
         async def join_channel(self, link: str):
             self.calls.append(("channel", link))
@@ -909,12 +913,9 @@ async def test_pymax2_adapter_joins_by_group_link_then_channel_fallback():
     client = FakeClient()
     adapter = PymaxClientAdapter(client)
 
-    chat = await adapter.join_chat_by_link("https://max.ru/join/abc123")
+    chat = await adapter.join_chat_by_link(link)
 
-    assert client.calls == [
-        ("group", "https://max.ru/join/abc123"),
-        ("channel", "https://max.ru/join/abc123"),
-    ]
+    assert client.calls == [(expected_method, link)]
     assert chat.id == -90000000000001
     assert chat.title == "Joined"
 

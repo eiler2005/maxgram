@@ -34,7 +34,9 @@ from .contracts import (
     OpsNotifierPort,
     TelegramCallbackAction,
     TelegramBridgePort,
+    TelegramResponse,
 )
+from .join import MaxJoinService, CONFIRM as JOIN_CONFIRM, CANCEL as JOIN_CANCEL
 from .recovery.scheduler import RecoveryScheduler
 from ..config.loader import AppConfig
 from ..db.repository import Repository
@@ -61,6 +63,7 @@ class BridgeCore:
         self._tg = tg_adapter
         self._ops = ops_notifier or tg_adapter
         self._health = health_store
+        self._topic_locks: dict[str, asyncio.Lock] = {}
 
         self._stats = {
             "start_time": time.time(),
@@ -88,12 +91,20 @@ class BridgeCore:
             health=self._health,
             build_recovery_status_summary=self._recovery.build_status_summary,
         )
+        self._join = MaxJoinService(
+            repo=self._repo, max_adapter=self._max,
+            owner_id=getattr(getattr(self._cfg, "telegram", None), "owner_id", None),
+            ensure_topic=self._get_or_create_topic,
+            topic_link=lambda topic_id: self._tg.get_topic_link(topic_id),
+            schedule_scan=self._recovery.schedule_event_scan,
+        )
         self._commands = BridgeCommandDispatcher(
             tg=self._tg,
             repo=self._repo,
             max_adapter=self._max,
             status_reporter=self._status,
             recovery_scheduler=self._recovery,
+            join_service=self._join,
         )
 
         self._max.on_message(self._on_max_message)
@@ -142,7 +153,9 @@ class BridgeCore:
             footer = f"{footer}\n{actor_footer}"
         await self._tg.edit_message_text(tg_msg_id, footer)
 
-    async def _on_tg_callback_action(self, callback: TelegramCallbackAction) -> str:
+    async def _on_tg_callback_action(self, callback: TelegramCallbackAction) -> str | TelegramResponse:
+        if callback.action in {JOIN_CONFIRM, JOIN_CANCEL}:
+            return await self._join.handle(callback)
         if callback.action == bridge_watchdog_command.CHECK_ACTION:
             # Сетевой запрос к другому хосту: уводим с event loop, чтобы не
             # задерживать обработку сообщений на время таймаута.
@@ -195,15 +208,17 @@ class BridgeCore:
         *,
         flow_id: Optional[str] = None,
     ) -> Optional[int]:
-        return await bridge_topics.get_or_create_topic(
-            cfg=self._cfg,
-            repo=self._repo,
-            tg=self._tg,
-            max_adapter=self._max,
-            msg=msg,
-            schedule_recovery_scan=self._recovery.schedule_event_scan,
-            flow_id=flow_id,
-        )
+        lock = self._topic_locks.setdefault(msg.chat_id, asyncio.Lock())
+        async with lock:
+            return await bridge_topics.get_or_create_topic(
+                cfg=self._cfg,
+                repo=self._repo,
+                tg=self._tg,
+                max_adapter=self._max,
+                msg=msg,
+                schedule_recovery_scan=self._recovery.schedule_event_scan,
+                flow_id=flow_id,
+            )
 
     async def _resolve_chat_title(self, msg: MaxMessage) -> str:
         return await bridge_topics.resolve_chat_title(

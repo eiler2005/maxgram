@@ -49,6 +49,8 @@ jobs:
             src/bridge/core.py \
             src/bridge/status.py \
             src/bridge/media_retry.py \
+            src/bridge/join.py \
+            src/bridge/max_links.py \
             src/bridge/recovery/scheduler.py \
             src/bridge/commands/dispatcher.py
           pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75

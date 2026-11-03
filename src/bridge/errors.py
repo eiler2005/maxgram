@@ -15,6 +15,14 @@ class BridgePermanentError(BridgeError):
     """Failure that requires code/config/operator intervention."""
 
 
+class MaxJoinError(BridgeError):
+    """Safe join outcome; deliberately excludes upstream payloads and links."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(f"MAX join: {code}")
+
+
 class BridgeExternalTimeout(BridgeTransientError, TimeoutError):
     """External TG/MAX operation exceeded its bounded wait time."""
 

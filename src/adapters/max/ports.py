@@ -241,6 +241,8 @@ class MaxChatView:
     admins: object | None = None
     admin_participants: object | None = None
     participants_count: object | None = None
+    status: object | None = None
+    join_status: str = "joined"
 
     @classmethod
     def from_object(cls, value: object) -> "MaxChatView | None":

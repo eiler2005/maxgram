@@ -15,7 +15,21 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **524 тестовых сценария**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **582 тестовых сценария**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+
+### Вступление в MAX из Telegram
+
+`tests/test_join.py` и `tests/test_join_telegram.py` добавляют 57 проверок:
+
+- Строгий разбор публичных/invite URL, удаление tracking query, защита от подмены домена и вложенного URL, дедупликация ссылок.
+- Отсутствие побочных эффектов до подтверждения; owner-only доступ, TTL, отмена, атомарные гонки confirm/cancel и повторных нажатий; URL не попадает в callback или логи и очищается из обработанного SQLite payload.
+- Offline с возможностью повторного нажатия, реальный timeout без автоматического replay, pending approval, недействительный chat id/профиль, reuse binding, ошибка создания топика с повторным завершением, истечение краткого success cache.
+- PyMax structured errors и выбор одного endpoint без catch-all fallback; known membership не вызывает повторный join.
+- Сквозной путь через реальные TelegramAdapter, BridgeCore и MaxAdapter с fake MAX backend: paste, `/join@bot`, forwarded caption и text-link; первый MAX пост одновременно с confirm создаёт ровно один топик и доставляется туда.
+- Область действия DM/General, отказ чужому владельцу/группе, обычная пересылка ссылки внутри топика, кнопка открытия и описание `/join` в `/help`.
+
+Полный gate после изменения: **582 passed**, coverage **80.35%** (порог 75%).
+Для join service/parser также выполняется scoped `mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/join.py src/bridge/max_links.py`.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.
 
@@ -358,7 +372,7 @@ Raw payload implementation is split behind `src/adapters/max/raw_payload.py`: pa
 | `test_pymax2_send_uses_attachments_list` | Outbound media отправляется через PyMax 2 `attachments=[...]`, не старый `attachment=`. |
 | `test_pymax2_snapshots_use_profile_users_and_chat_types` | Own id берётся из `client.me.contact.id`, users/chats snapshots нормализуются через PyMax 2 shape. |
 | `test_pymax2_adapter_imports_contacts_and_resolves_dm_chat_id` | `PymaxClientAdapter.import_contacts()` строит PyMax `ContactInfo`, возвращает typed users и вычисляет DM chat id через backend boundary. |
-| `test_pymax2_adapter_joins_by_group_link_then_channel_fallback` | `PymaxClientAdapter.join_chat_by_link()` сначала вызывает `join_group(link)`, затем fallback `join_channel(link)` и возвращает safe `MaxChatView`. |
+| `test_pymax2_adapter_routes_invites_and_public_channel_links` | `PymaxClientAdapter.join_chat_by_link()` выбирает один endpoint: `join_group(link)` для invite либо `join_channel(link)` для публичного канала и возвращает safe `MaxChatView`. |
 | `test_pymax2_egress_transport_uses_configured_socket_connector` | Custom PyMax 2 transport использует `MaxEgressProfile.socket_connector` и сохраняет TLS server hostname. |
 | `test_pymax2_egress_client_uses_bridge_connection_manager` | Egress PyMax client строит guarded `BridgeConnectionManager` с bridge egress transport и PyMax 2.1 16-bit seq. |
 | `test_max_adapter_can_be_composed_with_fake_backend` | `MaxAdapter` можно собрать с fake backend через internal injection point без изменения публичного constructor use-case. |

@@ -4,6 +4,11 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from pymax.exceptions import ApiError
+
+from .....bridge.errors import MaxJoinError
+from .....bridge.max_links import normalize_max_link
+
 from ...ports import (
     MaxChatView,
     MaxClientMessage,
@@ -197,11 +202,42 @@ class PymaxClientAdapter:
         return channels_snapshot(self._client)
 
     async def join_chat_by_link(self, link: str) -> MaxChatView | None:
+        link = normalize_max_link(link)
+        if link is None:
+            raise MaxJoinError("invalid_link")
+        for cached in getattr(self._client, "chats", []) or []:
+            cached_link = getattr(cached, "link", None)
+            status = str(getattr(cached, "status", "")).upper()
+            if cached_link and normalize_max_link(str(cached_link)) == link and status in {"ACTIVE", "JOINED", "MEMBER"}:
+                view = MaxChatView.from_object(cached)
+                view.join_status = "already_member"
+                return view
         try:
-            result = await self._client.join_group(link)
-        except Exception:
-            result = await self._client.join_channel(link)
-        return MaxChatView.from_object(result)
+            if "/join/" in link:
+                # Both group and channel invites use upstream CHAT_JOIN.
+                result = await self._client.join_group(link)
+            else:
+                result = await self._client.join_channel(link)
+        except ApiError as exc:
+            code = str(exc.error or "").lower()
+            if any(part in code for part in ("pending", "requested", "request_sent")):
+                return MaxChatView(join_status="pending")
+            if any(part in code for part in ("already", "member.exists")):
+                raise MaxJoinError("already_member") from None
+            if any(part in code for part in ("expired", "not.found", "not_found", "invalid")):
+                raise MaxJoinError("invalid_link") from None
+            if any(part in code for part in ("denied", "forbidden", "blocked")):
+                raise MaxJoinError("denied") from None
+            raise MaxJoinError("unconfirmed") from None
+        if result is None:
+            raise MaxJoinError("unconfirmed")
+        view = MaxChatView.from_object(result)
+        status = str(getattr(view, "status", "") or "").upper()
+        if status in {"PENDING", "REQUESTED", "REQUEST_SENT", "WAITING", "WAITING_APPROVAL"}:
+            view.join_status = "pending"
+        elif status and status not in {"ACTIVE", "JOINED", "MEMBER"}:
+            raise MaxJoinError("unconfirmed")
+        return view
 
     async def chat(self, chat_id: int) -> MaxChatView | None:
         return MaxChatView.from_object(await self._client.get_chat(chat_id))

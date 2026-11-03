@@ -860,7 +860,7 @@ def test_command_dispatcher_registers_expected_commands():
     bridge = make_bridge(tg_adapter=tg)
 
     assert set(tg.commands) == {"status", "chats", "help", "watchdog"}
-    assert set(tg.arg_commands) == {"dm", "recovery"}
+    assert set(tg.arg_commands) == {"dm", "recovery", "join"}
     assert tg.commands["status"] == bridge._status.build_status_message
     assert tg.arg_commands["dm"] == bridge._commands.handle_dm
     assert tg.arg_commands["recovery"] == bridge._recovery.handle_command

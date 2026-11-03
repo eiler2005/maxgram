@@ -74,6 +74,7 @@ Each MAX chat (DM or group) becomes a separate Telegram topic, created automatic
 ## Features
 
 - Automatic topic creation for every new MAX chat
+- **Join MAX from Telegram** — send or forward a `max.ru` channel/invite link to the bot in owner DM, or use `/join <link>` in DM/General. Confirm with “Вступить в MAX”; the connected MAX account joins and the bot creates/reuses a topic with an open button. Confirmation expires after 15 minutes; admin approval is reported separately, and old history is not imported. [Usage and failure cases](docs/runbooks/max-join.md).
 - Bidirectional messaging — replies in Telegram → delivered to MAX (including reply-to-message)
 - Telegram → MAX bare HTTP(S) URLs are rendered as native clickable MAX links while preserving the visible URL text
 - MAX replies become native Telegram replies when the original mapping is available; unmapped replies and forwarded messages receive short context markers without quoted content

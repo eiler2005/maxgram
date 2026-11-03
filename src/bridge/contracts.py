@@ -185,6 +185,7 @@ class MaxJoinedChat:
     chat_id: Optional[str]
     title: Optional[str]
     chat_kind: Optional[str] = None
+    join_status: str = "joined"  # joined | already_member | pending
 
 
 @dataclass
@@ -194,6 +195,14 @@ class TelegramInlineButton:
     text: str
     url: Optional[str] = None
     callback_data: Optional[str] = None
+
+
+@dataclass
+class TelegramResponse:
+    """A command reply or editable callback panel, without transport objects."""
+
+    text: str
+    buttons: list[TelegramInlineButton] = field(default_factory=list)
 
 
 @dataclass
@@ -217,8 +226,8 @@ ReplyHandler = Callable[
     Awaitable[None],
 ]
 CommandHandler = Callable[..., Awaitable[str]]
-ArgCommandHandler = Callable[[str], Awaitable[str]]
-CallbackActionHandler = Callable[[TelegramCallbackAction], Awaitable[str]]
+ArgCommandHandler = Callable[[str], Awaitable[str | TelegramResponse]]
+CallbackActionHandler = Callable[[TelegramCallbackAction], Awaitable[str | TelegramResponse]]
 
 
 class MaxBridgePort(Protocol):
@@ -357,6 +366,7 @@ class TelegramBridgePort(Protocol):
     async def send_system_notification(self, text: str, *, category: str = "system") -> bool: ...
     async def send_notification(self, text: str) -> bool: ...
     def get_last_send_error(self) -> Optional[str]: ...
+    def get_topic_link(self, topic_id: int) -> Optional[str]: ...
     async def send_typing_indicator(self, topic_id: int) -> None: ...
     async def edit_message_text(self, msg_id: int, text: str) -> bool: ...
 

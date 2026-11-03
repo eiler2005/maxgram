@@ -80,6 +80,13 @@ python examples/swap_max_backend.py
 
 Это доказывает важную границу: `BridgeCore` зависит от `MaxBridgePort`/DTO, а не от PyMax object shape.
 
+Вступление в MAX из Telegram использует ту же границу: `MaxJoinService`
+обрабатывает подтверждение и атомарный захват action, `MaxJoinedChat` передаёт
+результат, общий topic resolver создаёт/находит binding. `TelegramResponse`
+передаёт текст/кнопки без импорта aiogram в core. Fake-backend тесты
+`tests/test_join_telegram.py` проверяют весь flow и одновременный первый пост
+из MAX. См. [ADR-014](decisions/ADR-014-telegram-max-join.md).
+
 ## Компенсация хрупкости
 
 | Класс / helper | Файл | Что решает | Regression guard |

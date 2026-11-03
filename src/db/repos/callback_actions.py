@@ -78,13 +78,37 @@ class CallbackActionsRepo(BaseRepo):
         *,
         error: Optional[str] = None,
         now: Optional[int] = None,
+        clear_payload: bool = False,
     ) -> None:
         now = int(time.time()) if now is None else now
         status = "failed" if error else "used"
         await self._db.execute(
             """UPDATE telegram_callback_actions
-               SET status = ?, used_at = ?, last_error = ?
+               SET status = ?, used_at = ?, last_error = ?,
+                   payload_json = CASE WHEN ? THEN '{}' ELSE payload_json END
                WHERE id = ?""",
-            (status, now, error, action_id),
+            (status, now, error, clear_payload, action_id),
+        )
+        await self._commit()
+
+    async def claim_callback_action(self, action_id: str) -> bool:
+        """Only one confirm/cancel request can consume a pending action."""
+        cur = await self._db.execute(
+            """UPDATE telegram_callback_actions SET status = 'processing'
+               WHERE id = ? AND status = 'pending'""",
+            (action_id,),
+        )
+        claimed = cur.rowcount == 1
+        await cur.close()
+        await self._commit()
+        return claimed
+
+    async def expire_join_requests(self, before: int) -> None:
+        await self._db.execute(
+            """UPDATE telegram_callback_actions
+               SET status = 'failed', last_error = 'expired', payload_json = '{}', used_at = ?
+               WHERE action_type = 'max_join_request' AND created_at <= ?
+                 AND status IN ('pending', 'processing')""",
+            (int(time.time()), before),
         )
         await self._commit()

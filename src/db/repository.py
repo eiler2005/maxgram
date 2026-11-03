@@ -203,12 +203,20 @@ class Repository:
         *,
         error: Optional[str] = None,
         now: Optional[int] = None,
+        clear_payload: bool = False,
     ) -> None:
         await self._callback_actions.mark_callback_action_used(
             action_id,
             error=error,
             now=now,
+            clear_payload=clear_payload,
         )
+
+    async def claim_callback_action(self, action_id: str) -> bool:
+        return await self._callback_actions.claim_callback_action(action_id)
+
+    async def expire_join_requests(self, before: int) -> None:
+        await self._callback_actions.expire_join_requests(before)
 
     # ── MAX account recovery registry ──────────────────────────────────────
 

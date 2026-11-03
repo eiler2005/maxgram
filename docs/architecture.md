@@ -55,6 +55,8 @@ src/
 │   ├── status.py             /status, /chats and /help rendering
 │   ├── mapping.py            message_map / tg_reply_map idempotency helpers
 │   ├── topics.py             topic create/bind/rename decisions
+│   ├── join.py               owner-confirmed MAX join and immediate topic binding
+│   ├── max_links.py          strict MAX channel/invite URL parsing
 │   ├── forwarding.py         MAX -> TG text/media delivery
 │   ├── message_context.py    rendered MAX reply/forward context labels
 │   ├── replies.py            TG replies -> MAX outbound messages
@@ -283,7 +285,7 @@ Telegram Update (reply в топике форум-группы)
   └─► TG Adapter.handle_message()
         ├─ проверяет chat.id == forum_group_id
         ├─ игнорирует сообщения от ботов
-        ├─ owner-only команды (`/status`, `/chats`, `/reauth`, `/recovery ...`)
+        ├─ owner-only команды (`/status`, `/chats`, `/reauth`, `/recovery ...`, `/join`)
         ├─ `/dm` в General принимает от участников группы
         ├─ обычные сообщения в топиках принимает от участников группы
         ├─ извлекает topic_id (message_thread_id)
@@ -297,6 +299,32 @@ Telegram Update (reply в топике форум-группы)
                     ├─ ждёт до 15s если reconnect (self._started=False)
                     └─ client.send_message(chat_id, text, reply_to=...)
 ```
+
+### Вступление в MAX из Telegram
+
+Owner DM принимает `/join ссылка`, вставленную/пересланную ссылку, caption и
+Telegram text-link entity; General принимает только явную `/join ссылка`.
+Обычные ссылки в уже привязанных топиках продолжают путь TG→MAX.
+`CommandDispatcher` передаёт запрос в `MaxJoinService`; сервис возвращает
+transport-neutral `TelegramResponse` с confirm/cancel кнопками. В callback
+передаётся короткий случайный id, URL остаётся в private SQLite payload.
+
+Нажатие сначала подтверждается Telegram, затем SQLite compare-and-swap
+захватывает action (`pending → processing`). Отмена и повторные нажатия не
+дублируют MAX-запрос. PyMax backend нормализует результат в `MaxJoinedChat`
+(`joined|already_member|pending`) или безопасный `MaxJoinError.code`; invite
+идёт через `join_group`, публичный канал через `join_channel`, без повторной
+попытки на другом endpoint. Join ограничен 30с; неизвестный результат не
+переигрывается автоматически. Pending approval не создаёт топик.
+
+При подтверждённом membership `BridgeCore._get_or_create_topic()` использует
+общий per-chat lock и обычный binding repository, поэтому callback и первый
+MAX event создают один топик. Метаданные результата не становятся сообщением
+или message_map row. Telegram редактирует панель и добавляет URL перехода в
+топик; отключённый binding остаётся отключённым. Успешные результаты кешируются
+в памяти на 60с (до 256 ссылок) для повторного запроса/ошибки создания топика.
+Старая история не воспроизводится. Lifecycle и privacy: [ADR-014](decisions/ADR-014-telegram-max-join.md),
+операторские шаги: [runbook](runbooks/max-join.md).
 
 ## Компоненты
 

@@ -55,7 +55,7 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `pending_media_downloads` — durable retry meta для MAX media
 - `media_recovery_cache` — короткий encrypted TTL-cache только для проблемных MAX media hints (`UNSUPPORTED`, download failure, partial delivery); stable refs открыто как meta, volatile URL/payload только Fernet ciphertext, без текста/raw event
 - `pending_inbound_messages` / `pending_outbound_messages` — durable retry для MAX→TG и TG→MAX текстов; хранит plaintext только для недоставленных текстов до доставки/TTL, медиа не сохраняет
-- `telegram_callback_actions` — owner-only Telegram callback actions; хранит только MAX invite payload для `max_join`, внешние URL не сохраняет
+- `telegram_callback_actions` — owner-only Telegram callback actions: legacy MAX invite `max_join` и подтверждения `/join` (`max_join_request`); внешние URL не сохраняются. У нового flow payload очищается после выполнения/отмены/ошибки, просроченные строки очищаются при следующем prepare или нажатии.
 - `known_users` — справочник имён MAX для `/dm`
 - `max_account_generations` — поколения MAX account; новый телефон = новый account
 - `chat_recovery_registry` — recovery metadata для переноса Telegram topics на новый MAX account (`last_scan_at`, invite/admin/DM metadata, manual notes)
@@ -81,6 +81,9 @@ Supervisor ──► Worker(MAX Adapter ──► Bridge Core ──► TG Adapt
 - `max.ru/join/...` становится owner-only callback-кнопкой `Вступить в MAX`; bridge MAX account вступает через PyMax API, не через открытие MAX на телефоне.
 - Внешние `http(s)` ссылки становятся обычными Telegram URL-кнопками и не пишутся в SQLite.
 - В SQLite сохраняется только `telegram_callback_actions.payload_json` для MAX invite join callback. Raw SHARE/keyboard payloads, arbitrary external URLs, message text/media и signed URLs не писать в логи, health, reports или exports.
+- `/join ссылка` доступна владельцу в DM/General; обычная или пересланная MAX-ссылка в owner DM запускает тот же confirm/cancel flow. В существующих форум-топиках ссылки остаются обычными сообщениями. Поддерживаются `max.ru/имя` и `max.ru/join/токен`, не ссылки на отдельные посты/профили.
+- `src/bridge/join.py` хранит подтверждение на 15 минут в существующей таблице, атомарно переводит `pending → processing → used|failed`, очищает URL payload и не переигрывает action после таймаута/рестарта. Временный success cache — 60с, до 256 записей. Логи содержат только безопасный reason/error_type.
+- PyMax backend выбирает один endpoint: invite → `join_group`, public channel → `join_channel`; catch-all fallback запрещён, поскольку первая попытка могла уже вступить. Заявка `pending` не равна membership. При подтверждённом результате общий topic resolver создаёт/переиспользует топик под per-chat lock; synthetic message содержит только routing metadata и не пишется в message_map. См. `docs/runbooks/max-join.md`, ADR-014.
 
 ## Критические особенности pymax
 

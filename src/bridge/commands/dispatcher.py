@@ -15,12 +15,14 @@ class BridgeCommandDispatcher:
         max_adapter: MaxBridgePort,
         status_reporter,
         recovery_scheduler,
+        join_service=None,
     ):
         self._tg = tg
         self._repo = repo
         self._max = max_adapter
         self._status = status_reporter
         self._recovery = recovery_scheduler
+        self._join = join_service
 
     def register(self):
         self._tg.on_command("status", self._status.build_status_message)
@@ -29,6 +31,8 @@ class BridgeCommandDispatcher:
         self._tg.on_command("watchdog", self.handle_watchdog)
         self._tg.on_arg_command("dm", self.handle_dm, allow_group_general=True)
         self._tg.on_arg_command("recovery", self._recovery.handle_command)
+        if self._join is not None:
+            self._tg.on_arg_command("join", self._join.prepare)
 
     async def handle_watchdog(self):
         """Описание внешнего наблюдателя плюс кнопка «проверить сейчас»."""

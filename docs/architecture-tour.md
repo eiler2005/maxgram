@@ -97,6 +97,13 @@ python examples/swap_max_backend.py
 This proves the boundary that matters: `BridgeCore` depends on `MaxBridgePort`
 and DTOs, not on the PyMax object shape.
 
+Owner-initiated MAX joins use the same boundary: `MaxJoinService` handles
+confirmation and atomic action claims, `MaxJoinedChat` carries the result,
+and the shared topic resolver creates/reuses the binding. `TelegramResponse`
+carries text/buttons without importing aiogram into the core. The fake-backend
+tests in `tests/test_join_telegram.py` cover the full workflow and a concurrent
+first MAX post. See [ADR-014](decisions/ADR-014-telegram-max-join.md).
+
 ## Fragility Mitigation
 
 | Class / helper | File | What it solves | Regression guard |

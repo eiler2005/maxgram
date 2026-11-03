@@ -401,10 +401,12 @@ class MaxAdapter:
         if client is None:
             raise RuntimeError("MAX client is not connected")
         chat = await client.join_chat_by_link(link)
+        kind = getattr(chat, "type", None)
         return MaxJoinedChat(
             chat_id=str(getattr(chat, "id", "") or "") or None,
             title=getattr(chat, "title", None),
-            chat_kind=str(getattr(chat, "type", "") or "") or None,
+            chat_kind=str(getattr(kind, "value", kind) or "") or None,
+            join_status=str(getattr(chat, "join_status", "unconfirmed")),
         )
 
     async def download_video_reference(self, *args, **kwargs):

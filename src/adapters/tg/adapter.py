@@ -30,7 +30,9 @@ from ...bridge.contracts import (
     CallbackActionHandler,
     TelegramCallbackAction,
     TelegramInlineButton,
+    TelegramResponse,
 )
+from ...bridge.max_links import extract_max_links
 from ...logging_utils import build_tg_flow_id, log_event, sanitize_path
 from ...runtime.health import (
     AlertOutboxStore,
@@ -109,6 +111,12 @@ class TelegramAdapter:
 
     def get_last_send_error(self) -> Optional[str]:
         return self._last_send_error
+
+    def get_topic_link(self, topic_id: int) -> Optional[str]:
+        group = str(self._group_id)
+        if not group.startswith("-100") or not group[4:]:
+            return None
+        return f"https://t.me/c/{group[4:]}/{topic_id}"
 
     def on_command(self, cmd: str, handler: Callable):
         """Зарегистрировать внешний обработчик команды без аргументов."""
@@ -760,7 +768,7 @@ class TelegramAdapter:
 
         # Команды
         if message.text and message.text.startswith("/"):
-            cmd = message.text.split()[0].lstrip("/").lower()
+            cmd = message.text.split()[0].lstrip("/").split("@", 1)[0].lower()
             # Публичные arg-команды в General топике (без thread_id).
             if cmd in self._public_group_arg_commands and is_group and not message.message_thread_id:
                 await self._handle_command(message)
@@ -768,11 +776,23 @@ class TelegramAdapter:
             # Остальные команды — только от владельца
             if not self._is_owner(message):
                 return
+            if cmd == "join" and is_group and message.message_thread_id not in (None, 1):
+                await message.reply("Используйте /join в личке бота или в General.")
+                return
             await self._handle_command(message)
             return
 
         # Дальше — только сообщения из форум-группы (reply → MAX)
         if not is_group:
+            if self._is_owner(message) and "join" in self._arg_command_handlers:
+                text = message.text or message.caption or ""
+                entities = list(getattr(message, "entities", None) or [])
+                entities += list(getattr(message, "caption_entities", None) or [])
+                urls = [str(entity.url) for entity in entities if getattr(entity, "url", None)]
+                text = "\n".join([text, *urls])
+                if extract_max_links(text):
+                    result = await self._arg_command_handlers["join"](text)
+                    await self._reply_command_result(message, result)
             return
 
         # Reply/сообщение в топике → bridge в MAX
@@ -884,7 +904,7 @@ class TelegramAdapter:
 
     #: Callback-действия, которые bridge готов принимать. Всё остальное молча
     #: игнорируется: кнопка из чужого/старого сообщения не должна ничего запускать.
-    KNOWN_CALLBACK_ACTIONS = ("max_join", "watchdog_check")
+    KNOWN_CALLBACK_ACTIONS = ("max_join", "max_join_confirm", "max_join_cancel", "watchdog_check")
 
     async def _dispatch_callback_query(self, callback: CallbackQuery):
         data = callback.data or ""
@@ -903,6 +923,12 @@ class TelegramAdapter:
             await callback.answer("Действие не найдено", show_alert=False)
             return
         message = getattr(callback, "message", None)
+        join_panel = action_name in {"max_join_confirm", "max_join_cancel"}
+        if join_panel and message is None:
+            await callback.answer("Сообщение с подтверждением недоступно")
+            return
+        if join_panel:
+            await callback.answer("Выполняю…")
         topic_id = getattr(message, "message_thread_id", None)
         tg_msg_id = getattr(message, "message_id", None)
         action = TelegramCallbackAction(
@@ -923,7 +949,7 @@ class TelegramAdapter:
             outcome="accepted",
             action=action_name,
         )
-        answer = "Действие не обработано"
+        answer: str | TelegramResponse = "Действие не обработано"
         try:
             for handler in self._callback_handlers:
                 answer = await handler(action)
@@ -940,35 +966,47 @@ class TelegramAdapter:
                 error_type=type(exc).__name__,
             )
             answer = "Ошибка при выполнении действия"
-        await callback.answer(answer[:200], show_alert=False)
+        if join_panel:
+            if not isinstance(answer, TelegramResponse):
+                # A transient refusal (offline/busy) must keep the original buttons.
+                await message.answer(answer)
+                return
+            result = answer
+            try:
+                await message.edit_text(result.text, reply_markup=self._build_inline_markup(result.buttons))
+            except Exception as exc:
+                log_event(logger, logging.WARNING, "tg.callback.panel_edit_failed", error_type=type(exc).__name__)
+                await message.answer(result.text, reply_markup=self._build_inline_markup(result.buttons))
+            return
+        await callback.answer(str(answer)[:200], show_alert=False)
+
+    async def _reply_command_result(self, message: Message, result):
+        if isinstance(result, TelegramResponse):
+            await message.reply(result.text, reply_markup=self._build_inline_markup(result.buttons))
+        elif isinstance(result, tuple):
+            text, buttons = result
+            await message.reply(text, reply_markup=self._build_inline_markup(buttons))
+        else:
+            await message.reply(result)
 
     async def _handle_command(self, message: Message):
         parts = message.text.split()
-        cmd = parts[0].lstrip("/").lower()
+        cmd = parts[0].lstrip("/").split("@", 1)[0].lower()
         args = " ".join(parts[1:])
         try:
             if cmd in self._arg_command_handlers:
-                reply_text = await self._arg_command_handlers[cmd](args)
-                await message.reply(reply_text)
+                result = await self._arg_command_handlers[cmd](args)
+                await self._reply_command_result(message, result)
             elif cmd in self._command_handlers:
                 result = await self._command_handlers[cmd]()
-                # Обработчик может вернуть просто текст или пару (текст, кнопки):
-                # так команда получает кнопку, не меняя контракт остальных команд.
-                if isinstance(result, tuple):
-                    reply_text, buttons = result
-                    await message.reply(
-                        reply_text,
-                        reply_markup=self._build_inline_markup(buttons),
-                    )
-                else:
-                    await message.reply(result)
+                await self._reply_command_result(message, result)
             elif cmd == "reauth":
                 await message.reply(
                     "⚠️ Для повторной авторизации MAX:\n"
                     "Перезапусти bridge и введи новый SMS код."
                 )
         except Exception as e:
-            logger.error("Command handler /%s error: %s", cmd, e)
+            log_event(logger, logging.ERROR, "tg.command.failed", command=cmd, error_type=type(e).__name__)
             await message.reply("⚠️ Ошибка при выполнении команды")
 
     # ── Жизненный цикл ────────────────────────────────────────────────────
