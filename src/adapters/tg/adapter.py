@@ -32,7 +32,7 @@ from ...bridge.contracts import (
     TelegramInlineButton,
     TelegramResponse,
 )
-from ...bridge.max_links import extract_max_links
+from ...bridge.max_links import has_join_link_input
 from ...logging_utils import build_tg_flow_id, log_event, sanitize_path
 from ...runtime.health import (
     AlertOutboxStore,
@@ -790,7 +790,7 @@ class TelegramAdapter:
                 entities += list(getattr(message, "caption_entities", None) or [])
                 urls = [str(entity.url) for entity in entities if getattr(entity, "url", None)]
                 text = "\n".join([text, *urls])
-                if extract_max_links(text):
+                if has_join_link_input(text):
                     result = await self._arg_command_handlers["join"](text)
                     await self._reply_command_result(message, result)
             return

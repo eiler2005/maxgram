@@ -15,11 +15,11 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 .venv/bin/mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/actions.py src/bridge/core.py src/bridge/status.py src/bridge/media_retry.py src/bridge/recovery/scheduler.py src/bridge/commands/dispatcher.py src/bridge/commands/recovery.py
 ```
 
-Всего: **582 тестовых сценария**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
+Всего: **593 тестовых сценария**, async-тесты идут через `pytest-asyncio`, property-based parser guards — через `hypothesis`. Внешних зависимостей нет: SQLite через `tmp_path`, MAX и Telegram заменены stub/fake-классами.
 
 ### Вступление в MAX из Telegram
 
-`tests/test_join.py` и `tests/test_join_telegram.py` добавляют 57 проверок:
+`tests/test_join.py` и `tests/test_join_telegram.py` содержат 68 проверок:
 
 - Строгий разбор публичных/invite URL, удаление tracking query, защита от подмены домена и вложенного URL, дедупликация ссылок.
 - Отсутствие побочных эффектов до подтверждения; owner-only доступ, TTL, отмена, атомарные гонки confirm/cancel и повторных нажатий; URL не попадает в callback или логи и очищается из обработанного SQLite payload.
@@ -27,8 +27,9 @@ PYTHONPATH=. .venv/bin/python -m compileall src tests
 - PyMax structured errors и выбор одного endpoint без catch-all fallback; known membership не вызывает повторный join.
 - Сквозной путь через реальные TelegramAdapter, BridgeCore и MaxAdapter с fake MAX backend: paste, `/join@bot`, forwarded caption и text-link; первый MAX пост одновременно с confirm создаёт ровно один топик и доставляется туда.
 - Область действия DM/General, отказ чужому владельцу/группе, обычная пересылка ссылки внутри топика, кнопка открытия и описание `/join` в `/help`.
+- Явная ошибка без callback action, binding и MAX-запроса для чужого сайта, подмены домена, вложенного URL, пустого пути/токена, ссылки на пост, FTP и credentials в URL; обычный текст/email в DM остаётся без ответа. В подтверждении виден канонический адрес.
 
-Полный gate после изменения: **582 passed**, coverage **80.35%** (порог 75%).
+Полный gate после изменения: **593 passed**, coverage **80.36%** (порог 75%).
 Для join service/parser также выполняется scoped `mypy --check-untyped-defs --no-implicit-optional --ignore-missing-imports --follow-imports=silent src/bridge/join.py src/bridge/max_links.py`.
 
 GitHub Actions выполняет тот же gate: `compileall`, repo-level `ruff check`, scoped bridge `ruff`, scoped `mypy` для MAX/bridge boundaries, затем `pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html --cov-fail-under=75`. HTML/XML coverage отчёты загружаются artifact-ом `coverage-report`.

@@ -52,7 +52,10 @@ class MaxJoinService:
         await self._repo.expire_join_requests(int(time.time()) - CONFIRM_TTL_SECONDS)
         links = extract_max_links(text)
         if len(links) != 1:
-            prefix = "Пришлите ссылки по одной.\n\n" if len(links) > 1 else ""
+            if len(links) > 1:
+                prefix = "Пришлите ссылки по одной.\n\n"
+            else:
+                prefix = "⚠️ Ссылка не подходит для вступления в MAX.\n\n" if text.strip() else ""
             return TelegramResponse(prefix + HELP)
         action_id = await self._repo.create_callback_action(
             action_type=ACTION_TYPE, max_chat_id="", max_msg_id="",
@@ -60,6 +63,7 @@ class MaxJoinService:
         )
         return TelegramResponse(
             "Добавить этот канал или чат MAX?\n"
+            f"Ссылка: {links[0]}\n"
             "Вступит MAX-аккаунт bridge. После подтверждения появится Telegram-топик.\n"
             "Кнопка действует 15 минут; старая история не загружается автоматически.",
             [TelegramInlineButton("Вступить в MAX", callback_data=f"{CONFIRM}:{action_id}"),

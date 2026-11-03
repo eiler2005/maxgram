@@ -6,6 +6,15 @@ from urllib.parse import urlsplit
 _URL = re.compile(r"https?://[^\s<>\"']+|(?<![\w@/.-])(?:www\.)?max\.ru/[^\s<>\"']+", re.I)
 _PATH = re.compile(r"/(?:join/)?[A-Za-z0-9_-]+/?\Z")
 _RESERVED = {"join", "login", "settings", "profile", "download", "share", "app"}
+_LINK_INPUT = re.compile(
+    r"[a-z][a-z0-9+.-]*://[^\s<>\"']+|(?<![\w@/.-])(?:www\.)?max\.ru(?=$|[/?#\s])",
+    re.I,
+)
+
+
+def has_join_link_input(text: str) -> bool:
+    """Detect URL input for feedback only; never authorizes a MAX request."""
+    return bool(_LINK_INPUT.search(text))
 
 
 def normalize_max_link(value: str) -> str | None:

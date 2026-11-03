@@ -308,6 +308,10 @@ Telegram text-link entity; General принимает только явную `/
 `CommandDispatcher` передаёт запрос в `MaxJoinService`; сервис возвращает
 transport-neutral `TelegramResponse` с confirm/cancel кнопками. В callback
 передаётся короткий случайный id, URL остаётся в private SQLite payload.
+В owner DM `has_join_link_input()` выделяет URL-ввод только для обратной связи;
+`extract_max_links()` отдельно проверяет точный домен и допустимый путь. Для
+неподходящей ссылки возвращается явная ошибка без MAX API/нового action;
+обычный текст/email игнорируется. В панели подтверждения виден канонический URL.
 
 Нажатие сначала подтверждается Telegram, затем SQLite compare-and-swap
 захватывает action (`pending → processing`). Отмена и повторные нажатия не

@@ -115,6 +115,8 @@ async def test_join_prepare_bad_or_ambiguous_input_creates_no_action(joins, text
     response = await joins.service.prepare(text)
     assert response.buttons == []
     assert joins.max.calls == []
+    if text and text != "max.ru/one max.ru/two":
+        assert "не подходит для вступления" in response.text
     async with joins.repo._db.execute("SELECT COUNT(*) FROM telegram_callback_actions") as cur:
         assert (await cur.fetchone())[0] == 0
 
@@ -122,6 +124,7 @@ async def test_join_prepare_bad_or_ambiguous_input_creates_no_action(joins, text
 @pytest.mark.asyncio
 async def test_join_confirm_creates_topic_and_clears_private_payload(joins):
     response = await joins.service.prepare("https://max.ru/example_channel")
+    assert "Ссылка: https://max.ru/example_channel" in response.text
     cb = callback(response)
     result = await joins.service.handle(cb)
     assert "подключён" in result.text

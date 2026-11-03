@@ -9,6 +9,7 @@ from src.adapters.max.ports import MaxChatView
 from src.adapters.tg.adapter import TelegramAdapter
 from src.bridge.contracts import TelegramResponse, TelegramInlineButton
 from src.bridge.core import BridgeCore
+from src.bridge.join import MaxJoinService
 from src.db.repository import Repository
 from tests.fakes.fake_max_backend import FakeMaxBackend
 from tests.integration.test_bridge_end_to_end import IntegrationConfig, _wait_until
@@ -123,6 +124,7 @@ async def test_owner_join_end_to_end_and_first_max_post_reuse_topic(tmp_path, en
         assert "/join" in help_text
         assert "15 минут" in help_text
         assert "одобрения" in help_text
+        assert "бот сообщит об ошибке" in help_text
     finally:
         await max_adapter.close()
         task.cancel()
@@ -211,3 +213,53 @@ async def test_join_offline_response_preserves_confirmation_keyboard():
     ))
     assert panel.edits == []
     assert panel.answers[0][0] == "MAX сейчас не подключён"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text, rejected", [
+    ("https://example.org/news", True),
+    ("https://max.ru.evil.test/join/token", True),
+    ("https://evil.test/?next=https://max.ru/join/token", True),
+    ("https://max.ru/", True),
+    ("max.ru", True),
+    ("https://max.ru/join/", True),
+    ("https://max.ru/channel/123", True),
+    ("ftp://max.ru/join/token", True),
+    ("https://user@max.ru/join/token", True),
+    ("Привет", False),
+    ("someone@max.ru", False),
+])
+async def test_owner_dm_invalid_link_feedback_has_no_join_side_effects(tmp_path, text, rejected):
+    repo = Repository(str(tmp_path / "invalid-link.db"))
+    await repo.connect()
+
+    async def unexpected_topic(msg):
+        raise AssertionError("Invalid input must not create a topic")
+
+    service = MaxJoinService(
+        repo=repo, max_adapter=SimpleNamespace(), owner_id=1,
+        ensure_topic=unexpected_topic, topic_link=lambda _: None,
+        schedule_scan=lambda _: None,
+    )
+    tg = TelegramAdapter("token", owner_id=1, forum_group_id=-100123)
+    tg.on_arg_command("join", service.prepare)
+    message = _make_message(user_id=1, group_id=1, text=text, topic_id=None)
+    replies = []
+
+    async def reply(text, **kwargs):
+        replies.append((text, kwargs))
+
+    message.reply = reply
+    try:
+        await tg._dispatch_incoming_message(message)
+        if rejected:
+            assert len(replies) == 1
+            assert "не подходит для вступления" in replies[0][0]
+            assert replies[0][1]["reply_markup"] is None
+        else:
+            assert replies == []
+        async with repo._db.execute("SELECT COUNT(*) FROM telegram_callback_actions") as cursor:
+            assert (await cursor.fetchone())[0] == 0
+        assert await repo.list_bindings() == []
+    finally:
+        await repo.close()
